@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -euo pipefail
+ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
+PYTHON_BIN="${PYTHON_BIN:-python3}"
+if [ $# -lt 1 ]; then
+  echo "usage: project-brain-audit-open <project-root>" >&2
+  exit 2
+fi
+exec "$PYTHON_BIN" -S "$ROOT/scripts/audit_review.py" "$1/.brain" --open

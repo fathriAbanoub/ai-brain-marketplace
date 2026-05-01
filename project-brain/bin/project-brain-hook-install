@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [ $# -lt 1 ]; then
+  echo "usage: project-brain-hook-install <project-root>" >&2
+  exit 2
+fi
+
+PROJECT_ROOT="$(cd "$1" && pwd)"
+GIT_DIR="$(git -C "$PROJECT_ROOT" rev-parse --git-dir 2>/dev/null || true)"
+if [ -z "$GIT_DIR" ]; then
+  echo "error: not a git repository: $PROJECT_ROOT" >&2
+  exit 1
+fi
+case "$GIT_DIR" in
+  /*) HOOK_DIR="$GIT_DIR/hooks" ;;
+  *) HOOK_DIR="$PROJECT_ROOT/$GIT_DIR/hooks" ;;
+esac
+mkdir -p "$HOOK_DIR"
+HOOK="$HOOK_DIR/post-commit"
+MARKER_START="# >>> project-brain post-commit hook >>>"
+MARKER_END="# <<< project-brain post-commit hook <<<"
+
+if [ -f "$HOOK" ] && grep -Fq "$MARKER_START" "$HOOK"; then
+  echo "project-brain post-commit hook already installed: $HOOK"
+  exit 0
+fi
+
+if [ ! -f "$HOOK" ]; then
+  printf '#!/usr/bin/env bash\n' > "$HOOK"
+fi
+
+cat >> "$HOOK" <<'HOOK_BLOCK'
+# >>> project-brain post-commit hook >>>
+# Runs fast lint only and appends a summary to .brain/log/git-hooks.md.
+if command -v project-brain-lint >/dev/null 2>&1; then
+  PROJECT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+  if [ -d "$PROJECT_ROOT/.brain" ]; then
+    JSON_REPORT="$(project-brain-lint "$PROJECT_ROOT" --json 2>/dev/null || true)"
+    SUMMARY="$(printf '%s' "$JSON_REPORT" | python3 -c 'import json,sys; data=json.load(sys.stdin); s=data.get("summary",{}); print(f"error={s.get('"'"'error'"'"',0)} warn={s.get('"'"'warn'"'"',0)} suggest={s.get('"'"'suggest'"'"',0)} info={s.get('"'"'info'"'"',0)}")' 2>/dev/null || true)"
+    ERRORS="$(printf '%s' "$SUMMARY" | sed -n 's/.*error=\([0-9][0-9]*\).*/\1/p')"
+    WARNS="$(printf '%s' "$SUMMARY" | sed -n 's/.*warn=\([0-9][0-9]*\).*/\1/p')"
+    ERRORS="${ERRORS:-0}"
+    WARNS="${WARNS:-0}"
+    mkdir -p "$PROJECT_ROOT/.brain/log"
+    {
+      printf '## [%s] post-commit lint\n' "$(date '+%Y-%m-%d %H:%M:%S')"
+      printf -- '- %s\n\n' "${SUMMARY:-lint summary unavailable}"
+    } >> "$PROJECT_ROOT/.brain/log/git-hooks.md"
+    if [ "$ERRORS" -gt 0 ] || [ "$WARNS" -gt 0 ]; then
+      echo "project-brain lint: $SUMMARY"
+    fi
+  fi
+fi
+# <<< project-brain post-commit hook <<<
+HOOK_BLOCK
+
+chmod +x "$HOOK"
+echo "installed project-brain post-commit hook: $HOOK"

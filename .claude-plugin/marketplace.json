@@ -1,0 +1,13 @@
+{
+  "name": "ai-brain-marketplace",
+  "owner": {
+    "name": "Local"
+  },
+  "plugins": [
+    {
+      "name": "project-brain",
+      "source": "./project-brain",
+      "description": "A full lifecycle project brain plugin that coordinates LLM Wiki synthesis, MemPalace memory, graphify relationship graphs, audits, logs, and model handoff state."
+    }
+  ]
+}

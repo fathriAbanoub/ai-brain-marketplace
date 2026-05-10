@@ -1,5 +1,5 @@
 {
   "name": "project-brain",
   "description": "A professional OpenClaude project-brain plugin with six-layer persistent knowledge architecture, retrieval routing, self-correction scanning, knowledge compression, Obsidian vault sync, and measurable brain health metrics.",
-  "version": "0.4.0"
+  "version": "0.6.0"
 }

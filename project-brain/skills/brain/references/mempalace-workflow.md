@@ -16,6 +16,25 @@ Use the tool names exposed in the current session. The core tools this brain exp
 
 If the plugin exposes additional tools, prefer the names and capabilities returned by `mempalace_status`.
 
+
+## Wing Lifecycle
+
+Wings are labels on drawers, not independent objects. A wing is created implicitly when the first drawer is written with that wing name, and it is deleted implicitly when its last drawer is removed. There is no `delete_wing` tool and no valid direct ChromaDB file deletion path.
+
+Correct wing deletion loop:
+
+1. Call `mempalace_list_rooms` with the target wing name.
+2. For each returned room, call `mempalace_list_drawers` with the wing and room.
+3. For each returned drawer ID, call `mempalace_delete_drawer` once.
+4. Continue deleting remaining drawers if one drawer deletion fails, then report failures at the end.
+5. After the last drawer is deleted, the wing no longer exists.
+
+The same wing name can be reused immediately after deletion by writing any new drawer to it. No wing recreation step is needed.
+
+Mine the `.brain/wiki/` layer into MemPalace, never the project source code. The source code is already on disk and greppable; mining it bloats the palace with redundant drawers. MemPalace should hold synthesized wiki knowledge, session diary entries, prior decisions, and durable preferences.
+
+Graphify runs on the project source code, not on the wiki. Graphify maps imports, calls, module dependencies, and code relationships. Markdown prose in `.brain/wiki/` has no dependency structure worth graphing.
+
 ## When to call each tool
 
 ### Wake-up
@@ -36,16 +55,33 @@ Search with the project name, current task, important entities, and decision ter
 
 ### Diary writes
 
-Call `mempalace_diary_write` after substantial work, decisions, or context changes. Good diary entries include:
+Call `mempalace_diary_write` after substantial work, decisions, or context changes. Diary entries must follow the minimum standard below.
 
-- what changed,
-- why it matters,
-- user-stated preferences,
-- decisions made,
-- next read targets,
-- links to updated brain pages.
+#### Diary entry minimum standard
 
-Keep diary entries concise. Do not dump raw source text.
+A diary entry must contain at minimum: (1) session date and project name, (2) what was ingested or read, (3) the single most important finding or decision made, (4) any contradictions or surprises found, (5) a reference to the session log file path for full detail. Pipe-delimited compressed format is permitted only as a supplement to a plain-language summary, not as a replacement. A future agent must be able to read the diary entry alone and understand what happened and why, without needing to open the log file.
+
+**Required format:**
+
+```
+[DATE] | [PROJECT] | [ACTION]
+Summary: [1-2 plain English sentences describing what happened]
+Key finding: [the most important thing discovered]
+Contradictions: [any source conflicts found, or "none"]
+Log: [path to session log file]
+Next: [top priority action for next session]
+```
+
+**Example:**
+
+```
+2026-05-09 | ambient-mixer | brain-init
+Summary: Initialized project brain and ingested GEMINI.md and critic_report.md as first sources.
+Key finding: audio-renderer.js is imported by index.html at line 1750 — it is NOT orphaned despite GEMINI.md claiming otherwise.
+Contradictions: GEMINI.md says port 8080 but server.js uses 3000; GEMINI.md says audio-renderer.js is unused but index.html imports it.
+Log: .brain/log/20260509.md
+Next: Run /graphify . to build dependency graph; verify all open questions against primary source.
+```
 
 ### Preferences
 
@@ -94,4 +130,3 @@ MemPalace is not the final source of project truth. When memory contains stable 
 ## Failure handling
 
 If `mempalace_status` fails or the tool is not exposed in the current session, say that the MemPalace layer is not active in this session and continue from `.brain/wiki/`, `.brain/log/`, graphify output, raw sources, and the current chat. Do not invent memories.
-

@@ -335,6 +335,48 @@ def target_from_conflict_block(block: str, lookup: dict[str, Path]) -> Path | No
     return None
 
 
+REQUIRED_FRONTMATTER_FIELDS = {"title", "type", "created", "updated", "status", "sources", "tags"}
+DEPRECATED_FIELDS = {"name", "author", "score"}
+
+
+def check_frontmatter_schema(root: Path, brain: Path, issues: list[dict]) -> None:
+    """Check that all wiki pages use standardized frontmatter fields.
+
+    - Every page must have a `title:` field (not `name:`).
+    - Deprecated fields (`name:`, `author:`, `score:`) are flagged.
+    - Source summary pages should use `reliability:` instead of `score:`.
+    """
+    wiki = brain / "wiki"
+    if not wiki.exists():
+        return
+    for p in wiki.rglob("*.md"):
+        if p.name == "index.md":
+            continue
+        fm = extract_frontmatter(read(p))
+        if not fm:
+            add(issues, "warn", "missing_frontmatter", p, root, f"no frontmatter found in wiki page")
+            continue
+        # Check for deprecated `name:` instead of `title:`
+        if "name" in fm and "title" not in fm:
+            add(issues, "error", "deprecated_frontmatter_field", p, root,
+                f"uses `name:` instead of `title:` — rename to `title:` per wiki-schema standard")
+        # Check for other deprecated fields
+        for dep_field in DEPRECATED_FIELDS:
+            if dep_field in fm and dep_field != "name":
+                replacement = "reliability" if dep_field == "score" else None
+                msg = f"deprecated frontmatter field `{dep_field}:` found"
+                if replacement:
+                    msg += f" — use `{replacement}:` instead per wiki-schema standard"
+                else:
+                    msg += " — remove non-standard field per wiki-schema standard"
+                add(issues, "warn", "deprecated_frontmatter_field", p, root, msg)
+        # Check for missing required fields
+        missing = REQUIRED_FRONTMATTER_FIELDS - set(fm.keys())
+        if missing:
+            add(issues, "warn", "missing_frontmatter_field", p, root,
+                f"missing required frontmatter field(s): {', '.join(sorted(missing))}")
+
+
 def check_contradictions(root: Path, brain: Path, issues: list[dict]) -> None:
     wiki = brain / "wiki"
     if not wiki.exists():
@@ -402,6 +444,7 @@ def build_report(root: Path) -> tuple[int, dict]:
         check_audit(root, brain, issues)
         check_evidence_aging(root, brain, issues)
         check_graph_report(root, issues)
+        check_frontmatter_schema(root, brain, issues)
         check_contradictions(root, brain, issues)
 
     summary = {sev: 0 for sev in SEVERITIES}

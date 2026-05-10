@@ -219,6 +219,37 @@ def memory_sync(root: Path) -> tuple[int, str]:
     return 0, "no evidence of recent MemPalace diary/preference write"
 
 
+def mempalace_wing_size(root: Path) -> tuple[str, str]:
+    """Report the resolved MemPalace wing size when an MCP bridge is available."""
+    try:
+        from reset_brain import (  # type: ignore
+            MempalaceBridge,
+            MempalaceUnavailable,
+            collect_mempalace_drawers,
+            resolve_wing_name,
+        )
+    except Exception as exc:
+        return "warning", f"unable to load MemPalace wing check: {exc}"
+
+    wing, source = resolve_wing_name(root)
+    try:
+        client = MempalaceBridge()
+        rooms, drawers = collect_mempalace_drawers(client, wing)
+    except MempalaceUnavailable as exc:
+        return "warning", f"wing={wing} ({source}), MemPalace unavailable: {exc}"
+    except Exception as exc:
+        return "warning", f"wing={wing} ({source}), MemPalace check failed: {exc}"
+
+    room_count = len(rooms)
+    drawer_count = len(drawers)
+    base = f"wing={wing} ({source}), rooms={room_count}, drawers={drawer_count}"
+    if drawer_count == 0:
+        return "warning", base + " — wing empty or never mined"
+    if drawer_count > 500:
+        return "info", base + " — unusually large; check whether source code was mined by mistake"
+    return "ok", base
+
+
 def print_health(root: Path) -> None:
     c, c_note = completeness(root)
     f, f_note = freshness(root)
@@ -263,7 +294,7 @@ def main(argv: list[str]) -> int:
     if ok:
         print(f"✓ graphify CLI available ({ver})")
     else:
-        print("✗ graphify not on PATH — run: uv tool install graphifyy && graphify install")
+        print("✗ graphify not on PATH — run: uv tool install graphify && graphify install")
 
     if any("obsidian" in p.lower() for p in plugins):
         print("✓ Obsidian plugin enabled in settings.json")
@@ -280,6 +311,9 @@ def main(argv: list[str]) -> int:
 
     if brain.exists():
         print_health(root)
+        severity, wing_note = mempalace_wing_size(root)
+        glyph = {"ok": "✓", "warning": "⚠", "info": "ℹ"}.get(severity, "-")
+        print(f"{glyph} MemPalace wing size: {wing_note}")
 
     return 0
 

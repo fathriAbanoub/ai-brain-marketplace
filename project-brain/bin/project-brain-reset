@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+project-brain-reset — safely delete a project brain
+
+Usage:
+  project-brain-reset [path] [options]
+
+Arguments:
+  path        Project root directory (default: current directory)
+
+Options:
+  --dry-run          Preview what would be deleted (default behavior)
+  --confirm          Execute deletion (irreversible)
+  --mempalace-only   Delete only the MemPalace wing, keep local files
+  --local-only       Delete only .brain/ and graphify-out/, keep MemPalace
+  --help             Show this message
+
+What gets deleted:
+  - MemPalace wing for this project (all drawers, all rooms)
+  - .brain/ directory (wiki, state, logs, raw refs)
+  - graphify-out/ directory (dependency graph)
+
+What is NEVER deleted:
+  - Your project source code
+  - Other projects' MemPalace wings
+
+The project wing in MemPalace will cease to exist after all its drawers
+are removed. You can start fresh immediately with project-brain-init.
+EOF
+}
+
+if [[ $# -eq 0 || "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+  usage
+  exit 0
+fi
+
+ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
+PYTHON_BIN="${PYTHON_BIN:-python3}"
+exec "$PYTHON_BIN" -S "$ROOT/scripts/reset_brain.py" "$@"

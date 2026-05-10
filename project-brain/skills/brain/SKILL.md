@@ -64,6 +64,16 @@ Never push to the Obsidian vault without the user asking. The vault is the user'
 
 Before answering any question from the brain, identify the question type and consult `references/retrieval-strategy.md` or the routing table in `references/agent-playbook.md`. Do not default to reading the wiki index for every question. Code navigation questions go to graphify first. Decision questions go to MemPalace first. Status questions go to the session brief first. Using the wrong layer first wastes turns and risks stale answers.
 
+### Contract 7: Primary source verification
+
+> **PRIMARY SOURCE VERIFICATION RULE**: Before documenting any claim about a file's status, purpose, imports, or behavior — you MUST read that file directly using the Read tool. Secondary sources (GEMINI.md, critic reports, README files, any AI-generated analysis) are opinions, not evidence. If a secondary source makes a claim about a specific file (e.g. "this file is unused", "this function does X"), you must verify it by reading the actual file. If the secondary source contradicts the primary source code, document the contradiction explicitly in `sources/<filename>.md` under a `## Known Inaccuracies in This Source` section. Never copy a claim from a secondary source into the wiki architecture pages without primary verification.
+
+**Orphaned file check**: Before marking any file as "orphaned", "unused", or "not imported": search the entire codebase for import statements, require() calls, script tags, and dynamic references to that file. Only label a file orphaned after this search returns zero results.
+
+### Contract 8: No speculative language in architecture pages
+
+Words like "likely", "probably", "appears to", "seems to", and "may" are banned from wiki architecture pages unless explicitly marked as a hypothesis under an open question. If you do not know how two components interact, do not guess — write "Integration method not yet verified. See [[open-questions#integration-question]]" and add the question to open-questions.md. If you do know, state it definitively and cite the file and line number.
+
 ## Canonical lifecycle
 
 Use `references/brain-lifecycle.md` as the primary runbook. The short version:
@@ -78,6 +88,28 @@ Use `references/brain-lifecycle.md` as the primary runbook. The short version:
 8. **Handoff** by updating session brief, log, and next actions.
 
 If the user asks "what should the AI do after LLM Wiki?", the answer is: run the post-wiki synchronization loop in `references/post-wiki-checklist.md`.
+
+
+## Brain Reset
+
+Use brain reset only when the user explicitly requests deletion or a clean slate, when the project source code was significantly refactored and the wiki is now structurally stale, when the brain was built from inaccurate secondary sources and must be rebuilt from primary source code, or when the project has been archived and its project brain should be removed.
+
+Do **not** reset the entire brain when a smaller repair is enough:
+
+- If the wiki only needs normal updating, re-compile the affected wiki pages from primary sources instead.
+- If MemPalace only needs to be regenerated from a still-valid wiki, use `project-brain-reset <project-root> --mempalace-only --dry-run`, then confirm the MemPalace-only reset before re-mining.
+- If a single wiki page is wrong, fix that page and run the post-wiki loop; do not delete the whole brain.
+
+Brain reset is irreversible. `.brain/`, `graphify-out/`, and MemPalace drawer deletions cannot be undone. The project source code must never be deleted or modified by a reset.
+
+Correct sequence when a user requests brain deletion:
+
+1. Run `project-brain-reset <project-root> --dry-run` and show the output to the user.
+2. Ask the user to confirm they have read the dry-run output and want to proceed.
+3. Only after explicit user confirmation, run `project-brain-reset <project-root> --confirm`.
+4. After reset completes, offer to immediately run `project-brain-init <project-root> "<Project Name>"` to start fresh.
+
+The reset script resolves the MemPalace wing from `.brain/CLAUDE.md` or `.brain/state/session-brief.md` frontmatter and falls back to the sanitized project directory name. It clears MemPalace drawer-by-drawer, then removes `.brain/`, then removes `graphify-out/`. If MemPalace MCP is unreachable from the shell runtime, stop and explain that local-only deletion can be performed with `--local-only`, but do not pretend remote drawers were deleted.
 
 ## Operation modes
 
@@ -118,10 +150,20 @@ Steps:
 
 1. Store the material in `.brain/raw/` or create a pointer file in `.brain/raw/refs/` according to `references/evidence-lifecycle.md`.
 2. Extract claims, entities, relationships, decisions, uncertainties, and useful quotes.
-3. Create or update a source summary under `.brain/wiki/sources/`.
-4. Update affected architecture, concept, entity, synthesis, and decision pages.
-5. Update `.brain/wiki/index.md`.
-6. Run the post-wiki checklist.
+3. **Read the actual source files referenced by the material** before writing any wiki claims. Apply Contract 7 (Primary Source Verification) and Contract 8 (No Speculative Language).
+4. Create or update a source summary under `.brain/wiki/sources/` with a `reliability:` field in frontmatter set to `primary`, `secondary-verified`, or `secondary-unverified` (see Source reliability tagging below).
+5. If the source is `secondary-unverified` or `secondary-verified` and discrepancies were found, add a `## Known Inaccuracies in This Source` section listing each error with: the incorrect claim, the correct value verified from primary source, and the primary source file and line number.
+6. Update affected architecture, concept, entity, synthesis, and decision pages.
+7. Update `.brain/wiki/index.md`.
+8. Run the post-wiki checklist.
+
+**Source reliability tagging**: Every source summary page (`wiki/sources/<name>.md`) must include a `reliability:` field in its frontmatter set to one of:
+
+- `primary` — actual source code files (the canonical source of truth).
+- `secondary-verified` — AI/human analysis whose claims have been checked against primary sources.
+- `secondary-unverified` — AI/human analysis not yet cross-checked against primary sources.
+
+For any `secondary-unverified` or `secondary-verified` source where discrepancies were found, add a `## Known Inaccuracies in This Source` section listing each error with: the incorrect claim, the correct value verified from primary source, and the primary source file and line number that proves the correction.
 
 ### Query
 
@@ -160,7 +202,7 @@ Steps:
 
 1. Call `mempalace_status`.
 2. Search MemPalace before making claims about previous work.
-3. Write a concise diary entry with `mempalace_diary_write` after substantial work, decisions, or context changes.
+3. Write a concise diary entry with `mempalace_diary_write` after substantial work, decisions, or context changes. Follow the diary entry minimum standard in `references/mempalace-workflow.md`.
 4. Store user preferences with `mempalace_preferences_set` when they should survive model switches.
 5. Convert stable memory into wiki pages, decisions, or `.brain/CLAUDE.md` preferences.
 6. Never store secrets.
@@ -236,14 +278,25 @@ Every time wiki pages change, perform this loop unless impossible:
 1. Update index.
 2. Add cross-links and backlinks.
 3. Extract decisions.
-4. Sync graphify if structure changed.
-5. Sync MemPalace if session memory changed.
-6. Record contradictions/open questions.
-7. Update session brief.
-8. Append log entry.
-9. Run lint for large changes.
+4. **Resolve open questions**: For each question in `open-questions.md`, make a genuine attempt to answer it from the files already read. If the answer exists in any file you have access to, document it in the relevant wiki page and remove the question from open-questions.md. Only leave a question open if: (a) the answer requires reading a file not yet ingested, OR (b) the answer genuinely does not exist anywhere in the codebase. For case (a), name the specific file that needs to be read next. Never leave a question open if the answer is visible in a file you have already read.
+5. **Run `/graphify .` from project root.** If graphify is not installed, run `uv tool install graphify` (note: single y) and retry. If it fails after install, log the error in the session log and add a `graphify-not-available` flag to the session brief. Do NOT skip this step silently — the health score and relationship accuracy depend on it.
+6. Sync MemPalace if session memory changed.
+7. Record contradictions/open questions.
+8. Update session brief.
+9. Append log entry.
+10. Run lint for large changes.
 
 The wiki is not the finish line; it is the compiled layer that must be wired back into the rest of the brain.
+
+## Known issues documentation standard
+
+When documenting security, validation, or correctness issues in wiki pages or open-questions.md, be precise about the severity and nature of the gap. Distinguish between three categories:
+
+- **Absent** — the feature does not exist at all. Example: "No authentication on the /render-video endpoint."
+- **Insufficient** — the feature exists but has exploitable gaps. Quote the specific gap. Example: "Duration validated as positive integer but no upper bound — allows arbitrarily long render requests (see `backend/renderVideo.js` line 42)."
+- **Misconfigured** — the feature exists but is set incorrectly. Example: "CORS allows all origins despite being meant for a single-domain deployment (see `backend/server.js` line 15)."
+
+Never write "no input validation" when validation exists but is insufficient. The distinction matters because "absent" tells a future agent to build from scratch, while "insufficient" tells them to extend what is already there.
 
 ## Evidence hierarchy
 

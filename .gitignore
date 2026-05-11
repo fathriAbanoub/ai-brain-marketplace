@@ -1,43 +1,28 @@
 ```
 # Python
 __pycache__/
-*.py[cod]
-*$py.class
-*.so
+*.pyc
+*.pyo
+*.pyd
 .Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-MANIFEST
-
-# Testing
-.coverage
-htmlcov/
-.tox/
-.nox/
-.coverage.*
-.cache
-.pytest_cache/
-.hypothesis/
-
-# Environment
+env/
+venv/
+.venv/
+.ENV
+.ENV.local
 .env
 .env.local
 .env.*
-.venv
-venv/
-ENV
-env.bak
+
+# Testing
+.pytest_cache/
+.coverage
+coverage/
+htmlcov/
+
+# Build/dist
+build/
+dist/
+*.egg
+*.egg-info/
 ```

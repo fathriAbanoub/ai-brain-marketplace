@@ -93,13 +93,11 @@ class TestDoctor:
         brain = scaffolded_project
         project_dir = brain.parent
         
-        # Run from project directory without path argument using run_script
-        result = run_script("doctor.py", [])
+        # Run from project directory with cwd set to project_dir
+        result = run_script("doctor.py", [], cwd=project_dir)
         
-        # Should work with default cwd behavior (but needs cwd set)
-        # Since run_script doesn't set cwd, we just verify doctor runs without crashing
-        # when given current directory explicitly
-        assert "Traceback" not in result.stderr or result.returncode == 0
+        # Should work with default cwd behavior - no traceback and exit 0
+        assert result.returncode == 0 and "Traceback" not in result.stderr
 
     def test_doctor_missing_session_brief(self, run_script, scaffolded_project: Path):
         """Doctor reports missing session-brief.md."""

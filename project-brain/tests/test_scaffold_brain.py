@@ -131,7 +131,7 @@ class TestScaffoldBrain:
         assert "My Cool Project Name" in content
 
     def test_scaffold_force_flag(self, run_script, tmp_project: Path):
-        """Force flag doesn't break idempotency."""
+        """Force flag actually replaces files rather than only returning zero exit code."""
         project_dir = tmp_project / "test-project"
         project_dir.mkdir(parents=True, exist_ok=True)
         
@@ -139,10 +139,25 @@ class TestScaffoldBrain:
         result1 = run_script("scaffold_brain.py", [str(project_dir), "Test Project"])
         assert result1.returncode == 0
         
+        # Identify a generated file and capture its content
+        brain_dir = project_dir / ".brain"
+        claude_md = brain_dir / "CLAUDE.md"
+        assert claude_md.exists()
+        original_content = claude_md.read_text(encoding="utf-8")
+        
+        # Mutate the file to a different value
+        mutated_line = "\n# MUTATED_BY_TEST_BEFORE_FORCE\n"
+        claude_md.write_text(original_content + mutated_line, encoding="utf-8")
+        
         # Second run with --force
         result2 = run_script("scaffold_brain.py", [str(project_dir), "Test Project", "--force"])
-        
         assert result2.returncode == 0
+        
+        # Verify the file was overwritten (mutated line should be gone or content changed back)
+        new_content = claude_md.read_text(encoding="utf-8")
+        # With --force, the file should be restored to scaffold's expected content
+        # The mutated line should NOT be present after force overwrite
+        assert "# MUTATED_BY_TEST_BEFORE_FORCE" not in new_content
 
     def test_scaffold_creates_claude_md(self, scaffolded_project: Path):
         """CLAUDE.md exists and contains 'Project Brain'."""

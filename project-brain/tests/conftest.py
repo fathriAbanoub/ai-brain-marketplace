@@ -21,18 +21,23 @@ def run_script():
     The plugin root is found by Path(__file__).parent.parent since this file
     is in project-brain/tests/. Scripts dir is plugin_root / "scripts".
     """
-    def _run(script_name: str, args: list[str], timeout: int = 30) -> subprocess.CompletedProcess:
+    def _run(script_name: str, args: list[str], timeout: int = 30, cwd: Path | None = None) -> subprocess.CompletedProcess:
         plugin_root = Path(__file__).parent.parent
         scripts_dir = plugin_root / "scripts"
         script_path = scripts_dir / script_name
         
         cmd = [sys.executable, str(script_path)] + args
         
+        # Use scripts_dir as default cwd so script_path is resolved relative to it
+        if cwd is None:
+            cwd = scripts_dir
+        
         result = subprocess.run(
             cmd,
             capture_output=True,
             text=True,
-            timeout=timeout
+            timeout=timeout,
+            cwd=cwd
         )
         return result
     

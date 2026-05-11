@@ -124,9 +124,9 @@ Resolved item.
         result = run_script("audit_review.py", [str(brain), "--all"])
         
         assert result.returncode == 0
-        # Should show both
+        # Should show both open and closed items
         output = result.stdout
-        assert "OPEN-001" in output or "CLOSED-001" in output or "all" in output.lower()
+        assert "OPEN-001" in output and "CLOSED-001" in output
 
     def test_audit_no_audit_directory(self, run_script, tmp_project: Path):
         """Exit non-zero, stderr mentions 'audit' when audit directory missing."""
@@ -196,7 +196,7 @@ id: SEV-{sev.upper()}
 severity: {sev}
 target: wiki/index.md
 author: Test
-created: 2024-01-0{i}
+created: 2024-01-{i+1:02d}
 status: open
 ---
 

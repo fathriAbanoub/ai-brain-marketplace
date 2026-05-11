@@ -51,8 +51,8 @@ class TestLintBrain:
         
         result = run_script("lint_brain.py", [str(project_dir)])
         
-        # Should mention orphan or missing from index
-        output_lower = result.stdout.lower()
+        # Should mention orphan or missing from index - check stdout+stderr combined
+        output_lower = (result.stdout + result.stderr).lower()
         assert "orphan" in output_lower or "missing" in output_lower or "index" in output_lower
 
     def test_lint_broken_wikilink_detected(self, run_script, scaffolded_project: Path):
@@ -70,9 +70,9 @@ class TestLintBrain:
         
         result = run_script("lint_brain.py", [str(project_dir)])
         
-        # Should detect broken link
+        # Should detect broken link - check stdout+stderr combined
         assert result.returncode != 0
-        output_lower = result.stdout.lower()
+        output_lower = (result.stdout + result.stderr).lower()
         assert "broken" in output_lower or "not found" in output_lower
 
     def test_lint_output_contains_summary(self, run_script, scaffolded_project: Path):
@@ -122,9 +122,9 @@ class TestLintBrain:
         
         result = run_script("lint_brain.py", [str(project_dir)])
         
-        # Should report missing source
+        # Should report missing source - check stdout+stderr combined
         assert result.returncode != 0
-        output_lower = result.stdout.lower()
+        output_lower = (result.stdout + result.stderr).lower()
         assert "source" in output_lower or "not found" in output_lower or "missing" in output_lower
 
     def test_lint_stale_session_brief(self, run_script, scaffolded_project: Path):
@@ -135,14 +135,15 @@ class TestLintBrain:
         # Modify session-brief to have old date
         brief_path = brain / "state" / "session-brief.md"
         content = brief_path.read_text(encoding="utf-8")
-        # Replace updated date with old date
-        old_content = content.replace("Updated:", "Updated: 2020-01-01")
+        # Replace the entire Updated: metadata line with an old date using regex
+        import re
+        old_content = re.sub(r'^updated:.*$', 'updated: 2020-01-01', content, flags=re.MULTILINE | re.IGNORECASE)
         brief_path.write_text(old_content, encoding="utf-8")
         
         result = run_script("lint_brain.py", [str(project_dir)])
         
-        # Should warn about stale brief (but may still exit 0 since it's a warning)
-        output_lower = result.stdout.lower()
+        # Should warn about stale brief (but may still exit 0 since it's a warning) - check stdout+stderr combined
+        output_lower = (result.stdout + result.stderr).lower()
         assert "stale" in output_lower or "days" in output_lower or "session" in output_lower
 
     def test_lint_missing_required_paths(self, run_script, scaffolded_project: Path):
@@ -156,9 +157,9 @@ class TestLintBrain:
         
         result = run_script("lint_brain.py", [str(project_dir)])
         
-        # Should fail due to missing required path
+        # Should fail due to missing required path - check stdout+stderr combined
         assert result.returncode != 0
-        output_lower = result.stdout.lower()
+        output_lower = (result.stdout + result.stderr).lower()
         assert "missing" in output_lower
 
     def test_lint_missing_brain_directory(self, run_script, tmp_project: Path):
@@ -188,8 +189,8 @@ class TestLintBrain:
         
         result = run_script("lint_brain.py", [str(project_dir)])
         
-        # Should warn about deprecated field
-        output_lower = result.stdout.lower()
+        # Should warn about deprecated field - check stdout+stderr combined
+        output_lower = (result.stdout + result.stderr).lower()
         assert "deprecated" in output_lower or "name:" in output_lower or "title:" in output_lower
 
     def test_lint_valid_page_no_errors(self, run_script, scaffolded_project: Path):

@@ -1,123 +1,34 @@
 #!/usr/bin/env python3
-"""Safely preview and reset a project-brain memory store.
+"""Reset the local layers of a project brain.
 
-The reset operation intentionally targets only the project-brain storage layers:
-MemPalace drawers for the resolved project wing, the local .brain/ directory, and
-local graphify-out/ output. It never deletes or modifies project source files.
+This script deletes only local artifacts: the .brain/ directory, graphify-out/,
+the "# Project Brain" block injected into root CLAUDE.md, and
+CLAUDE.project-brain.snippet.md. It never touches project source files.
 
-MemPalace MCP tools are normally available to the agent runtime, not to arbitrary
-subprocesses. This script therefore supports an explicit bridge command through
-PROJECT_BRAIN_MEMPALACE_BRIDGE. The bridge is called as:
-
-    <bridge> <tool-name> <json-arguments>
-
-and must print a JSON result to stdout. Supported tool names are
-mempalace_list_rooms, mempalace_list_drawers, and mempalace_delete_drawer.
-If no bridge is configured or the bridge fails, the script reports MemPalace as
-unavailable and fails closed for MemPalace deletion.
+MemPalace drawers are NOT handled here. MemPalace is only reachable through
+MCP tools, which live in the agent session, not in this subprocess. The
+/project-brain:reset skill deletes those drawers directly via
+mempalace_list_rooms -> mempalace_list_drawers -> mempalace_delete_drawer
+before calling this script.
 """
 
 from __future__ import annotations
 
 import argparse
-import json
 import os
-import re
-import shlex
 import shutil
-import subprocess
 import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable
-
-FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
-WING_KEYS = (
-    "mempalace_wing",
-    "mempalace-wing",
-    "mempalace wing",
-    "wing",
-    "project_wing",
-    "project-wing",
-    "project",
-    "project_name",
-    "project-name",
-    "name",
-)
 
 
 class ResetError(Exception):
     """Base class for reset errors that should be shown without a traceback."""
 
 
-class MempalaceUnavailable(ResetError):
-    """Raised when MemPalace cannot be reached from this process."""
-
-
-@dataclass(frozen=True)
-class Drawer:
-    drawer_id: str
-    wing: str
-    room: str
-    preview: str = ""
-
-
 def eprint(message: str) -> None:
     print(message, file=sys.stderr)
-
-
-def sanitize_wing_name(raw: str) -> str:
-    normalized = raw.strip().lower()
-    normalized = re.sub(r"[^a-z0-9._-]+", "-", normalized)
-    normalized = re.sub(r"-+", "-", normalized).strip("-._")
-    return normalized or "project-brain"
-
-
-def read_text(path: Path) -> str:
-    return path.read_text(encoding="utf-8", errors="replace")
-
-
-def parse_scalar(value: str) -> str:
-    value = value.strip()
-    if not value:
-        return ""
-    if value[0:1] in {'"', "'"} and value[-1:] == value[0]:
-        return value[1:-1]
-    return value
-
-
-def parse_frontmatter(text: str) -> dict[str, str]:
-    match = FRONTMATTER_RE.match(text)
-    if not match:
-        return {}
-    data: dict[str, str] = {}
-    for line in match.group(1).splitlines():
-        if not line.strip() or line.lstrip().startswith("#"):
-            continue
-        if line.startswith(" ") or line.startswith("-"):
-            continue
-        key, sep, value = line.partition(":")
-        if not sep:
-            continue
-        data[key.strip().lower()] = parse_scalar(value)
-    return data
-
-
-def resolve_wing_name(root: Path) -> tuple[str, str]:
-    candidates = [root / ".brain" / "CLAUDE.md", root / ".brain" / "state" / "session-brief.md"]
-    for path in candidates:
-        if not path.exists():
-            continue
-        try:
-            fm = parse_frontmatter(read_text(path))
-        except OSError:
-            continue
-        for key in WING_KEYS:
-            value = fm.get(key)
-            if value:
-                return sanitize_wing_name(value), f"frontmatter `{key}` in {path.relative_to(root)}"
-    return sanitize_wing_name(root.name), "project directory name fallback"
 
 
 def directory_stats(path: Path) -> tuple[int, int]:
@@ -145,216 +56,105 @@ def format_size(num_bytes: int) -> str:
     return f"{num_bytes} B"
 
 
-def first_string(value: Any, keys: Iterable[str]) -> str:
-    if isinstance(value, dict):
-        for key in keys:
-            found = value.get(key)
-            if found is not None:
-                return str(found)
-    return ""
-
-
-def preview_text(raw: Any) -> str:
-    if raw is None:
-        return ""
-    if isinstance(raw, dict):
-        raw = first_string(raw, ("preview", "content_preview", "content", "text", "body", "value"))
-    text = re.sub(r"\s+", " ", str(raw)).strip()
-    return text[:80]
-
-
-class MempalaceBridge:
-    """Call MemPalace MCP tools through an explicit command bridge."""
-
-    def __init__(self, command: str | None = None) -> None:
-        self.command = command or os.environ.get("PROJECT_BRAIN_MEMPALACE_BRIDGE", "").strip()
-
-    @property
-    def configured(self) -> bool:
-        return bool(self.command)
-
-    def _call(self, tool: str, args: dict[str, Any]) -> Any:
-        if not self.command:
-            raise MempalaceUnavailable(
-                "no PROJECT_BRAIN_MEMPALACE_BRIDGE command is configured; "
-                "this shell process cannot call in-session MCP tools directly"
-            )
-        cmd = shlex.split(self.command) + [tool, json.dumps(args, ensure_ascii=False)]
-        try:
-            proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=60)
-        except FileNotFoundError as exc:
-            raise MempalaceUnavailable(f"MemPalace bridge command not found: {cmd[0]}") from exc
-        except subprocess.TimeoutExpired as exc:
-            raise MempalaceUnavailable(f"MemPalace bridge timed out while calling {tool}") from exc
-        except Exception as exc:
-            raise MempalaceUnavailable(f"MemPalace bridge failed while calling {tool}: {exc}") from exc
-        if proc.returncode != 0:
-            detail = proc.stderr.strip() or proc.stdout.strip() or f"exit code {proc.returncode}"
-            raise MempalaceUnavailable(f"MemPalace bridge call {tool} failed: {detail}")
-        output = proc.stdout.strip()
-        if not output:
-            return None
-        try:
-            return json.loads(output)
-        except json.JSONDecodeError as exc:
-            raise MempalaceUnavailable(f"MemPalace bridge returned non-JSON output for {tool}: {output[:200]}") from exc
-
-    def list_rooms(self, wing: str) -> list[str]:
-        result = self._call("mempalace_list_rooms", {"wing": wing})
-        if isinstance(result, dict):
-            result = result.get("rooms", result.get("result", result.get("data", [])))
-        rooms: list[str] = []
-        if isinstance(result, list):
-            for item in result:
-                if isinstance(item, str):
-                    rooms.append(item)
-                elif isinstance(item, dict):
-                    name = first_string(item, ("room", "name", "room_name", "title", "id"))
-                    if name:
-                        rooms.append(name)
-        return rooms
-
-    def list_drawers(self, wing: str, room: str) -> list[Drawer]:
-        result = self._call("mempalace_list_drawers", {"wing": wing, "room": room})
-        if isinstance(result, dict):
-            result = result.get("drawers", result.get("result", result.get("data", [])))
-        drawers: list[Drawer] = []
-        if not isinstance(result, list):
-            return drawers
-        for item in result:
-            if isinstance(item, str):
-                drawers.append(Drawer(drawer_id=item, wing=wing, room=room, preview=""))
-                continue
-            if not isinstance(item, dict):
-                continue
-            drawer_id = first_string(item, ("drawer_id", "id", "drawerId", "uuid"))
-            if not drawer_id:
-                continue
-            item_wing = first_string(item, ("wing", "wing_name")) or wing
-            item_room = first_string(item, ("room", "room_name")) or room
-            drawers.append(Drawer(drawer_id=drawer_id, wing=item_wing, room=item_room, preview=preview_text(item)))
-        return drawers
-
-    def delete_drawer(self, drawer_id: str) -> None:
-        self._call("mempalace_delete_drawer", {"drawer_id": drawer_id})
-
-
-def collect_mempalace_drawers(client: MempalaceBridge, wing: str) -> tuple[list[str], list[Drawer]]:
-    rooms = client.list_rooms(wing)
-    drawers: list[Drawer] = []
-    for room in rooms:
-        drawers.extend(client.list_drawers(wing, room))
-    return rooms, drawers
-
-
-def print_mempalace_plan(drawers: list[Drawer], rooms: list[str]) -> None:
-    print(f"MemPalace wing rooms: {len(rooms)}")
-    if not drawers:
-        print("MemPalace drawers: 0")
-        return
-    print(f"MemPalace drawers that would be deleted: {len(drawers)}")
-    for drawer in drawers:
-        preview = drawer.preview or "(no preview returned)"
-        print(f"  - id={drawer.drawer_id} wing={drawer.wing} room={drawer.room} preview={preview}")
-
-
-def maybe_prompt_local_only() -> bool:
-    print("MemPalace is unavailable. Local-only deletion can still remove .brain/ and graphify-out/.")
-    if not sys.stdin.isatty():
-        print("Non-interactive shell detected. Re-run with --local-only --confirm to delete only local brain files.")
-        return False
-    try:
-        answer = input("Proceed with local-only deletion instead? Type 'local-only' to continue: ").strip()
-    except EOFError:
-        return False
-    return answer == "local-only"
-
-
 @dataclass
 class DryRunResult:
-    wing: str
-    wing_source: str
-    mempalace_available: bool
-    mempalace_error: str | None
-    rooms: list[str]
-    drawers: list[Drawer]
     brain_files: int
     brain_size: int
     graph_files: int
     graph_size: int
+    claude_md_block: bool
+    snippet: bool
 
 
-def dry_run(root: Path, *, mempalace_only: bool, local_only: bool) -> DryRunResult:
-    wing, wing_source = resolve_wing_name(root)
+def dry_run(root: Path) -> DryRunResult:
     brain = root / ".brain"
     graph = root / "graphify-out"
+    claude_md = root / "CLAUDE.md"
+    snippet = root / "CLAUDE.project-brain.snippet.md"
 
     print("Project Brain reset preview")
     print(f"Project root: {root}")
-    print(f"Resolved MemPalace wing: {wing} ({wing_source})")
     print()
 
-    rooms: list[str] = []
-    drawers: list[Drawer] = []
-    mempalace_error: str | None = None
-    mempalace_available = False
-
-    if local_only:
-        print("MemPalace: skipped (--local-only)")
+    brain_files, brain_size = directory_stats(brain)
+    graph_files, graph_size = directory_stats(graph)
+    if brain.exists():
+        print(f".brain/: {brain_files} files, {format_size(brain_size)}")
     else:
+        print(".brain/: not found (skipped)")
+    if graph.exists():
+        print(f"graphify-out/: {graph_files} files, {format_size(graph_size)}")
+    else:
+        print("graphify-out/: not found (skipped)")
+
+    has_block = False
+    if claude_md.exists():
         try:
-            client = MempalaceBridge()
-            rooms, drawers = collect_mempalace_drawers(client, wing)
-            mempalace_available = True
-            print_mempalace_plan(drawers, rooms)
-        except MempalaceUnavailable as exc:
-            mempalace_error = str(exc)
-            print(f"⚠ MemPalace unavailable: {mempalace_error}")
-            print("  No MemPalace drawers were enumerated or deleted.")
-        except Exception as exc:
-            mempalace_error = f"unexpected MemPalace error: {exc}"
-            print(f"⚠ {mempalace_error}")
-            print("  No MemPalace drawers were enumerated or deleted.")
+            has_block = "<!-- project-brain:begin -->" in claude_md.read_text(encoding="utf-8")
+        except OSError:
+            has_block = False
+    print(f"CLAUDE.md '# Project Brain' block: {'present' if has_block else 'not found'}")
+    print(f"CLAUDE.project-brain.snippet.md: {'present' if snippet.exists() else 'not found'}")
     print()
-
-    brain_files = brain_size = graph_files = graph_size = 0
-    if mempalace_only:
-        print("Local files: skipped (--mempalace-only)")
-    else:
-        brain_files, brain_size = directory_stats(brain)
-        graph_files, graph_size = directory_stats(graph)
-        if brain.exists():
-            print(f".brain/: {brain_files} files, {format_size(brain_size)}")
-        else:
-            print(".brain/: not found (skipped)")
-        if graph.exists():
-            print(f"graphify-out/: {graph_files} files, {format_size(graph_size)}")
-        else:
-            print("graphify-out/: not found (skipped)")
+    print("MemPalace: handled by the /project-brain:reset skill via MCP tools, not by this script.")
     print()
-
-    drawer_summary = str(len(drawers)) if mempalace_available or local_only else "unknown"
-    print(f"Summary: {drawer_summary} drawers, {brain_files} wiki files, {graph_files} graph files would be deleted")
-    print("Run with --confirm to execute deletion. This is irreversible.")
+    print(
+        f"Summary: {brain_files} brain files, {graph_files} graph files would be deleted; "
+        f"CLAUDE.md block {'present' if has_block else 'absent'}, snippet {'present' if snippet.exists() else 'absent'}"
+    )
 
     return DryRunResult(
-        wing=wing,
-        wing_source=wing_source,
-        mempalace_available=mempalace_available,
-        mempalace_error=mempalace_error,
-        rooms=rooms,
-        drawers=drawers,
         brain_files=brain_files,
         brain_size=brain_size,
         graph_files=graph_files,
         graph_size=graph_size,
+        claude_md_block=has_block,
+        snippet=snippet.exists(),
     )
+
+
+def strip_brain_block_from_claude_md(root: Path) -> None:
+    """Remove the Project Brain block injected by scaffold_brain.py from root CLAUDE.md."""
+    claude_md = root / "CLAUDE.md"
+    if not claude_md.exists():
+        return
+    text = claude_md.read_text(encoding="utf-8")
+    begin = "<!-- project-brain:begin -->"
+    end = "<!-- project-brain:end -->"
+    if begin not in text:
+        return
+    lines = text.splitlines(keepends=True)
+    start_idx = None
+    end_idx = None
+    for i, line in enumerate(lines):
+        if line.strip() == begin and start_idx is None:
+            start_idx = i
+        elif line.strip() == end and start_idx is not None:
+            end_idx = i
+            break
+    if start_idx is None:
+        return
+    if end_idx is not None:
+        result = "".join(lines[:start_idx] + lines[end_idx + 1:]).rstrip("\n")
+    else:
+        result = "".join(lines[:start_idx]).rstrip("\n")
+    if result:
+        result += "\n"
+    claude_md.write_text(result, encoding="utf-8")
+    print("✓ Project Brain block removed from CLAUDE.md")
+
+
+def remove_project_brain_snippet(root: Path) -> None:
+    snippet = root / "CLAUDE.project-brain.snippet.md"
+    if snippet.exists():
+        snippet.unlink()
+        print("✓ CLAUDE.project-brain.snippet.md removed")
 
 
 def remove_directory(path: Path, label: str) -> bool:
     if not path.exists():
         print(f"- {label} not found; skipped")
-        return False
+        return True
     try:
         shutil.rmtree(path)
     except Exception as exc:
@@ -364,20 +164,9 @@ def remove_directory(path: Path, label: str) -> bool:
     return True
 
 
-def confirmed_reset(root: Path, *, mempalace_only: bool, local_only: bool) -> int:
-    result = dry_run(root, mempalace_only=mempalace_only, local_only=local_only)
+def confirmed_reset(root: Path) -> int:
+    dry_run(root)
     print()
-
-    effective_local_only = local_only
-    if not local_only and not result.mempalace_available:
-        if mempalace_only:
-            print("Cannot continue: --mempalace-only was requested but MemPalace is unavailable.")
-            return 2
-        if maybe_prompt_local_only():
-            effective_local_only = True
-        else:
-            print("Reset aborted before deleting anything.")
-            return 2
 
     wait_seconds = 5
     raw_wait = os.environ.get("PROJECT_BRAIN_RESET_WAIT_SECONDS")
@@ -386,58 +175,39 @@ def confirmed_reset(root: Path, *, mempalace_only: bool, local_only: bool) -> in
             wait_seconds = max(0, int(raw_wait))
         except ValueError:
             wait_seconds = 5
-    print("Proceeding with deletion in 5 seconds. Press Ctrl+C to abort.")
-    try:
-        time.sleep(wait_seconds)
-    except KeyboardInterrupt:
-        print("\nReset aborted. Nothing else was deleted.")
-        return 130
+    if wait_seconds:
+        print(f"Proceeding with deletion in {wait_seconds} seconds. Press Ctrl+C to abort.")
+        try:
+            time.sleep(wait_seconds)
+        except KeyboardInterrupt:
+            print("\nReset aborted. Nothing else was deleted.")
+            return 130
 
-    deleted_drawers = 0
-    failed_drawers: list[str] = []
-    if effective_local_only:
-        print("- MemPalace skipped (--local-only)")
-    else:
-        client = MempalaceBridge()
-        for drawer in result.drawers:
-            try:
-                client.delete_drawer(drawer.drawer_id)
-                deleted_drawers += 1
-            except Exception as exc:
-                failed_drawers.append(drawer.drawer_id)
-                print(f"✗ Failed to delete drawer {drawer.drawer_id}: {exc}")
-        print(f"✓ MemPalace wing cleared ({deleted_drawers} drawers deleted)")
-        if failed_drawers:
-            print(f"⚠ {len(failed_drawers)} drawer deletion(s) failed: {', '.join(failed_drawers)}")
+    failed: list[str] = []
+    if not remove_directory(root / ".brain", ".brain/"):
+        failed.append(str(root / ".brain"))
+    if not remove_directory(root / "graphify-out", "graphify-out/"):
+        failed.append(str(root / "graphify-out"))
+    strip_brain_block_from_claude_md(root)
+    remove_project_brain_snippet(root)
 
-    if mempalace_only:
-        print("- .brain/ skipped (--mempalace-only)")
-        print("- graphify-out/ skipped (--mempalace-only)")
-    else:
-        remove_directory(root / ".brain", ".brain/")
-        remove_directory(root / "graphify-out", "graphify-out/")
-
-    if effective_local_only:
-        print("Local brain reset complete. MemPalace was left intact. Run project-brain-init to start fresh.")
-    elif failed_drawers:
-        print("Brain reset finished with MemPalace deletion failures. The wing may still exist until failed drawers are removed.")
-    else:
-        print("Brain reset complete. The project wing no longer exists in MemPalace. Run project-brain-init to start fresh.")
-    if failed_drawers:
+    if failed:
+        print(f"✗ Reset incomplete. The following paths could not be removed:")
+        for p in failed:
+            print(f"  {p}")
         return 1
+
+    print("Local brain reset complete. Run /project-brain:brain to initialize a fresh brain.")
     return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="project-brain-reset",
-        description="Safely delete a project brain.",
+        description="Delete the local layers of a project brain (.brain/, graphify-out/, CLAUDE.md block).",
         add_help=True,
     )
     parser.add_argument("path", nargs="?", default=".", help="Project root directory (default: current directory)")
-    mode = parser.add_mutually_exclusive_group()
-    mode.add_argument("--mempalace-only", action="store_true", help="Delete only the MemPalace wing, keep local files")
-    mode.add_argument("--local-only", action="store_true", help="Delete only .brain/ and graphify-out/, keep MemPalace")
     parser.add_argument("--dry-run", action="store_true", help="Preview what would be deleted (default behavior)")
     parser.add_argument("--confirm", action="store_true", help="Execute deletion (irreversible)")
     return parser
@@ -452,8 +222,9 @@ def main(argv: list[str] | None = None) -> int:
         if not root.exists() or not root.is_dir():
             raise ResetError(f"project root does not exist or is not a directory: {root}")
         if args.confirm:
-            return confirmed_reset(root, mempalace_only=args.mempalace_only, local_only=args.local_only)
-        dry_run(root, mempalace_only=args.mempalace_only, local_only=args.local_only)
+            return confirmed_reset(root)
+        dry_run(root)
+        print("Run with --confirm to execute deletion. This is irreversible.")
         return 0
     except ResetError as exc:
         eprint(f"error: {exc}")

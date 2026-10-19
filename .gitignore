@@ -1,1 +1,39 @@
-Nothing should be ignored since only a test file (.py) was modified and no build artifacts, dependencies, or temporary files were present in the changes.
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+*.egg-info/
+
+# Test/benchmark output
+bench/results/
+results/
+
+# Local runtime and assistant config
+.openclaude/
+.claude/
+CLAUDE.local.md
+CLAUDE.project-brain.snippet.md
+.mcp.json
+.settings.local.json
+
+# Brain artifacts generated in this repo
+.brain/
+graphify-out/
+
+# Secrets and environment
+.env
+.env.*
+*.pem
+*.key
+credentials.json
+secrets.json
+
+# Editors and OS
+.vscode/
+.idea/
+*.swp
+.DS_StoreCLAUDE.md

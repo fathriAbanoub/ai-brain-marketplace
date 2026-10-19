@@ -119,24 +119,35 @@ def completeness(root: Path) -> tuple[int, str]:
     if not pages:
         return 0, "0/0 pages fully formed"
     idx = index_text(root)
-    full = 0
+    total_points = 0
+    max_points = 0
+    # Weights: title/heading=2, type=1, wikilink=1, indexed=2, status=1 (sources optional — new pages start empty)
+    weights = [2, 1, 1, 2, 1]
     for p in pages:
         text = read(p)
         fm = extract_frontmatter(text)
-        sources = fm.get("sources", [])
-        has_sources = isinstance(sources, list) and len([s for s in sources if str(s).strip()]) > 0
         checks = [
             bool(fm.get("title") or re.search(r"^#\s+", text, re.M)),
             bool(fm.get("type")),
-            bool(fm.get("status")),
-            has_sources,
             bool(WIKILINK_RE.search(text)),
             page_in_index(p, root, idx),
+            bool(fm.get("status")),
         ]
-        if all(checks):
-            full += 1
-    score = round(full / len(pages) * 100)
-    return score, f"{full}/{len(pages)} pages fully formed"
+        page_points = sum(w for w, c in zip(weights, checks) if c)
+        total_points += page_points
+        max_points += sum(weights)
+    score = round(total_points / max_points * 100) if max_points else 0
+    full = sum(
+        1 for p in pages
+        if (lambda t, fm: all([
+            bool(fm.get("title") or re.search(r"^#\s+", t, re.M)),
+            bool(fm.get("type")),
+            bool(WIKILINK_RE.search(t)),
+            page_in_index(p, root, idx),
+            bool(fm.get("status")),
+        ]))(read(p), extract_frontmatter(read(p)))
+    )
+    return score, f"{full}/{len(pages)} pages fully formed (weighted score)"
 
 
 def freshness(root: Path) -> tuple[int, str]:

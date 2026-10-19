@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-project-brain-reset — safely delete a project brain
+project-brain-reset — delete the local files of a project brain
 
 Usage:
   project-brain-reset [path] [options]
@@ -12,23 +12,21 @@ Arguments:
   path        Project root directory (default: current directory)
 
 Options:
-  --dry-run          Preview what would be deleted (default behavior)
-  --confirm          Execute deletion (irreversible)
-  --mempalace-only   Delete only the MemPalace wing, keep local files
-  --local-only       Delete only .brain/ and graphify-out/, keep MemPalace
-  --help             Show this message
+  --dry-run   Preview what would be deleted (default behavior)
+  --confirm   Execute deletion (irreversible)
+  --help      Show this message
 
 What gets deleted:
-  - MemPalace wing for this project (all drawers, all rooms)
   - .brain/ directory (wiki, state, logs, raw refs)
   - graphify-out/ directory (dependency graph)
+  - the "# Project Brain" block in root CLAUDE.md
+  - CLAUDE.project-brain.snippet.md
 
 What is NEVER deleted:
   - Your project source code
-  - Other projects' MemPalace wings
+  - MemPalace drawers (the /project-brain:reset skill deletes those via MCP)
 
-The project wing in MemPalace will cease to exist after all its drawers
-are removed. You can start fresh immediately with project-brain-init.
+You can start fresh immediately with project-brain-init.
 EOF
 }
 

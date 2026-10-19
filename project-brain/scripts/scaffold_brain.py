@@ -9,8 +9,16 @@ from __future__ import annotations
 
 import argparse
 import sys
+import re
 from datetime import date, datetime
 from pathlib import Path
+
+
+def sanitize_wing_name(raw: str) -> str:
+    normalized = raw.strip().lower()
+    normalized = re.sub(r"[^a-z0-9._-]+", "-", normalized)
+    normalized = re.sub(r"-+", "-", normalized).strip("-._")
+    return normalized or "project-brain"
 
 
 def is_under(path: Path, parent: Path) -> bool:
@@ -70,18 +78,19 @@ def append_log(brain: Path, op: str, title: str, bullets: list[str]) -> None:
 
 def merge_root_claude(project_root: Path, snippet: str) -> None:
     claude_md = project_root / "CLAUDE.md"
+    marked = f"<!-- project-brain:begin -->\n{snippet.strip()}\n<!-- project-brain:end -->\n"
     if claude_md.exists():
         text = claude_md.read_text(encoding="utf-8")
-        if "# Project Brain" in text:
+        if "<!-- project-brain:begin -->" in text:
             print("brain snippet already present in CLAUDE.md")
             return
         with claude_md.open("a", encoding="utf-8") as f:
             if not text.endswith("\n"):
                 f.write("\n")
-            f.write("\n" + snippet.strip() + "\n")
+            f.write("\n" + marked)
         print("appended brain snippet to CLAUDE.md")
     else:
-        claude_md.write_text(snippet.strip() + "\n", encoding="utf-8")
+        claude_md.write_text(marked, encoding="utf-8")
         print("wrote: CLAUDE.md")
 
 
@@ -110,11 +119,38 @@ def scaffold(project_root: Path, title: str, force: bool = False) -> None:
 
     installed_line = "MemPalace is already installed as a plugin. graphify is already installed as a CLI tool and skill. Do not reinstall either."
 
-    brain_schema = f"""# {title} Project Brain
+    wing_name = sanitize_wing_name(title)
+
+    # Reuse existing wing name if .brain/CLAUDE.md already has one
+    brain_claude = brain / "CLAUDE.md"
+    if brain_claude.exists():
+        existing_text = brain_claude.read_text(encoding="utf-8")
+        for line in existing_text.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("mempalace_wing:"):
+                existing_wing = stripped.split(":", 1)[1].strip()
+                if existing_wing:
+                    wing_name = existing_wing
+                    break
+
+    # Fallback: ensure wing_name is never empty
+    if not wing_name:
+        import hashlib
+        wing_name = "project-" + hashlib.sha1(str(project_root).encode()).hexdigest()[:8]
+
+    brain_schema = f"""---
+mempalace_wing: {wing_name}
+---
+
+# {title} Project Brain
 
 > Operating schema for the project brain. Read this at the start of every serious session together with `.brain/state/session-brief.md`, `.brain/wiki/index.md`, and `graphify-out/GRAPH_REPORT.md` if present.
 
 Created: {today}
+
+## MemPalace namespace
+
+All MemPalace operations for this project use wing: `{wing_name}`. Never write to a different wing for this project.
 
 ## Environment
 

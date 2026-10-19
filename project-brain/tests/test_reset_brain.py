@@ -50,7 +50,7 @@ class TestResetBrain:
         brain = scaffolded_project
         project_dir = brain.parent
         
-        # Run without MemPalace bridge configured
+        # Run without any MemPalace integration available
         result = run_script("reset_brain.py", [str(project_dir), "--dry-run"])
         
         # Should not crash - just report MemPalace unavailable
@@ -65,7 +65,7 @@ class TestResetBrain:
         
         assert result.returncode == 0
         # Should show wing information
-        assert "wing" in result.stdout.lower() or "MemPalace wing" in result.stdout
+        assert "MemPalace" in result.stdout
 
     def test_no_brain_directory_error(self, run_script, tmp_project: Path):
         """Gracefully reports missing .brain, no traceback."""
@@ -79,24 +79,27 @@ class TestResetBrain:
         # Should mention brain directory issue
         assert result.returncode != 0 or ".brain" in result.stdout or "not found" in result.stdout.lower()
 
-    def test_dry_run_local_only_flag(self, run_script, scaffolded_project: Path):
-        """--local-only flag works with --dry-run."""
+    def test_dry_run_reports_mempalace_handled_by_skill(self, run_script, scaffolded_project: Path):
+        """Dry-run says MemPalace is the skill's job, not the script's."""
         brain = scaffolded_project
         project_dir = brain.parent
-        
-        result = run_script("reset_brain.py", [str(project_dir), "--dry-run", "--local-only"])
-        
-        assert result.returncode == 0
-        assert "local-only" in result.stdout.lower() or "skipped" in result.stdout.lower()
 
-    def test_dry_run_mempalace_only_flag(self, run_script, scaffolded_project: Path):
-        """--mempalace-only flag works with --dry-run."""
+        result = run_script("reset_brain.py", [str(project_dir), "--dry-run"])
+
+        assert result.returncode == 0
+        assert "mempalace" in result.stdout.lower()
+        assert "skill" in result.stdout.lower()
+
+    def test_dry_run_reports_claude_md_block(self, run_script, scaffolded_project: Path):
+        """Dry-run reports whether the injected CLAUDE.md block is present."""
         brain = scaffolded_project
         project_dir = brain.parent
-        
-        result = run_script("reset_brain.py", [str(project_dir), "--dry-run", "--mempalace-only"])
-        
+
+        result = run_script("reset_brain.py", [str(project_dir), "--dry-run"])
+
         assert result.returncode == 0
+        assert "# Project Brain" in result.stdout
+        assert "snippet" in result.stdout.lower()
 
     def test_dry_run_shows_file_counts(self, run_script, scaffolded_project: Path):
         """Output shows file counts for directories."""

@@ -31,6 +31,19 @@ At the start of any serious project-brain session:
 project-brain-init <project-root> "<Project Name>"
 ```
 
+If `project-brain-init` is not on PATH (exit code 127), find the plugin root and run the script directly:
+
+```bash
+# Option 1: use the OpenClaude plugin cache path
+PLUGIN_ROOT="$(ls -d ~/.openclaude/plugins/cache/ai-brain-marketplace/project-brain/*/  2>/dev/null | sort -V | tail -1)"
+"$PLUGIN_ROOT/bin/project-brain-init" <project-root> "<Project Name>"
+
+# Option 2: use the marketplace repo directly
+~/.openclaude/plugins/marketplaces/ai-brain-marketplace/project-brain/bin/project-brain-init <project-root> "<Project Name>"
+```
+
+The same fallback applies to all `project-brain-*` commands: replace the bare command with `$PLUGIN_ROOT/bin/<command>` or the full marketplace path.
+
 4. Read `.brain/state/session-brief.md` if present.
 5. Read `.brain/wiki/index.md` if present.
 6. Read `graphify-out/GRAPH_REPORT.md` before architecture, code navigation, or broad relationship questions if it exists.
@@ -97,19 +110,22 @@ Use brain reset only when the user explicitly requests deletion or a clean slate
 Do **not** reset the entire brain when a smaller repair is enough:
 
 - If the wiki only needs normal updating, re-compile the affected wiki pages from primary sources instead.
-- If MemPalace only needs to be regenerated from a still-valid wiki, use `project-brain-reset <project-root> --mempalace-only --dry-run`, then confirm the MemPalace-only reset before re-mining.
+- If MemPalace only needs to be regenerated from a still-valid wiki, delete the wing's drawers yourself with the MCP tools (see the `/project-brain:reset` skill, Step 2), then re-mine. Leave `.brain/` alone.
 - If a single wiki page is wrong, fix that page and run the post-wiki loop; do not delete the whole brain.
 
 Brain reset is irreversible. `.brain/`, `graphify-out/`, and MemPalace drawer deletions cannot be undone. The project source code must never be deleted or modified by a reset.
 
 Correct sequence when a user requests brain deletion:
 
-1. Run `project-brain-reset <project-root> --dry-run` and show the output to the user.
-2. Ask the user to confirm they have read the dry-run output and want to proceed.
-3. Only after explicit user confirmation, run `project-brain-reset <project-root> --confirm`.
-4. After reset completes, offer to immediately run `project-brain-init <project-root> "<Project Name>"` to start fresh.
+1. Read the wing name from `.brain/CLAUDE.md` (`mempalace_wing`), before any file deletion.
+2. Delete every drawer in that wing using the MCP tools: `mempalace_list_rooms` → `mempalace_list_drawers` → `mempalace_delete_drawer`. Report how many were deleted.
+3. Run `project-brain-reset <project-root> --dry-run` and show the output.
+4. Only after explicit user confirmation, run `project-brain-reset <project-root> --confirm`.
+5. After reset completes, offer to immediately run `project-brain-init <project-root> "<Project Name>"` to start fresh.
 
-The reset script resolves the MemPalace wing from `.brain/CLAUDE.md` or `.brain/state/session-brief.md` frontmatter and falls back to the sanitized project directory name. It clears MemPalace drawer-by-drawer, then removes `.brain/`, then removes `graphify-out/`. If MemPalace MCP is unreachable from the shell runtime, stop and explain that local-only deletion can be performed with `--local-only`, but do not pretend remote drawers were deleted.
+The reset script handles local files only (`.brain/`, `graphify-out/`, the injected `CLAUDE.md` block, and the snippet). It has no MemPalace access — MCP tools exist in the agent session, not in a subprocess. If the MCP tools are missing, stop and say so; never report drawers as deleted when they were not.
+
+See the `/project-brain:reset` skill for the full procedure.
 
 ## Operation modes
 

@@ -44,7 +44,7 @@ This is a test audit item.
         assert result.returncode == 0
         # Should detect the open item
         output_lower = result.stdout.lower()
-        assert "error" in output_lower or "TEST-001" in result.stdout or "open" in output_lower
+        assert "TEST-001" in result.stdout
 
     def test_audit_done_items_only(self, run_script, scaffolded_project: Path):
         """--resolved mode shows only resolved items."""
@@ -75,7 +75,7 @@ This is a resolved audit item.
         
         assert result.returncode == 0
         # Should find the resolved item
-        assert "DONE-001" in result.stdout or "resolved" in result.stdout.lower()
+        assert "DONE-001" in result.stdout
 
     def test_audit_mode_all(self, run_script, scaffolded_project: Path):
         """--all mode shows both open and resolved items."""
@@ -180,7 +180,7 @@ Default mode test.
         assert result.returncode == 0
         # Default should be open mode
         output_lower = result.stdout.lower()
-        assert "open" in output_lower or "DEFAULT-001" in result.stdout
+        assert "DEFAULT-001" in result.stdout
 
     def test_audit_severity_ordering(self, run_script, scaffolded_project: Path):
         """Output shows ERROR before WARN before SUGGEST before INFO."""

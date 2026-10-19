@@ -60,8 +60,9 @@ def openclaude_plugin_version(plugin_key: str) -> str:
 def plugin_brain_version() -> str:
     """Read version from the plugin.json of the ai-brain-marketplace plugin."""
     candidates = [
+        Path.home() / ".openclaude" / "plugins" / "marketplaces" / "ai-brain-marketplace" / "project-brain" / ".claude-plugin" / "plugin.json",
         Path.home() / ".openclaude" / "plugins" / "marketplaces" / "ai-brain-marketplace" / ".claude-plugin" / "plugin.json",
-        Path(__file__).parent.parent / "plugin.json",
+        Path(__file__).parent.parent / ".claude-plugin" / "plugin.json",
     ]
     for p in candidates:
         if p.exists():
@@ -75,47 +76,70 @@ def plugin_brain_version() -> str:
 
 def main() -> int:
     outdated = False
+    unavailable = False
     print("project-brain update check\n")
 
     # --- project-brain plugin ---
     brain_ver = plugin_brain_version()
+    installed_path = Path.home() / ".openclaude" / "plugins" / "marketplaces" / "ai-brain-marketplace"
     print(f"project-brain plugin:  installed={brain_ver}")
-    print("  (no public registry — check https://github.com/your-org/ai-brain-marketplace for releases)")
+    print(f"  (local marketplace — check {installed_path} for the latest version)")
     print()
 
     # --- mempalace ---
     mempalace_cache = openclaude_plugin_version("mempalace/mempalace")
     rc, mempalace_bin = run("mempalace", "--version")
-    bin_ver = mempalace_bin.split()[-1] if rc == 0 and mempalace_bin else "not on PATH"
+    bin_ver = mempalace_bin.split()[-1] if rc == 0 and mempalace_bin else None
     latest_mp = pypi_latest("mempalace")
     print(f"mempalace:")
     print(f"  plugin cache:  {mempalace_cache}")
-    print(f"  binary:        {bin_ver}")
+    if bin_ver:
+        print(f"  binary:        {bin_ver}")
+    else:
+        print(f"  binary:        not on PATH")
+        unavailable = True
     print(f"  PyPI latest:   {latest_mp}")
-    if not latest_mp.startswith("error") and bin_ver not in ("not on PATH",) and latest_mp != bin_ver:
+    if latest_mp.startswith("error"):
+        print(f"  ⚠  PyPI check failed — update status unknown")
+        unavailable = True
+    elif bin_ver and latest_mp != bin_ver:
         print(f"  ⚠  binary is behind PyPI — run: uv tool install mempalace")
         outdated = True
-    elif not latest_mp.startswith("error"):
+    elif bin_ver:
         print(f"  ✓  binary is current")
+    if not bin_ver and not latest_mp.startswith("error") and mempalace_cache not in ("not installed",):
+        if latest_mp != mempalace_cache:
+            print(f"  ⚠  plugin cache ({mempalace_cache}) may be behind PyPI ({latest_mp})")
+            outdated = True
     print()
 
     # --- graphify ---
     rc, graphify_bin = run("graphify", "--version")
-    graphify_ver = graphify_bin.split()[-1] if rc == 0 and graphify_bin else "not on PATH"
+    graphify_ver = graphify_bin.split()[-1] if rc == 0 and graphify_bin else None
     latest_gf = pypi_latest("graphifyy")  # double-y is the package name
     print(f"graphify:")
-    print(f"  binary:        {graphify_ver}")
+    if graphify_ver:
+        print(f"  binary:        {graphify_ver}")
+    else:
+        print(f"  binary:        not on PATH")
+        unavailable = True
     print(f"  PyPI latest:   {latest_gf}  (package: graphifyy)")
-    if not latest_gf.startswith("error") and graphify_ver not in ("not on PATH",) and latest_gf != graphify_ver:
+    if latest_gf.startswith("error"):
+        print(f"  ⚠  PyPI check failed — update status unknown")
+        unavailable = True
+    elif graphify_ver and latest_gf != graphify_ver:
         print(f"  ⚠  binary is behind PyPI — run: uv tool install graphifyy")
         outdated = True
-    elif not latest_gf.startswith("error"):
+    elif graphify_ver:
         print(f"  ✓  binary is current")
     print()
 
     if outdated:
         print("Some tools are outdated. Review the update commands above.")
         return 1
+    if unavailable:
+        print("Some checks could not be completed (binary not on PATH or PyPI unavailable).")
+        return 2
     print("All tools are current.")
     return 0
 

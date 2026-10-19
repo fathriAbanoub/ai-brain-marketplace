@@ -31,7 +31,7 @@ Use the skill for first-time graph builds, broad relationship analysis, architec
 Use for targeted operations:
 
 ```bash
-graphify build <path>                    # build or rebuild graph from source
+graphify extract <path>                  # build or rebuild graph from source
 graphify update <path>                   # incremental AST update (no API cost)
 graphify query "<question>"              # natural language query over the graph
 graphify path "<NodeA>" "<NodeB>"        # shortest path between two nodes
@@ -40,6 +40,8 @@ graphify report <path>                   # generate GRAPH_REPORT.md
 ```
 
 ### MCP server mode
+
+Install graphify with MCP support: `uv tool install "graphifyy[mcp]"`. The base install does not include the MCP server.
 
 graphify-mcp is registered in `~/.mcp.json` and loads automatically in OpenClaude sessions. It serves MCP tools over stdio, using `graphify-out/graph.json` relative to the session's working directory.
 
@@ -144,7 +146,7 @@ Inferred relationships are leads until verified from source files.
 If graphify MCP tools are missing from the session:
 
 1. Check that `graphify-out/graph.json` exists in the project root. If not, run `graphify build .` first.
-2. Check that `~/.mcp.json` has a `graphify` entry pointing to `/home/bobaayad/.local/bin/graphify-mcp`.
+2. Check that `~/.mcp.json` has a `graphify` entry pointing to the result of `which graphify-mcp`.
 3. Fall back to shell commands (`graphify query`, `graphify path`, `graphify report`) for the same queries.
 4. Fall back to reading `graphify-out/GRAPH_REPORT.md` directly for structural overviews.
 

@@ -34,7 +34,7 @@ PLUGIN_ROOT="$(ls -d ~/.openclaude/plugins/cache/ai-brain-marketplace/project-br
 | Check | Severity |
 |-------|----------|
 | Missing required frontmatter fields | error |
-| Broken wikilinks (target page doesn't exist) | warning |
+| Broken wikilinks (target page doesn't exist) | error |
 | Page not listed in index.md | warning |
 | Duplicate page titles | error |
 | Empty wiki pages | warning |

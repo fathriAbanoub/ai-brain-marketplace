@@ -16,25 +16,52 @@ The script handles local files only. MemPalace deletion is YOUR job using MCP to
 grep "mempalace_wing" <project-root>/.brain/CLAUDE.md
 ```
 
-If the file doesn't exist or the key isn't there, derive the wing name using the **same rule as `sanitize_wing_name` in `scaffold_brain.py`**: lowercase, replace runs of characters outside `[a-z0-9._-]` with a single hyphen, collapse repeated hyphens, strip leading/trailing `-._`.
+If the file is missing or `mempalace_wing` is absent, **do not infer the wing from the directory name**. Instead:
 
-Example: `ambient-studio_brain-test` → `ambient-studio_brain-test` (underscore preserved)
-
-If the directory name yields nothing, try the wing names `mempalace_list_wings` returns that contain a distinctive substring of the project directory name. Report exactly which wing name you used.
+1. Call `mempalace_list_wings` and show the user the full list.
+2. Ask the user to identify which wing belongs to this project.
+3. Do not proceed until the user confirms the wing name.
 
 ---
 
 ## Step 2 — Delete MemPalace drawers (YOU DO THIS, NOT THE SCRIPT)
 
-Call these MCP tools in sequence. Do not skip this step.
+### 2a — Preview and confirm
+
+Before deleting anything, enumerate all drawers:
 
 1. `mempalace_list_rooms` → `{ "wing": "<wing-name>" }`
-2. For each room returned: `mempalace_list_drawers` → `{ "wing": "<wing-name>", "room": "<room-name>" }`
-3. For each drawer returned: `mempalace_delete_drawer` → `{ "drawer_id": "<id>" }`
+2. For each room: `mempalace_list_drawers` → `{ "wing": "<wing-name>", "room": "<room-name>", "limit": 100, "offset": 0 }`
+   - If the result returns exactly `limit` drawers, call again with `offset` incremented by `limit` and collect more. Repeat until a page returns fewer than `limit` results.
+3. Collect every drawer ID across all pages and all rooms.
+
+Show the user:
+- Wing name
+- Number of rooms
+- Total drawer count
+- A short sample of drawer IDs (up to 5)
+
+Ask: **"Delete all N drawers from wing `<wing-name>`? (yes/no)"**
+
+Do not call `mempalace_delete_drawer` until the user says yes. If the user says no, skip all drawer deletion and go to Step 3, but note that the wing will not be cleared.
+
+### 2b — Delete
+
+For each collected drawer ID, call:
+- `mempalace_delete_drawer` → `{ "drawer_id": "<id>" }`
+
+Track failures. If any deletion fails:
+1. Report the failed drawer IDs.
+2. **Do not proceed to Step 3 (local file deletion).**
+3. Preserve `.brain/CLAUDE.md` — it contains the wing name needed for a retry.
+4. Ask the user: "N drawer(s) failed to delete. Retry, skip failed drawers and continue, or abort?"
+   - Retry: attempt the failed IDs again, then re-evaluate.
+   - Skip and continue: proceed to Step 3, but note the wing is partially populated.
+   - Abort: stop here. Nothing local has been deleted yet.
+
+If `mempalace_list_rooms` returns empty or the wing does not exist, note that and continue to Step 3 without calling any delete tools.
 
 Report total drawers deleted before moving on.
-
-If `mempalace_list_rooms` returns empty or the wing doesn't exist, note that and continue.
 
 ---
 
@@ -52,14 +79,14 @@ PLUGIN_ROOT="$(ls -d ~/.openclaude/plugins/cache/ai-brain-marketplace/project-br
 "$PLUGIN_ROOT/bin/project-brain-reset" <project-root> --confirm
 ```
 
-The script deletes `.brain/`, `graphify-out/`, strips the `# Project Brain` block from root `CLAUDE.md`, and removes `CLAUDE.project-brain.snippet.md`.
+The script deletes `.brain/`, `graphify-out/`, strips the injected block from root `CLAUDE.md`, and removes `CLAUDE.project-brain.snippet.md`.
 
 ---
 
 ## Step 4 — Report
 
 Tell the user:
-- How many MemPalace drawers were deleted (or that the wing was already empty)
+- How many MemPalace drawers were deleted (or that the wing was already empty, or that deletion was skipped)
 - Whether `.brain/` was removed
 - Whether `graphify-out/` was removed
 - Whether the CLAUDE.md block was stripped

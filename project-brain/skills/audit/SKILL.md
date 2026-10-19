@@ -26,7 +26,7 @@ PLUGIN_ROOT="$(ls -d ~/.openclaude/plugins/cache/ai-brain-marketplace/project-br
 ## What it shows
 
 - Open audit items in `.brain/audit/` (unresolved contradictions, flagged claims, open questions)
-- Items already resolved in `.brain/audit/resolved/`
+- Resolved items are in `.brain/audit/resolved/` — pass `--resolved` to see them, `--all` for both
 
 ## Audit lifecycle
 
@@ -39,10 +39,15 @@ PLUGIN_ROOT="$(ls -d ~/.openclaude/plugins/cache/ai-brain-marketplace/project-br
 
 ```markdown
 ---
+id: AUDIT-001
+severity: error
+target: wiki/architecture/System Overview.md
+author: agent
+created: 2026-10-19
 status: open
-claim: "<what was claimed>"
-source: "<where the claim came from>"
-conflict: "<what contradicts it>"
+claim: "The API gateway routes all requests"
+source: ".brain/raw/notes/architecture-notes.md"
+conflict: "graphify output shows direct service-to-service calls bypassing the gateway"
 ---
 
 ## Verification needed

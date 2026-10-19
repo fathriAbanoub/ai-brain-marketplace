@@ -56,4 +56,4 @@ graphify update .
 - **OpenClaude**: mempalace runs as a plugin. The binary on PATH and the plugin cache version should match. After upgrading the binary, restart OpenClaude to pick up the new version.
 - **Claude Code**: mempalace runs as an MCP server. After upgrading, restart Claude Code.
 
-See `references/harness-detection.md` for how to detect which harness you're in.
+See `../brain/references/harness-detection.md` for how to detect which harness you're in.

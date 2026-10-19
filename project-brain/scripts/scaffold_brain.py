@@ -9,8 +9,16 @@ from __future__ import annotations
 
 import argparse
 import sys
+import re
 from datetime import date, datetime
 from pathlib import Path
+
+
+def sanitize_wing_name(raw: str) -> str:
+    normalized = raw.strip().lower()
+    normalized = re.sub(r"[^a-z0-9._-]+", "-", normalized)
+    normalized = re.sub(r"-+", "-", normalized).strip("-._")
+    return normalized or "project-brain"
 
 
 def is_under(path: Path, parent: Path) -> bool:
@@ -110,11 +118,21 @@ def scaffold(project_root: Path, title: str, force: bool = False) -> None:
 
     installed_line = "MemPalace is already installed as a plugin. graphify is already installed as a CLI tool and skill. Do not reinstall either."
 
-    brain_schema = f"""# {title} Project Brain
+    wing_name = sanitize_wing_name(title)
+
+    brain_schema = f"""---
+mempalace_wing: {wing_name}
+---
+
+# {title} Project Brain
 
 > Operating schema for the project brain. Read this at the start of every serious session together with `.brain/state/session-brief.md`, `.brain/wiki/index.md`, and `graphify-out/GRAPH_REPORT.md` if present.
 
 Created: {today}
+
+## MemPalace namespace
+
+All MemPalace operations for this project use wing: `{wing_name}`. Never write to a different wing for this project.
 
 ## Environment
 

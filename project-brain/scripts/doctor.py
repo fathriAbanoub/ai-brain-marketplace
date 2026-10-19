@@ -144,6 +144,7 @@ def completeness(root: Path) -> tuple[int, str]:
             bool(fm.get("type")),
             bool(WIKILINK_RE.search(t)),
             page_in_index(p, root, idx),
+            bool(fm.get("status")),
         ]))(read(p), extract_frontmatter(read(p)))
     )
     return score, f"{full}/{len(pages)} pages fully formed (weighted score)"

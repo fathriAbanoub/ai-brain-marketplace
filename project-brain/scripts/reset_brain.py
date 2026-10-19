@@ -90,7 +90,7 @@ def dry_run(root: Path) -> DryRunResult:
     has_block = False
     if claude_md.exists():
         try:
-            has_block = any(line.strip() == "# Project Brain" for line in claude_md.read_text(encoding="utf-8").splitlines())
+            has_block = "<!-- project-brain:begin -->" in claude_md.read_text(encoding="utf-8")
         except OSError:
             has_block = False
     print(f"CLAUDE.md '# Project Brain' block: {'present' if has_block else 'not found'}")
@@ -119,22 +119,25 @@ def strip_brain_block_from_claude_md(root: Path) -> None:
     if not claude_md.exists():
         return
     text = claude_md.read_text(encoding="utf-8")
-    if "# Project Brain" not in text:
+    begin = "<!-- project-brain:begin -->"
+    end = "<!-- project-brain:end -->"
+    if begin not in text:
         return
     lines = text.splitlines(keepends=True)
-    start = None
+    start_idx = None
+    end_idx = None
     for i, line in enumerate(lines):
-        if line.strip() == "# Project Brain":
-            start = i
+        if line.strip() == begin and start_idx is None:
+            start_idx = i
+        elif line.strip() == end and start_idx is not None:
+            end_idx = i
             break
-    if start is None:
+    if start_idx is None:
         return
-    end = len(lines)
-    for i in range(start + 1, len(lines)):
-        if lines[i].startswith("# ") and not lines[i].strip() == "# Project Brain":
-            end = i
-            break
-    result = "".join(lines[:start] + lines[end:]).rstrip("\n")
+    if end_idx is not None:
+        result = "".join(lines[:start_idx] + lines[end_idx + 1:]).rstrip("\n")
+    else:
+        result = "".join(lines[:start_idx]).rstrip("\n")
     if result:
         result += "\n"
     claude_md.write_text(result, encoding="utf-8")
@@ -148,16 +151,17 @@ def remove_project_brain_snippet(root: Path) -> None:
         print("✓ CLAUDE.project-brain.snippet.md removed")
 
 
-def remove_directory(path: Path, label: str) -> None:
+def remove_directory(path: Path, label: str) -> bool:
     if not path.exists():
         print(f"- {label} not found; skipped")
-        return
+        return True
     try:
         shutil.rmtree(path)
     except Exception as exc:
         print(f"✗ Failed to remove {label}: {exc}")
-        return
+        return False
     print(f"✓ {label} removed")
+    return True
 
 
 def confirmed_reset(root: Path) -> int:
@@ -179,10 +183,19 @@ def confirmed_reset(root: Path) -> int:
             print("\nReset aborted. Nothing else was deleted.")
             return 130
 
-    remove_directory(root / ".brain", ".brain/")
-    remove_directory(root / "graphify-out", "graphify-out/")
+    failed: list[str] = []
+    if not remove_directory(root / ".brain", ".brain/"):
+        failed.append(str(root / ".brain"))
+    if not remove_directory(root / "graphify-out", "graphify-out/"):
+        failed.append(str(root / "graphify-out"))
     strip_brain_block_from_claude_md(root)
     remove_project_brain_snippet(root)
+
+    if failed:
+        print(f"✗ Reset incomplete. The following paths could not be removed:")
+        for p in failed:
+            print(f"  {p}")
+        return 1
 
     print("Local brain reset complete. Run /project-brain:brain to initialize a fresh brain.")
     return 0

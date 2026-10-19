@@ -1,39 +1,78 @@
 # graphify Workflow
 
-graphify is installed and its SKILL.md is registered. Use it via the `/graphify` skill trigger or shell commands.
+graphify is installed as both a CLI tool and an MCP server (graphify 0.9.92+). Use it via `/graphify` skill, shell commands, or MCP tools depending on the task.
 
-MemPalace is already installed as a plugin. graphify is already installed as a CLI tool and skill. Do not reinstall either.
+## Finding the binary
+
+```bash
+which graphify          # usually ~/.local/bin/graphify
+which graphify-mcp      # usually ~/.local/bin/graphify-mcp
+graphify --version      # verify installed version
+```
+
+If not on PATH, check:
+- `~/.local/bin/graphify` (uv tool install location)
+- `~/.local/share/uv/tools/graphifyy/bin/graphify` (uv isolated env)
+
+Note: graphify is installed via `uv tool install graphifyy` (double-y package name on PyPI). The binaries are named `graphify` and `graphify-mcp` without the extra y.
 
 ## Invocation modes
 
 ### Skill mode
 
-Use skill mode when the agent should run the full graphify pipeline with its own instructions:
+Use the skill for first-time graph builds, broad relationship analysis, architecture mapping, and when the user asks how pieces connect:
 
 ```text
 /graphify <path>
 ```
 
-Use this for first-time graph builds, broad relationship analysis, architecture mapping, and when the user asks how pieces connect.
-
 ### Shell mode
 
-Use shell mode for targeted operations in bash:
+Use for targeted operations:
 
 ```bash
-graphify <subcommand>
+graphify build <path>                    # build or rebuild graph from source
+graphify update <path>                   # incremental AST update (no API cost)
+graphify query "<question>"              # natural language query over the graph
+graphify path "<NodeA>" "<NodeB>"        # shortest path between two nodes
+graphify explain "<concept>"             # explain a concept using graph context
+graphify report <path>                   # generate GRAPH_REPORT.md
 ```
 
-Use this when the task requires a specific graphify operation, such as querying an existing graph, refreshing output, or merging graphs.
+### MCP server mode
+
+graphify-mcp is registered in `~/.mcp.json` and loads automatically in OpenClaude sessions. It serves MCP tools over stdio, using `graphify-out/graph.json` relative to the session's working directory.
+
+**If MCP tools are not present in the session:**
+
+The server needs a `graph.json` to exist at `graphify-out/graph.json` in the project root. If it doesn't exist yet:
+
+```bash
+graphify build .                # builds graphify-out/graph.json
+```
+
+Then restart the MCP server (restart OpenClaude or reconnect). The graphify-mcp server can also be started manually for a specific graph:
+
+```bash
+graphify-mcp graphify-out/graph.json          # stdio transport (default)
+graphify-mcp --graph graphify-out/graph.json  # equivalent
+```
+
+**MCP tools exposed by graphify-mcp** (use `graphify_*` prefix in tool calls — exact names depend on the server version; check the available tools list in the current session):
+
+- Query tools: search nodes, traverse edges, find paths between nodes
+- Analysis tools: identify god nodes, orphaned modules, community clusters
+- Report tools: generate summaries and relationship maps
+
+When graphify MCP tools are available in the session, prefer them over shell commands for interactive queries — they return structured data rather than text output.
 
 ## What graphify owns
 
-graphify owns generated graph artifacts such as:
+graphify owns generated graph artifacts:
 
-- `graphify-out/graph.html`
-- `graphify-out/graph.json`
-- `graphify-out/GRAPH_REPORT.md`
-- graphify cache/output files
+- `graphify-out/graph.json` — the graph data
+- `graphify-out/graph.html` — interactive visualization
+- `graphify-out/GRAPH_REPORT.md` — human-readable report
 
 The brain plugin does not duplicate those files.
 
@@ -41,24 +80,26 @@ The brain plugin does not duplicate those files.
 
 The brain plugin owns the durable synthesis of graph findings:
 
-- summaries in `.brain/wiki/architecture/`,
-- concept pages in `.brain/wiki/concepts/`,
-- decision records in `.brain/wiki/decisions/`,
-- open questions and verification leads in `.brain/wiki/open-questions.md`,
-- session handoff notes in `.brain/state/session-brief.md`.
+- summaries in `.brain/wiki/architecture/`
+- concept pages in `.brain/wiki/concepts/`
+- decision records in `.brain/wiki/decisions/`
+- open questions and verification leads in `.brain/wiki/open-questions.md`
+- session handoff notes in `.brain/state/session-brief.md`
 
 The brain links to graphify output and summarizes stable findings. It does not paste the entire graph report into the wiki.
 
-## Build graph
+## When to run graphify
 
 Run graphify when:
 
-- a new project brain is initialized,
-- code or docs changed significantly,
-- the user asks how systems connect,
-- a wiki page needs architecture evidence,
-- the agent is lost in the codebase,
-- two project brains need a cross-repo map.
+- a new project brain is initialized
+- code or docs changed significantly
+- the user asks how systems connect
+- a wiki page needs architecture evidence
+- the agent is lost in the codebase
+- two project brains need a cross-repo map
+
+For incremental updates after editing code files in a session: `graphify update .` (AST-only, no API cost).
 
 Before a full build, review `.graphifyignore` so caches, generated files, secrets, raw binaries, and noisy folders do not pollute the graph.
 
@@ -66,13 +107,13 @@ Before a full build, review `.graphifyignore` so caches, generated files, secret
 
 Use graphify for:
 
-- code navigation,
-- architecture maps,
-- dependency relationships,
-- identifying god nodes,
-- finding bridge files between subsystems,
-- detecting isolated or orphaned areas,
-- suggesting new questions.
+- code navigation
+- architecture maps
+- dependency relationships
+- identifying god nodes
+- finding bridge files between subsystems
+- detecting isolated or orphaned areas
+- suggesting new questions
 
 Do not reinvent graphify with custom file-parsing scripts. When the question is about relationships, ask graphify.
 
@@ -98,3 +139,13 @@ Use this hierarchy:
 
 Inferred relationships are leads until verified from source files.
 
+## Failure handling
+
+If graphify MCP tools are missing from the session:
+
+1. Check that `graphify-out/graph.json` exists in the project root. If not, run `graphify build .` first.
+2. Check that `~/.mcp.json` has a `graphify` entry pointing to `/home/bobaayad/.local/bin/graphify-mcp`.
+3. Fall back to shell commands (`graphify query`, `graphify path`, `graphify report`) for the same queries.
+4. Fall back to reading `graphify-out/GRAPH_REPORT.md` directly for structural overviews.
+
+Never grep the source tree manually to answer relationship questions that graphify can answer.

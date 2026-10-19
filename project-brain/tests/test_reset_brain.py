@@ -65,7 +65,7 @@ class TestResetBrain:
         
         assert result.returncode == 0
         # Should show wing information
-        assert "wing" in result.stdout.lower() or "MemPalace wing" in result.stdout
+        assert "MemPalace" in result.stdout
 
     def test_no_brain_directory_error(self, run_script, tmp_project: Path):
         """Gracefully reports missing .brain, no traceback."""

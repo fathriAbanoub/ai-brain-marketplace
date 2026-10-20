@@ -85,6 +85,43 @@ def read_enabled_plugins() -> set[str]:
     return set()
 
 
+GRAPH_REPORT_REL = Path("graphify-out") / "GRAPH_REPORT.md"
+# graphify writes short hashes; 7 is git's own minimum abbreviation length.
+MIN_COMMIT_HASH_LEN = 7
+COMMIT_LINE_RE = re.compile(r"Built from commit:\s*`([0-9a-fA-F]+)`")
+
+
+def graphify_freshness(root: Path) -> tuple[str, str]:
+    """Return ("fresh"|"stale", reason) for the graphify graph in `root`."""
+    report = root / GRAPH_REPORT_REL
+    if not report.exists():
+        return "stale", f"{GRAPH_REPORT_REL} missing"
+    match = COMMIT_LINE_RE.search(read(report))
+    if not match:
+        return "stale", "no 'Built from commit:' line in report"
+    recorded = match.group(1)
+    if len(recorded) < MIN_COMMIT_HASH_LEN:
+        return "stale", f"recorded commit hash too short: {recorded!r}"
+    try:
+        head = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True, timeout=5
+        ).stdout.strip()
+        # ponytail: dirty check via porcelain over tracked files; untracked files
+        # don't change the graph, so -uno is correct here.
+        dirty = subprocess.run(
+            ["git", "status", "--porcelain", "-uno"], cwd=root, capture_output=True, text=True, timeout=5
+        ).stdout.strip()
+    except (FileNotFoundError, subprocess.SubprocessError) as exc:
+        return "stale", f"git unavailable: {exc}"
+    if not head:
+        return "stale", "not a git repository"
+    if not head.startswith(recorded):
+        return "stale", f"graph built at {recorded}, HEAD is {head[:len(recorded)]}"
+    if dirty:
+        return "stale", "uncommitted changes to tracked files"
+    return "fresh", f"graph matches {recorded}"
+
+
 def graphify_version() -> tuple[bool, str]:
     try:
         proc = subprocess.run(["graphify", "--version"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=5)
@@ -309,11 +346,16 @@ def main(argv: list[str]) -> int:
     print("  (MCP tool availability during sessions depends on OpenClaude runtime — "
           "settings.json reflects install state only)")
 
-    report = root / "graphify-out" / "GRAPH_REPORT.md"
+    report = root / GRAPH_REPORT_REL
     if report.exists():
         print(f"✓ graphify report exists: {rel(report, root)}")
     else:
-        print("⚠ graphify-out/GRAPH_REPORT.md missing")
+        print(f"⚠ {GRAPH_REPORT_REL} missing")
+    freshness, freshness_note = graphify_freshness(root)
+    if freshness == "fresh":
+        print(f"✓ graphify freshness: {freshness_note}")
+    else:
+        print(f"⚠ graphify stale: {freshness_note} — run `/graphify .`")
 
     if brain.exists():
         print_health(root)

@@ -14,6 +14,11 @@ from datetime import date, datetime
 from pathlib import Path
 
 
+# Wing name prefixes — change these constants if the convention changes.
+WIKI_WING_PREFIX = "wiki-"
+BRAIN_DIARY_PREFIX = "brain-"
+
+
 def sanitize_wing_name(raw: str) -> str:
     normalized = raw.strip().lower()
     normalized = re.sub(r"[^a-z0-9._-]+", "-", normalized)
@@ -21,18 +26,35 @@ def sanitize_wing_name(raw: str) -> str:
     return normalized or "project-brain"
 
 
+def wiki_wing_name(title: str) -> str:
+    """Return the canonical wiki wing name: wiki-<sanitized-title>."""
+    return WIKI_WING_PREFIX + sanitize_wing_name(title)
+
+
 def ensure_graphifyignore(project_root: Path) -> None:
-    """Ensure .graphifyignore excludes .brain/ and graphify-out/ (idempotent)."""
+    """Ensure .graphifyignore excludes .brain/ and graphify-out/ (idempotent).
+
+    Compares entries after stripping whitespace and a trailing slash so that
+    equivalent entries written by older scaffold runs are not duplicated.
+    Adds a leading newline before new entries if the file does not end with one.
+    """
     ignore_path = project_root / ".graphifyignore"
-    required_lines = {".brain/", "graphify-out/"}
-    existing = set()
-    if ignore_path.exists():
-        existing = set(ignore_path.read_text(encoding="utf-8").splitlines())
-    missing = required_lines - existing
-    if missing:
-        with open(ignore_path, "a", encoding="utf-8") as f:
-            for line in sorted(missing):
-                f.write(line + "\n")
+    # Required brain-specific exclusions — the only ones managed here.
+    required = {".brain/", "graphify-out/"}
+
+    existing_text = ignore_path.read_text(encoding="utf-8") if ignore_path.exists() else ""
+    # Normalise for comparison: strip whitespace + trailing slash.
+    existing_normalised = {line.strip().rstrip("/") for line in existing_text.splitlines()}
+
+    missing = [r for r in sorted(required) if r.rstrip("/") not in existing_normalised]
+    if not missing:
+        return
+
+    with open(ignore_path, "a", encoding="utf-8") as f:
+        if existing_text and not existing_text.endswith("\n"):
+            f.write("\n")
+        for line in missing:
+            f.write(line + "\n")
 
 
 def resolve_wing_name(root: Path) -> tuple[str, str]:
@@ -168,9 +190,10 @@ def scaffold(project_root: Path, title: str, force: bool = False) -> None:
 
     installed_line = "MemPalace is already installed as a plugin. graphify is already installed as a CLI tool and skill. Do not reinstall either."
 
-    wing_name = sanitize_wing_name(title)
+    # New brains use the canonical wiki-<slug> prefix.
+    wing_name = wiki_wing_name(title)
 
-    # Reuse existing wing name if .brain/CLAUDE.md already has one
+    # Reuse existing wing name if .brain/CLAUDE.md already has one (idempotent re-scaffold).
     brain_claude = brain / "CLAUDE.md"
     if brain_claude.exists():
         existing_text = brain_claude.read_text(encoding="utf-8")
@@ -185,7 +208,7 @@ def scaffold(project_root: Path, title: str, force: bool = False) -> None:
     # Fallback: ensure wing_name is never empty
     if not wing_name:
         import hashlib
-        wing_name = "project-" + hashlib.sha1(str(project_root).encode()).hexdigest()[:8]
+        wing_name = WIKI_WING_PREFIX + hashlib.sha1(str(project_root).encode()).hexdigest()[:8]
 
     brain_schema = f"""---
 mempalace_wing: {wing_name}
@@ -598,7 +621,9 @@ Updated: {now}
 """
     write_template(brain / "tasks" / "next-actions.md", next_actions, project_root, brain, force)
 
-    graphifyignore = """.git/
+    # Default .graphifyignore for new projects — write once, then ensure_graphifyignore
+    # keeps .brain/ and graphify-out/ present on re-runs (idempotent).
+    graphifyignore_template = """.git/
 .venv/
 venv/
 node_modules/
@@ -615,8 +640,12 @@ secrets/
 .brain/audit/
 .brain/state/
 .brain/outputs/
+.brain/
 graphify-out/
 """
+    write_template(project_root / ".graphifyignore", graphifyignore_template, project_root, brain, force)
+    # Idempotent guard: ensure .brain/ and graphify-out/ are present even on
+    # projects scaffolded before this version (does nothing if already present).
     ensure_graphifyignore(project_root)
 
     snippet = f"""# Project Brain

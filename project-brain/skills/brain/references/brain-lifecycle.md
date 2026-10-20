@@ -31,7 +31,7 @@ After creating or updating wiki pages, do not stop. Run this post-wiki checklist
    - Include context, options considered, consequences, status, and when to revisit.
 
 4. **Graph synchronization**
-   - **Run graphify only if the repo changed.** Check if `graphify-out/GRAPH_REPORT.md` exists and compare its recorded commit to `git rev-parse HEAD`. Run `/graphify .` only if: (a) no graph exists, OR (b) the git commit differs. Wiki edits alone do NOT change the repo — skip graphify for wiki-only changes. Run `graphify update .` for incremental AST updates after code edits (no API cost).
+   - **Run graphify only if the doctor says stale.** Run `project-brain-doctor <project-root>` and check the graphify freshness line. Run `/graphify .` only if it reports stale. Wiki edits alone do NOT change the repo — skip graphify for wiki-only changes. Run `graphify update .` for incremental AST updates after code edits (no API cost).
    - Read `graphify-out/GRAPH_REPORT.md`.
    - Promote stable graph findings into `.brain/wiki/architecture/` or `.brain/wiki/concepts/`.
    - Mark graph-only inferences as leads until confirmed from files or sources.

@@ -157,6 +157,68 @@ def test_gate_stale_with_no_commit_line(git_repo: Path):
     assert "Built from commit" in reason
 
 
+def test_gate_stale_with_new_untracked_source_file(git_repo: Path):
+    head = _git(git_repo, "rev-parse", "HEAD").strip()
+    _write_report(git_repo, head)
+    # New untracked source file — graphify indexes it, so the graph is stale.
+    (git_repo / "new_module.py").write_text("x = 1\n", encoding="utf-8")
+    status, reason = graphify_freshness(git_repo)
+    assert status == "stale"
+    assert "uncommitted" in reason
+
+
+def test_gate_fresh_with_untracked_brain_file(git_repo: Path):
+    head = _git(git_repo, "rev-parse", "HEAD").strip()
+    _write_report(git_repo, head)
+    # Untracked file under .brain/ — excluded from graph, so still fresh.
+    brain = git_repo / ".brain"
+    brain.mkdir()
+    (brain / "note.md").write_text("notes\n", encoding="utf-8")
+    status, reason = graphify_freshness(git_repo)
+    assert status == "fresh", reason
+
+
+def test_gate_fresh_with_tracked_brain_edit(git_repo: Path):
+    # Track a .brain/ file, then edit it — should still be fresh.
+    brain = git_repo / ".brain"
+    brain.mkdir()
+    page = brain / "page.md"
+    page.write_text("v1\n", encoding="utf-8")
+    _git(git_repo, "add", ".")
+    _git(git_repo, "commit", "-qm", "add brain page")
+    head = _git(git_repo, "rev-parse", "HEAD").strip()
+    _write_report(git_repo, head)
+    page.write_text("v2\n", encoding="utf-8")  # tracked edit, not committed
+    status, reason = graphify_freshness(git_repo)
+    assert status == "fresh", reason
+
+
+def test_gate_fresh_with_tracked_graphify_out_edit(git_repo: Path):
+    # Track graphify-out/, rewrite GRAPH_REPORT.md — should still be fresh.
+    out = git_repo / "graphify-out"
+    out.mkdir()
+    report = out / "GRAPH_REPORT.md"
+    head = _git(git_repo, "rev-parse", "HEAD").strip()
+    report.write_text(f"- Built from commit: `{head[:8]}`\n", encoding="utf-8")
+    _git(git_repo, "add", ".")
+    _git(git_repo, "commit", "-qm", "add graphify-out")
+    head = _git(git_repo, "rev-parse", "HEAD").strip()
+    # Rewrite the report to current HEAD (simulating a fresh graphify run).
+    report.write_text(f"- Built from commit: `{head[:8]}`\n", encoding="utf-8")
+    status, reason = graphify_freshness(git_repo)
+    assert status == "fresh", reason
+
+
+def test_gate_stale_with_tracked_source_edit(git_repo: Path):
+    head = _git(git_repo, "rev-parse", "HEAD").strip()
+    _write_report(git_repo, head)
+    # Edit a tracked source file without committing.
+    (git_repo / "a.txt").write_text("modified\n", encoding="utf-8")
+    status, reason = graphify_freshness(git_repo)
+    assert status == "stale"
+    assert "uncommitted" in reason
+
+
 # --- item 8: no undocumented MemPalace tool references ----------------------
 
 

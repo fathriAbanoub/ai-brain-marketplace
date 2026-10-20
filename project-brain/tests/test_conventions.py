@@ -17,6 +17,7 @@ from scaffold_brain import (  # noqa: E402
     sanitize_wing_name,
     wiki_wing_name,
 )
+from doctor import graphify_freshness  # noqa: E402
 
 TOOLS_DOC = PLUGIN_ROOT / "skills" / "brain" / "references" / "mempalace-tools.md"
 
@@ -87,24 +88,6 @@ def test_graphifyignore_idempotent_and_slash_insensitive(tmp_path: Path):
 
 # --- item 6: graphify gate ---------------------------------------------------
 
-GATE = """
-import subprocess, sys
-from pathlib import Path
-
-root = Path(sys.argv[1])
-report = root / "graphify-out" / "GRAPH_REPORT.md"
-if not report.exists():
-    print("run")
-    sys.exit(0)
-head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True).stdout.strip()
-recorded = ""
-for line in report.read_text(encoding="utf-8").splitlines():
-    if line.strip().lower().startswith("commit:"):
-        recorded = line.split(":", 1)[1].strip()
-        break
-print("skip" if recorded and recorded == head else "run")
-"""
-
 
 def _git(root: Path, *args: str) -> str:
     return subprocess.run(["git", *args], cwd=root, capture_output=True, text=True, check=True).stdout
@@ -123,30 +106,55 @@ def git_repo(tmp_path: Path) -> Path:
     return root
 
 
-def _gate(root: Path) -> str:
-    return subprocess.run([sys.executable, "-c", GATE, str(root)], capture_output=True, text=True, check=True).stdout.strip()
+def _write_report(root: Path, commit: str) -> None:
+    out = root / "graphify-out"
+    out.mkdir(exist_ok=True)
+    # Use the real graphify format: bullet + "Built from commit:" + short hash in backticks.
+    (out / "GRAPH_REPORT.md").write_text(
+        f"- Built from commit: `{commit[:8]}`\n", encoding="utf-8"
+    )
 
 
-def test_gate_runs_when_no_graph(git_repo: Path):
-    assert _gate(git_repo) == "run"
+def test_gate_stale_when_no_graph(git_repo: Path):
+    status, reason = graphify_freshness(git_repo)
+    assert status == "stale"
+    assert "missing" in reason
 
 
-def test_gate_skips_when_commit_unchanged(git_repo: Path):
+def test_gate_fresh_when_commit_unchanged(git_repo: Path):
     head = _git(git_repo, "rev-parse", "HEAD").strip()
-    out = git_repo / "graphify-out"
-    out.mkdir()
-    (out / "GRAPH_REPORT.md").write_text(f"commit: {head}\n", encoding="utf-8")
-    assert _gate(git_repo) == "skip"
+    _write_report(git_repo, head)
+    status, reason = graphify_freshness(git_repo)
+    assert status == "fresh", reason
 
 
-def test_gate_runs_when_commit_changed(git_repo: Path):
+def test_gate_stale_when_commit_changed(git_repo: Path):
     head = _git(git_repo, "rev-parse", "HEAD").strip()
-    out = git_repo / "graphify-out"
-    out.mkdir()
-    (out / "GRAPH_REPORT.md").write_text(f"commit: {head}\n", encoding="utf-8")
+    _write_report(git_repo, head)
     (git_repo / "a.txt").write_text("b\n", encoding="utf-8")
     _git(git_repo, "commit", "-qam", "change")
-    assert _gate(git_repo) == "run"
+    status, reason = graphify_freshness(git_repo)
+    assert status == "stale"
+    assert "HEAD" in reason or "graph built at" in reason
+
+
+def test_gate_stale_with_dirty_tree(git_repo: Path):
+    head = _git(git_repo, "rev-parse", "HEAD").strip()
+    _write_report(git_repo, head)
+    # Modify a tracked file without committing.
+    (git_repo / "a.txt").write_text("dirty\n", encoding="utf-8")
+    status, reason = graphify_freshness(git_repo)
+    assert status == "stale"
+    assert "uncommitted" in reason
+
+
+def test_gate_stale_with_no_commit_line(git_repo: Path):
+    out = git_repo / "graphify-out"
+    out.mkdir()
+    (out / "GRAPH_REPORT.md").write_text("# Report\nNo commit info here.\n", encoding="utf-8")
+    status, reason = graphify_freshness(git_repo)
+    assert status == "stale"
+    assert "Built from commit" in reason
 
 
 # --- item 8: no undocumented MemPalace tool references ----------------------

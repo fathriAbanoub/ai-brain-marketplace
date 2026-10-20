@@ -230,35 +230,30 @@ def memory_sync(root: Path) -> tuple[int, str]:
     return 0, "no evidence of recent MemPalace diary/preference write"
 
 
-def mempalace_wing_size(root: Path) -> tuple[str, str]:
-    """Report the resolved MemPalace wing size when an MCP bridge is available."""
+def mempalace_wing_check(root: Path) -> tuple[str, str]:
+    """Check the MemPalace wing name stored in .brain/CLAUDE.md.
+
+    Does not require MCP — reads the recorded wing name and validates that it
+    follows the canonical wiki-<slug> convention introduced in 0.8.0.
+    """
+    # ponytail: file-based only; MCP drawer count requires the agent session
     try:
         from scaffold_brain import (  # type: ignore
-            MempalaceBridge,
-            MempalaceUnavailable,
-            collect_mempalace_drawers,
+            WIKI_WING_PREFIX,
             resolve_wing_name,
         )
     except Exception as exc:
-        return "warning", f"unable to load MemPalace wing check: {exc}"
+        return "warning", f"unable to load scaffold_brain: {exc}"
 
     wing, source = resolve_wing_name(root)
-    try:
-        client = MempalaceBridge()
-        rooms, drawers = collect_mempalace_drawers(client, wing)
-    except MempalaceUnavailable as exc:
-        return "warning", f"wing={wing} ({source}), MemPalace unavailable: {exc}"
-    except Exception as exc:
-        return "warning", f"wing={wing} ({source}), MemPalace check failed: {exc}"
-
-    room_count = len(rooms)
-    drawer_count = len(drawers)
-    base = f"wing={wing} ({source}), rooms={room_count}, drawers={drawer_count}"
-    if drawer_count == 0:
-        return "warning", base + " — wing empty or never mined"
-    if drawer_count > 500:
-        return "info", base + " — unusually large; check whether source code was mined by mistake"
-    return "ok", base
+    if source == "derived":
+        return "warning", f"wing={wing} (derived — .brain/CLAUDE.md missing mempalace_wing)"
+    if not wing.startswith(WIKI_WING_PREFIX):
+        return "warning", (
+            f"wing={wing} ({source}) does not start with '{WIKI_WING_PREFIX}'; "
+            "re-scaffold or update mempalace_wing manually"
+        )
+    return "ok", f"wing={wing} ({source})"
 
 
 def print_health(root: Path) -> None:
@@ -322,9 +317,9 @@ def main(argv: list[str]) -> int:
 
     if brain.exists():
         print_health(root)
-        severity, wing_note = mempalace_wing_size(root)
+        severity, wing_note = mempalace_wing_check(root)
         glyph = {"ok": "✓", "warning": "⚠", "info": "ℹ"}.get(severity, "-")
-        print(f"{glyph} MemPalace wing size: {wing_note}")
+        print(f"{glyph} MemPalace wing: {wing_note}")
 
     return 0
 

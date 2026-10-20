@@ -233,7 +233,7 @@ def memory_sync(root: Path) -> tuple[int, str]:
 def mempalace_wing_size(root: Path) -> tuple[str, str]:
     """Report the resolved MemPalace wing size when an MCP bridge is available."""
     try:
-        from reset_brain import (  # type: ignore
+        from scaffold_brain import (  # type: ignore
             MempalaceBridge,
             MempalaceUnavailable,
             collect_mempalace_drawers,

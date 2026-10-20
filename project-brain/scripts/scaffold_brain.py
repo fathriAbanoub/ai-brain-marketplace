@@ -21,6 +21,55 @@ def sanitize_wing_name(raw: str) -> str:
     return normalized or "project-brain"
 
 
+def ensure_graphifyignore(project_root: Path) -> None:
+    """Ensure .graphifyignore excludes .brain/ and graphify-out/ (idempotent)."""
+    ignore_path = project_root / ".graphifyignore"
+    required_lines = {".brain/", "graphify-out/"}
+    existing = set()
+    if ignore_path.exists():
+        existing = set(ignore_path.read_text(encoding="utf-8").splitlines())
+    missing = required_lines - existing
+    if missing:
+        with open(ignore_path, "a", encoding="utf-8") as f:
+            for line in sorted(missing):
+                f.write(line + "\n")
+
+
+def resolve_wing_name(root: Path) -> tuple[str, str]:
+    """Resolve MemPalace wing name from project root. Returns (wing, source)."""
+    claude_md = root / "CLAUDE.md"
+    if claude_md.exists():
+        text = claude_md.read_text(encoding="utf-8")
+        m = re.search(r"mempalace_wing:\s*(\S+)", text)
+        if m:
+            return m.group(1), "CLAUDE.md"
+    brain_claude = root / ".brain" / "CLAUDE.md"
+    if brain_claude.exists():
+        text = brain_claude.read_text(encoding="utf-8")
+        m = re.search(r"mempalace_wing:\s*(\S+)", text)
+        if m:
+            return m.group(1), ".brain/CLAUDE.md"
+    wing = sanitize_wing_name(root.name)
+    return wing, "derived"
+
+
+class MempalaceUnavailable(Exception):
+    """Raised when MemPalace MCP is unavailable."""
+    pass
+
+
+class MempalaceBridge:
+    """Simple bridge to MemPalace MCP client."""
+
+    def __init__(self) -> None:
+        raise MempalaceUnavailable("MempalaceBridge requires MCP client - use doctor MCP mode")
+
+
+def collect_mempalace_drawers(client, wing: str) -> tuple[list[str], list[str]]:
+    """Collect rooms and drawers from MemPalace wing."""
+    raise MempalaceUnavailable("collect_mempalace_drawers requires MCP client")
+
+
 def is_under(path: Path, parent: Path) -> bool:
     try:
         path.relative_to(parent)
@@ -568,7 +617,7 @@ secrets/
 .brain/outputs/
 graphify-out/
 """
-    write_template(project_root / ".graphifyignore", graphifyignore, project_root, brain, force)
+    ensure_graphifyignore(project_root)
 
     snippet = f"""# Project Brain
 

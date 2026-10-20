@@ -207,7 +207,7 @@ Actions:
 
    **Memory sync below 70 (estimated):**
    - Write a MemPalace diary entry covering current project state, recent decisions, and active workstream.
-   - Call `mempalace_preferences_get` to verify known preferences are still current.
+   - Verify known preferences from wiki or `.brain/CLAUDE.md` are still current.
 
 3. After repairs, re-run `project-brain-lint <project-root>` and check that error count is zero.
 4. Log the scan: what was found, what was repaired, what was deferred.

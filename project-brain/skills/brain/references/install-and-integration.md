@@ -13,8 +13,7 @@ MemPalace is available as an OpenClaude plugin. Use MCP tools directly:
 - `mempalace_status`
 - `mempalace_search`
 - `mempalace_diary_write`
-- `mempalace_preferences_get`
-- `mempalace_preferences_set`
+- `mempalace_mine`
 
 Call `mempalace_status` before claiming anything about prior sessions or availability.
 

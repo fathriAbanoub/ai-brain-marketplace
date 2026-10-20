@@ -55,7 +55,7 @@ Examples:
 - naming conventions the user wants everywhere,
 - review cadence.
 
-Before writing a global preference, confirm it is not project-specific. Use `mempalace_preferences_get` before relying on a preference and `mempalace_preferences_set` after the user states a durable preference.
+Before writing a global preference, confirm it is not project-specific. Document durable preferences in the wiki or `.brain/CLAUDE.md` instead.
 
 ## Cross-repo graph maps
 

@@ -219,8 +219,7 @@ Steps:
 1. Call `mempalace_status`.
 2. Search MemPalace before making claims about previous work.
 3. Write a concise diary entry with `mempalace_diary_write` after substantial work, decisions, or context changes. Follow the diary entry minimum standard in `references/mempalace-workflow.md`.
-4. Store user preferences with `mempalace_preferences_set` when they should survive model switches.
-5. Convert stable memory into wiki pages, decisions, or `.brain/CLAUDE.md` preferences.
+4. Convert stable memory into wiki pages, decisions, or `.brain/CLAUDE.md` preferences.
 6. Never store secrets.
 
 ### Sync to Obsidian

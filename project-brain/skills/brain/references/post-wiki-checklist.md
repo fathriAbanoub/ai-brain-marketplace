@@ -9,7 +9,7 @@ Use this every time the agent writes or edits wiki pages.
 - [ ] Add or update decision records when choices were made.
 - [ ] Resolve open questions: for each question in `open-questions.md`, make a genuine attempt to answer it from the files already read. If the answer exists in any file you have access to, document it in the relevant wiki page and remove the question from open-questions.md. Only leave a question open if: (a) the answer requires reading a file not yet ingested, OR (b) the answer genuinely does not exist anywhere in the codebase. For case (a), name the specific file that needs to be read next. Never leave a question open if the answer is visible in a file you have already read.
 - [ ] Add uncertainties to `.brain/wiki/open-questions.md` (only genuine gaps that cannot be answered from available evidence).
-- [ ] **Run `/graphify .` from project root.** If graphify is not installed, run `uv tool install graphify` (note: single y) and retry. If it fails after install, log the error in the session log and add a `graphify-not-available` flag to the session brief. Do NOT skip this step silently — the health score and relationship accuracy depend on it.
+- [ ] **Run graphify only if the repo changed.** Check if `graphify-out/GRAPH_REPORT.md` exists and compare its recorded commit to `git rev-parse HEAD`. Run `/graphify .` only if: (a) no graph exists, OR (b) the git commit differs. Wiki edits alone do NOT change the repo — skip graphify for wiki-only changes. Run `graphify update .` for incremental AST updates (no API cost).
 - [ ] Update `.brain/state/session-brief.md` if project understanding changed.
 - [ ] Append a log entry in `.brain/log/YYYYMMDD.md`.
 

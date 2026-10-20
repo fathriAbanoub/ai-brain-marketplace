@@ -31,7 +31,7 @@ After creating or updating wiki pages, do not stop. Run this post-wiki checklist
    - Include context, options considered, consequences, status, and when to revisit.
 
 4. **Graph synchronization**
-   - If new code/docs/sources change project structure, run `/graphify .` or `graphify . --update` when available.
+   - **Run graphify only if the repo changed.** Check if `graphify-out/GRAPH_REPORT.md` exists and compare its recorded commit to `git rev-parse HEAD`. Run `/graphify .` only if: (a) no graph exists, OR (b) the git commit differs. Wiki edits alone do NOT change the repo — skip graphify for wiki-only changes. Run `graphify update .` for incremental AST updates after code edits (no API cost).
    - Read `graphify-out/GRAPH_REPORT.md`.
    - Promote stable graph findings into `.brain/wiki/architecture/` or `.brain/wiki/concepts/`.
    - Mark graph-only inferences as leads until confirmed from files or sources.
@@ -137,7 +137,7 @@ Goal: make relationships visible and queryable.
 Actions:
 
 1. Ensure `.graphifyignore` excludes noisy folders like `node_modules/`, `dist/`, vendor folders, caches, build outputs, and secrets.
-2. Run `/graphify .` for first build or `graphify . --update` for refresh.
+2. **Run graphify only if the repo changed.** Check if `graphify-out/GRAPH_REPORT.md` exists and compare its recorded commit to `git rev-parse HEAD`. Run `/graphify .` only if: (a) no graph exists, OR (b) the git commit differs. Run `graphify update .` for incremental AST-only updates (no API cost).
 3. Read `graphify-out/GRAPH_REPORT.md`.
 4. Identify god nodes, communities, surprising connections, and suggested questions.
 5. Update `.brain/wiki/architecture/System Overview.md` and related pages.
@@ -152,13 +152,16 @@ Done when:
 
 Goal: preserve session-specific context without bloating the wiki.
 
+Before any MemPalace call, read `references/mempalace-tools.md` for the complete 47-tool reference, policy table, and call recipes. Follow those recipes exactly — preflight check before writes, search before claims, diary format for entries.
+
 Actions:
 
-1. Search MemPalace before making claims about previous work.
-2. Store diary entries after meaningful changes.
-3. Store user preferences that should survive model switches.
-4. Convert stable facts from memory into wiki pages or decisions.
-5. Do not store secrets or full raw dumps.
+1. Call `mempalace_status` (preflight). If `vector_disabled` is true, skip writes and tell the user to run `mempalace repair rebuild-index`.
+2. Search MemPalace before making claims about previous work (`mempalace_search`).
+3. Store diary entries after meaningful changes (follow diary format in `references/mempalace-tools.md`).
+4. Store user preferences that should survive model switches.
+5. Convert stable facts from memory into wiki pages or decisions.
+6. Do not store secrets or full raw dumps.
 
 Done when:
 

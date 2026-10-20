@@ -47,7 +47,7 @@ The same fallback applies to all `project-brain-*` commands: replace the bare co
 4. Read `.brain/state/session-brief.md` if present.
 5. Read `.brain/wiki/index.md` if present.
 6. Read `graphify-out/GRAPH_REPORT.md` before architecture, code navigation, or broad relationship questions if it exists.
-7. Check MemPalace before making claims about previous decisions, user preferences, or past work. Call `mempalace_status` when the tool is available, then use `mempalace_search` for relevant memory.
+7. Check MemPalace before making claims about previous decisions, user preferences, or past work. Before any MemPalace call, read `references/mempalace-tools.md` for the 47-tool reference, policy table, and call recipes. Call `mempalace_status` when the tool is available (preflight), then use `mempalace_search` for relevant memory.
 8. If Obsidian MCP tools are available, note that the brain wiki can be synced to the vault. Do not sync automatically — wait for the user to request it.
 9. If a tool is not available in the current session, say exactly which layer is unavailable and continue from the remaining layers.
 
@@ -294,7 +294,7 @@ Every time wiki pages change, perform this loop unless impossible:
 2. Add cross-links and backlinks.
 3. Extract decisions.
 4. **Resolve open questions**: For each question in `open-questions.md`, make a genuine attempt to answer it from the files already read. If the answer exists in any file you have access to, document it in the relevant wiki page and remove the question from open-questions.md. Only leave a question open if: (a) the answer requires reading a file not yet ingested, OR (b) the answer genuinely does not exist anywhere in the codebase. For case (a), name the specific file that needs to be read next. Never leave a question open if the answer is visible in a file you have already read.
-5. **Run `/graphify .` from project root.** If graphify is not installed, run `uv tool install graphify` (note: single y) and retry. If it fails after install, log the error in the session log and add a `graphify-not-available` flag to the session brief. Do NOT skip this step silently — the health score and relationship accuracy depend on it.
+5. **Run graphify only if the repo changed.** Check if `graphify-out/GRAPH_REPORT.md` exists and compare its recorded commit to `git rev-parse HEAD`. Run `/graphify .` only if: (a) no graph exists, OR (b) the git commit differs. For incremental AST-only updates after code edits, run `graphify update .` (no API cost). Skip graphify for wiki-only changes.
 6. Sync MemPalace if session memory changed.
 7. Record contradictions/open questions.
 8. Update session brief.

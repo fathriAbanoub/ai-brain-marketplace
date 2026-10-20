@@ -7,12 +7,14 @@ This document catalogs all 47 MemPalace MCP tools with their exact schemas, usag
 
 ## Tool Summary Table
 
+> Argument lists below are best-effort from MemPalace documentation — not verified against live schemas. [unverified] marks untested claims.
+
 | Tool | Description | Arguments | Access | Policy |
 |------|-------------|-----------|--------|--------|
-| status | Verify MemPalace is running and check index health | none | read | **USE** |
+| status | Check MemPalace is running and vector index health | none | read | **USE** |
 | list_wings | List all wings in the palace | none | read | **USE** |
 | list_rooms | List rooms within a wing | wing (required) | read | **USE** |
-| get_taxonomy | Get wing/room naming conventions | none | read | **USE** |
+| get_taxonomy | List all wings and rooms with drawer counts | none | read | **USE** |
 | get_aaak_spec | Read AAAK spec if configured | none | read | OPTIONAL |
 | search | Full-text + semantic search | query, wing?, room?, limit?, max_distance? | read | **USE** |
 | get_drawer | Read a specific drawer by ID | drawer_id | read | **USE** |
@@ -73,10 +75,13 @@ This document catalogs all 47 MemPalace MCP tools with their exact schemas, usag
 mempalace_status
 ```
 
-If the vector index is disabled or diverged:
+If `vector_disabled` is true:
 - Stop writing to MemPalace
 - Tell the user: "Run `mempalace repair rebuild-index` in a terminal with agents closed"
 - Continue brain work without MemPalace
+
+If `hnsw_capacity` shows divergence (current < expected):
+- The index is degraded; warn the user but continue — reads still work
 
 ### 2. Recall Before Claims (at wake-up/orient)
 
@@ -132,7 +137,6 @@ mempalace_diary_read({
 
 ## Wing Naming Constants
 
-Per D3 in the specification:
 - Wiki wing: `wiki-<project-slug>`
 - Diary agent: `brain-<project-slug>`
 
@@ -153,6 +157,6 @@ These tools were referenced in older documentation but are NOT in the 47-tool se
 ## Notes
 
 - The mine tool respects .gitignore by default. Use `include_ignored` if `.brain/` is gitignored.
-- Re-mining a directory replaces old drawers with new content (same wing/room).
+- Re-mining a directory replaces old drawers with new content (same wing/room). [unverified]
 - Deleted wiki pages leave stale drawers; deleting them requires user confirmation (ASK FIRST policy).
-- The vector index health check is in `mempalace_status` response under `index_enabled` and `index healthy`.
+- The vector index health check uses `vector_disabled` and `hnsw_capacity` from `mempalace_status`.

@@ -89,6 +89,9 @@ GRAPH_REPORT_REL = Path("graphify-out") / "GRAPH_REPORT.md"
 # graphify writes short hashes; 7 is git's own minimum abbreviation length.
 MIN_COMMIT_HASH_LEN = 7
 COMMIT_LINE_RE = re.compile(r"Built from commit:\s*`([0-9a-fA-F]+)`")
+# Paths that never affect the graph: brain metadata and graphify's own output.
+# git pathspec exclude syntax: ":(exclude)<path>".
+_DIRTY_EXCLUDES = [":(exclude).brain/", ":(exclude)graphify-out/"]
 
 
 def graphify_freshness(root: Path) -> tuple[str, str]:
@@ -106,10 +109,10 @@ def graphify_freshness(root: Path) -> tuple[str, str]:
         head = subprocess.run(
             ["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True, timeout=5
         ).stdout.strip()
-        # ponytail: dirty check via porcelain over tracked files; untracked files
-        # don't change the graph, so -uno is correct here.
+        # Dirty check: include untracked source files (they are indexed by the
+        # graph), but exclude .brain/ and graphify-out/ which never affect it.
         dirty = subprocess.run(
-            ["git", "status", "--porcelain", "-uno"], cwd=root, capture_output=True, text=True, timeout=5
+            ["git", "status", "--porcelain", "--", *_DIRTY_EXCLUDES], cwd=root, capture_output=True, text=True, timeout=5
         ).stdout.strip()
     except (FileNotFoundError, subprocess.SubprocessError) as exc:
         return "stale", f"git unavailable: {exc}"

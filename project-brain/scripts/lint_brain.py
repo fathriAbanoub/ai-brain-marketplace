@@ -252,6 +252,26 @@ def check_evidence_aging(root: Path, brain: Path, issues: list[dict]) -> None:
             )
 
 
+MIN_WIKI_PAGE_CHARS = 60
+
+
+def check_short_wiki_pages(root: Path, brain: Path, issues: list[dict]) -> None:
+    """Flag wiki pages too short to carry real knowledge (body, excluding frontmatter)."""
+    wiki = brain / "wiki"
+    if not wiki.exists():
+        return
+    for p in wiki.rglob("*.md"):
+        if p.name == "index.md":
+            continue
+        text = read(p)
+        m = FRONTMATTER_RE.match(text)
+        body = text[m.end():] if m else text
+        body_chars = len(re.sub(r"\s+", "", body))
+        if body_chars < MIN_WIKI_PAGE_CHARS:
+            add(issues, "suggest", "short_wiki_page", p, root,
+                f"page body is only {body_chars} chars (min {MIN_WIKI_PAGE_CHARS}); stub pages below this are not mined to MemPalace")
+
+
 def check_graph_report(root: Path, issues: list[dict]) -> None:
     report = root / "graphify-out" / "GRAPH_REPORT.md"
     if not report.exists():
@@ -443,6 +463,7 @@ def build_report(root: Path) -> tuple[int, dict]:
         check_session_brief_staleness(root, brain, issues)
         check_audit(root, brain, issues)
         check_evidence_aging(root, brain, issues)
+        check_short_wiki_pages(root, brain, issues)
         check_graph_report(root, issues)
         check_frontmatter_schema(root, brain, issues)
         check_contradictions(root, brain, issues)

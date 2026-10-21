@@ -1,6 +1,8 @@
 # MemPalace Workflow
 
-MemPalace is available as a connected plugin (mempalace 3.12.0, 47 MCP tools). Use its MCP tools directly — do not install or re-init.
+MemPalace is available as a connected plugin (mempalace 3.11.0, 47 MCP tools). Use its MCP tools directly — do not install or re-init.
+
+**Do not run `mempalace init` from this skill.** Init is an LLM-assisted operation that inspects the repository and writes palace structure; running it unattended inside a project-brain flow can rewrite wing/room taxonomy the brain depends on. If the palace is not initialized, stop and ask the user to run it themselves.
 
 ## Wing namespacing (critical)
 

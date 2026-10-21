@@ -1,6 +1,6 @@
 # Project Brain Lifecycle
 
-This is the canonical operating loop. The LLM Wiki is only one phase. A project brain is complete only when the wiki, MemPalace, graphify, logs, and handoff state are synchronized.
+This is the canonical operating loop. The LLM Wiki is only one phase. A project brain is complete only when the wiki, MemPalace, graphify, logs, and handoff state are aligned.
 
 ## Layer order
 
@@ -30,13 +30,13 @@ After creating or updating wiki pages, do not stop. Run this post-wiki checklist
    - If the source or conversation contains a durable choice, create or update `.brain/wiki/decisions/<Decision>.md`.
    - Include context, options considered, consequences, status, and when to revisit.
 
-4. **Graph synchronization**
+4. **Graph refresh**
    - **Run graphify only if the doctor says stale.** Run `project-brain-doctor <project-root>` and check the graphify freshness line. Run `/graphify .` only if it reports stale. Wiki edits alone do NOT change the repo — skip graphify for wiki-only changes. Run `graphify update .` for incremental AST updates after code edits (no API cost).
    - Read `graphify-out/GRAPH_REPORT.md`.
    - Promote stable graph findings into `.brain/wiki/architecture/` or `.brain/wiki/concepts/`.
    - Mark graph-only inferences as leads until confirmed from files or sources.
 
-5. **Memory synchronization**
+5. **Memory consolidation**
    - If MemPalace tools are available, write a concise diary entry with what changed, why, decisions, user preferences, and unresolved next steps.
    - If MemPalace recalls something important, compile it into wiki form instead of leaving it only in memory.
 
@@ -137,7 +137,7 @@ Goal: make relationships visible and queryable.
 Actions:
 
 1. Ensure `.graphifyignore` excludes noisy folders like `node_modules/`, `dist/`, vendor folders, caches, build outputs, and secrets.
-2. **Run graphify only if the repo changed.** Check if `graphify-out/GRAPH_REPORT.md` exists and compare its recorded commit to `git rev-parse HEAD`. Run `/graphify .` only if: (a) no graph exists, OR (b) the git commit differs. Run `graphify update .` for incremental AST-only updates (no API cost).
+2. **Run graphify only if the repo changed.** Run `doctor -f` (or `python scripts/doctor.py -f`) and check the "freshness" gate. If stale: run `/graphify .` for full rebuild OR `graphify update .` for AST-only incremental update (no API cost). The doctor gate checks: (a) no graph exists, OR (b) git commit differs, OR (c) uncommitted source files.
 3. Read `graphify-out/GRAPH_REPORT.md`.
 4. Identify god nodes, communities, surprising connections, and suggested questions.
 5. Update `.brain/wiki/architecture/System Overview.md` and related pages.
@@ -208,7 +208,7 @@ Actions:
    - List raw source files that have no wiki/sources/ summary page.
    - Create stub source summary pages for the top unreferenced raw files. A stub with title, type, status, and a one-line summary is better than nothing.
 
-   **Memory sync below 70 (estimated):**
+   **Memory consolidation below 70 (estimated):**
    - Write a MemPalace diary entry covering current project state, recent decisions, and active workstream.
    - Verify known preferences from wiki or `.brain/CLAUDE.md` are still current.
 

@@ -16,7 +16,7 @@ Use this every time the agent writes or edits wiki pages.
 ## Conditional
 
 - [ ] Read `graphify-out/GRAPH_REPORT.md` and promote stable findings into the wiki.
-- [ ] Write a MemPalace diary entry if the session created durable context. Follow the diary entry minimum standard in `references/mempalace-workflow.md`.
+- [ ] Consolidate MemPalace memory: write a diary entry if the session created durable context. Follow the diary entry minimum standard in `references/mempalace-workflow.md`.
 - [ ] Search MemPalace before summarizing prior decisions or preferences.
 - [ ] Run `project-brain-lint <project-root>` after large edits.
 - [ ] Create audit notes for uncertain claims that need later review.

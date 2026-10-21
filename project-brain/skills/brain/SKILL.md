@@ -47,7 +47,7 @@ The same fallback applies to all `project-brain-*` commands: replace the bare co
 4. Read `.brain/state/session-brief.md` if present.
 5. Read `.brain/wiki/index.md` if present.
 6. Read `graphify-out/GRAPH_REPORT.md` before architecture, code navigation, or broad relationship questions if it exists.
-7. Check MemPalace before making claims about previous decisions, user preferences, or past work. Before any MemPalace call, read `references/mempalace-tools.md` for the 47-tool reference, policy table, and call recipes. Call `mempalace_status` when the tool is available (preflight), then use `mempalace_search` for relevant memory. **Never call `mempalace_sync`** — it bulk-ingests gitignored files (secrets, caches) into the palace; use the `mine .brain/wiki` recipe instead and only with user confirmation.
+7. Check MemPalace before making claims about previous decisions, user preferences, or past work. Before any MemPalace call, read `references/mempalace-tools.md` for the 47-tool reference, policy table, and call recipes. Call `mempalace_status` when the tool is available (preflight), then use `mempalace_search` for relevant memory. **Never call `mempalace_sync` without explicit user confirmation** — sync prunes drawers whose source files are gitignored or deleted; if `.brain/` is gitignored, it would delete all wiki memories. Check with `git check-ignore .brain` first. Use Recipe 3 (`mine .brain/wiki`) for normal wiki updates.
 8. If Obsidian MCP tools are available, note that the brain wiki can be mirrored to the vault (vault mirror). Do not mirror automatically — wait for the user to request it.
 9. If a tool is not available in the current session, say exactly which layer is unavailable and continue from the remaining layers.
 

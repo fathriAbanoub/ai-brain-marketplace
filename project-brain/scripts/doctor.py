@@ -92,6 +92,7 @@ COMMIT_LINE_RE = re.compile(r"Built from commit:\s*`([0-9a-fA-F]+)`")
 # Paths that never affect the graph: brain metadata and graphify's own output.
 # git pathspec exclude syntax: ":(exclude)<path>".
 _DIRTY_EXCLUDES = [":(exclude).brain/", ":(exclude)graphify-out/"]
+MAX_DIRTY_LINES = 3  # How many porcelain lines to include in stale reason
 
 
 def graphify_freshness(root: Path) -> tuple[str, str]:
@@ -121,7 +122,9 @@ def graphify_freshness(root: Path) -> tuple[str, str]:
     if not head.startswith(recorded):
         return "stale", f"graph built at {recorded}, HEAD is {head[:len(recorded)]}"
     if dirty:
-        return "stale", "uncommitted changes to tracked files"
+        dirty_lines = dirty.splitlines()[:MAX_DIRTY_LINES]
+        lines_str = "; ".join(dirty_lines)
+        return "stale", f"uncommitted changes to source files: {lines_str}"
     return "fresh", f"graph matches {recorded}"
 
 
@@ -291,7 +294,9 @@ def mempalace_wing_check(root: Path) -> tuple[str, str]:
     if not wing.startswith(WIKI_WING_PREFIX):
         return "warning", (
             f"wing={wing} ({source}) does not start with '{WIKI_WING_PREFIX}'; "
-            "re-scaffold or update mempalace_wing manually"
+            "to migrate: use mempalace_update_drawer to move drawers to the new wing name, "
+            "then update mempalace_wing in .brain/CLAUDE.md — "
+            "re-scaffolding alone preserves the old wing name"
         )
     return "ok", f"wing={wing} ({source})"
 

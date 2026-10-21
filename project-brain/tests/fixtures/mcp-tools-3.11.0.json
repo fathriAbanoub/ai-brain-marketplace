@@ -1,0 +1,485 @@
+{
+  "add_drawer": {
+    "properties": [
+      "added_by",
+      "content",
+      "room",
+      "source_file",
+      "wing"
+    ],
+    "required": [
+      "content",
+      "room",
+      "wing"
+    ]
+  },
+  "artifact_get": {
+    "properties": [
+      "artifact_id"
+    ],
+    "required": [
+      "artifact_id"
+    ]
+  },
+  "artifact_put": {
+    "properties": [
+      "content",
+      "created_by",
+      "kind",
+      "metadata"
+    ],
+    "required": [
+      "content",
+      "created_by",
+      "kind"
+    ]
+  },
+  "check_duplicate": {
+    "properties": [
+      "content",
+      "threshold"
+    ],
+    "required": [
+      "content"
+    ]
+  },
+  "checkpoint": {
+    "properties": [
+      "added_by",
+      "dedup_threshold",
+      "diary",
+      "items"
+    ],
+    "required": [
+      "items"
+    ]
+  },
+  "create_tunnel": {
+    "properties": [
+      "label",
+      "source_drawer_id",
+      "source_room",
+      "source_wing",
+      "target_drawer_id",
+      "target_room",
+      "target_wing"
+    ],
+    "required": [
+      "source_room",
+      "source_wing",
+      "target_room",
+      "target_wing"
+    ]
+  },
+  "delete_by_source": {
+    "properties": [
+      "dry_run",
+      "source_file"
+    ],
+    "required": [
+      "source_file"
+    ]
+  },
+  "delete_drawer": {
+    "properties": [
+      "drawer_id"
+    ],
+    "required": [
+      "drawer_id"
+    ]
+  },
+  "delete_drawers": {
+    "properties": [
+      "drawer_ids"
+    ],
+    "required": [
+      "drawer_ids"
+    ]
+  },
+  "delete_hallway": {
+    "properties": [
+      "hallway_id"
+    ],
+    "required": [
+      "hallway_id"
+    ]
+  },
+  "delete_tunnel": {
+    "properties": [
+      "tunnel_id"
+    ],
+    "required": [
+      "tunnel_id"
+    ]
+  },
+  "diary_read": {
+    "properties": [
+      "agent_name",
+      "last_n",
+      "wing"
+    ],
+    "required": [
+      "agent_name"
+    ]
+  },
+  "diary_write": {
+    "properties": [
+      "agent_name",
+      "content",
+      "entry",
+      "topic",
+      "wing"
+    ],
+    "required": [
+      "agent_name"
+    ]
+  },
+  "event_ack": {
+    "properties": [
+      "body",
+      "event_id",
+      "from_agent",
+      "status",
+      "topic"
+    ],
+    "required": [
+      "event_id",
+      "from_agent"
+    ]
+  },
+  "event_append": {
+    "properties": [
+      "artifact_ids",
+      "base_commit",
+      "body",
+      "branch",
+      "correlation_id",
+      "from_agent",
+      "metadata",
+      "room",
+      "status",
+      "stream",
+      "to_agent",
+      "topic",
+      "type"
+    ],
+    "required": [
+      "from_agent",
+      "room",
+      "stream",
+      "type"
+    ]
+  },
+  "event_list": {
+    "properties": [
+      "before_event_id",
+      "correlation_id",
+      "from_agent",
+      "limit",
+      "order",
+      "preview",
+      "room",
+      "since_created_at",
+      "since_event_id",
+      "status",
+      "stream",
+      "to_agent",
+      "topic",
+      "type",
+      "writer"
+    ],
+    "required": []
+  },
+  "event_wait": {
+    "properties": [
+      "correlation_id",
+      "from_agent",
+      "limit",
+      "room",
+      "since_created_at",
+      "since_event_id",
+      "status",
+      "stream",
+      "timeout_ms",
+      "to_agent",
+      "topic",
+      "type",
+      "writer"
+    ],
+    "required": []
+  },
+  "find_tunnels": {
+    "properties": [
+      "wing_a",
+      "wing_b"
+    ],
+    "required": []
+  },
+  "follow_tunnels": {
+    "properties": [
+      "room",
+      "wing"
+    ],
+    "required": [
+      "room",
+      "wing"
+    ]
+  },
+  "get_aaak_spec": {
+    "properties": [],
+    "required": []
+  },
+  "get_drawer": {
+    "properties": [
+      "drawer_id"
+    ],
+    "required": [
+      "drawer_id"
+    ]
+  },
+  "get_drawers": {
+    "properties": [
+      "drawer_ids"
+    ],
+    "required": [
+      "drawer_ids"
+    ]
+  },
+  "get_taxonomy": {
+    "properties": [],
+    "required": []
+  },
+  "graph_stats": {
+    "properties": [],
+    "required": []
+  },
+  "hook_settings": {
+    "properties": [
+      "desktop_toast",
+      "silent_save"
+    ],
+    "required": []
+  },
+  "kg_add": {
+    "properties": [
+      "object",
+      "predicate",
+      "source_closet",
+      "source_drawer_id",
+      "source_file",
+      "subject",
+      "valid_from",
+      "valid_to"
+    ],
+    "required": [
+      "object",
+      "predicate",
+      "subject"
+    ]
+  },
+  "kg_invalidate": {
+    "properties": [
+      "ended",
+      "object",
+      "predicate",
+      "subject"
+    ],
+    "required": [
+      "object",
+      "predicate",
+      "subject"
+    ]
+  },
+  "kg_query": {
+    "properties": [
+      "as_of",
+      "direction",
+      "entity"
+    ],
+    "required": [
+      "entity"
+    ]
+  },
+  "kg_stats": {
+    "properties": [],
+    "required": []
+  },
+  "kg_supersede": {
+    "properties": [
+      "at",
+      "new_object",
+      "old_object",
+      "predicate",
+      "subject"
+    ],
+    "required": [
+      "new_object",
+      "old_object",
+      "predicate",
+      "subject"
+    ]
+  },
+  "kg_timeline": {
+    "properties": [
+      "entity",
+      "limit",
+      "offset"
+    ],
+    "required": []
+  },
+  "list_drawers": {
+    "properties": [
+      "before",
+      "limit",
+      "offset",
+      "room",
+      "since",
+      "wing"
+    ],
+    "required": []
+  },
+  "list_hallways": {
+    "properties": [
+      "limit",
+      "offset",
+      "wing"
+    ],
+    "required": []
+  },
+  "list_rooms": {
+    "properties": [
+      "wing"
+    ],
+    "required": []
+  },
+  "list_tunnels": {
+    "properties": [
+      "wing"
+    ],
+    "required": []
+  },
+  "list_wings": {
+    "properties": [],
+    "required": []
+  },
+  "memories_filed_away": {
+    "properties": [],
+    "required": []
+  },
+  "mesh_peers": {
+    "properties": [],
+    "required": []
+  },
+  "mine": {
+    "properties": [
+      "agent",
+      "dry_run",
+      "extract",
+      "include_ignored",
+      "include_subagents",
+      "limit",
+      "mode",
+      "source",
+      "wing"
+    ],
+    "required": [
+      "source"
+    ]
+  },
+  "patch_submit": {
+    "properties": [
+      "base_commit",
+      "body",
+      "branch",
+      "content",
+      "correlation_id",
+      "from_agent",
+      "metadata",
+      "room",
+      "stream",
+      "to_agent",
+      "topic"
+    ],
+    "required": [
+      "content",
+      "from_agent",
+      "stream"
+    ]
+  },
+  "reconnect": {
+    "properties": [],
+    "required": []
+  },
+  "search": {
+    "properties": [
+      "before",
+      "candidate_strategy",
+      "cli_compatible",
+      "context",
+      "include_media",
+      "limit",
+      "max_distance",
+      "query",
+      "query_task",
+      "room",
+      "since",
+      "source_file",
+      "wing"
+    ],
+    "required": [
+      "query"
+    ]
+  },
+  "status": {
+    "properties": [],
+    "required": []
+  },
+  "sync": {
+    "properties": [
+      "apply",
+      "project_dir",
+      "wing"
+    ],
+    "required": []
+  },
+  "task_create": {
+    "properties": [
+      "base_commit",
+      "branch",
+      "done",
+      "from_agent",
+      "goal",
+      "project",
+      "to_agent"
+    ],
+    "required": [
+      "base_commit",
+      "branch",
+      "done",
+      "from_agent",
+      "goal",
+      "project",
+      "to_agent"
+    ]
+  },
+  "traverse": {
+    "properties": [
+      "max_hops",
+      "start_room"
+    ],
+    "required": [
+      "start_room"
+    ]
+  },
+  "update_drawer": {
+    "properties": [
+      "content",
+      "drawer_id",
+      "room",
+      "wing"
+    ],
+    "required": [
+      "drawer_id"
+    ]
+  }
+}

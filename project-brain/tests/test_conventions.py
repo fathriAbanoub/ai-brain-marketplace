@@ -1,5 +1,6 @@
 """Tests for wing naming, .graphifyignore handling, graphify gating, and tool-list drift."""
 
+import json
 import re
 import subprocess
 import sys
@@ -146,6 +147,7 @@ def test_gate_stale_with_dirty_tree(git_repo: Path):
     status, reason = graphify_freshness(git_repo)
     assert status == "stale"
     assert "uncommitted" in reason
+    assert "a.txt" in reason
 
 
 def test_gate_stale_with_no_commit_line(git_repo: Path):
@@ -240,3 +242,71 @@ def test_no_plugin_file_references_unknown_tool():
             if name not in known:
                 offenders.append(f"{path.relative_to(PLUGIN_ROOT)}: mempalace_{name}")
     assert not offenders, "Undocumented MemPalace tools referenced:\n" + "\n".join(offenders)
+
+
+# --- item B3: tools doc args match fixture ----------------------------------
+
+FIXTURE_PATH = PLUGIN_ROOT / "tests" / "fixtures" / "mcp-tools-3.11.0.json"
+
+# Regex to extract arguments cell from the table rows:
+# | tool_name | description | <args cell> | access | policy |
+TABLE_ROW_RE = re.compile(
+    r"^\| ([a-z][a-z0-9_]+) \| [^|]* \| ([^|]*) \| [^|]* \| [^|]* \|",
+    re.MULTILINE,
+)
+# Strip bold markers from required args like **wing?**
+BOLD_RE = re.compile(r"\*\*([^*]+)\*\*")
+# Strip trailing ? from arg names
+ARG_NAME_RE = re.compile(r"([a-z][a-z0-9_]*)(\?)?")
+
+
+def _parse_args_cell(cell: str) -> tuple[set[str], set[str]]:
+    """Return (required_args, optional_args) from a table cell."""
+    required: set[str] = set()
+    optional: set[str] = set()
+    # bold = required
+    for bold in BOLD_RE.findall(cell):
+        name = bold.rstrip("?")
+        required.add(name)
+    # remove bold spans then scan remaining arg tokens
+    remainder = BOLD_RE.sub("", cell)
+    for m in ARG_NAME_RE.finditer(remainder):
+        name = m.group(1)
+        if name in ("none",):
+            continue
+        optional.add(name)
+    return required, optional
+
+
+def test_tools_doc_args_match_fixture():
+    fixture = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
+    doc_text = TOOLS_DOC.read_text(encoding="utf-8")
+    mismatches: list[str] = []
+
+    for tool_name, cell in TABLE_ROW_RE.findall(doc_text):
+        if tool_name not in fixture:
+            mismatches.append(f"{tool_name}: in doc but not in fixture")
+            continue
+        fix = fixture[tool_name]
+        fix_required = set(fix["required"])
+        fix_props = set(fix["properties"])
+
+        doc_required, doc_optional = _parse_args_cell(cell)
+        doc_all = doc_required | doc_optional
+
+        # Every required arg in fixture must be bold in doc
+        missing_required = fix_required - doc_required
+        if missing_required:
+            mismatches.append(f"{tool_name}: fixture required {sorted(missing_required)} not bold in doc")
+
+        # Every fixture property must appear somewhere in doc args
+        missing_props = fix_props - doc_all
+        if missing_props:
+            mismatches.append(f"{tool_name}: fixture props {sorted(missing_props)} missing from doc")
+
+        # No doc arg that isn't in fixture (catches stale args)
+        extra = doc_all - fix_props - fix_required
+        if extra:
+            mismatches.append(f"{tool_name}: doc args {sorted(extra)} not in fixture")
+
+    assert not mismatches, "Tool doc args drift from fixture:\n" + "\n".join(mismatches)

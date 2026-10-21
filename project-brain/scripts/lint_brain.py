@@ -268,7 +268,7 @@ def check_short_wiki_pages(root: Path, brain: Path, issues: list[dict]) -> None:
         body = text[m.end():] if m else text
         body_chars = len(re.sub(r"\s+", "", body))
         if body_chars < MIN_WIKI_PAGE_CHARS:
-            add(issues, "suggest", "short_wiki_page", p, root,
+            add(issues, "warn", "short_wiki_page", p, root,
                 f"page body is only {body_chars} chars (min {MIN_WIKI_PAGE_CHARS}); stub pages below this are not mined to MemPalace")
 
 

@@ -7,57 +7,57 @@ This document catalogs all 47 MemPalace MCP tools with their exact schemas, usag
 
 ## Tool Summary Table
 
-> Argument lists below are best-effort from MemPalace documentation — not verified against live schemas. [unverified] marks untested claims.
+> Argument lists verified against 3.11.0 schemas from mcp-tools.json. **bold** = required.
 
 | Tool | Description | Arguments | Access | Policy |
 |------|-------------|-----------|--------|--------|
 | status | Check MemPalace is running and vector index health | none | read | **USE** |
 | list_wings | List all wings in the palace | none | read | **USE** |
-| list_rooms | List rooms within a wing | wing (required) | read | **USE** |
+| list_rooms | List rooms within a wing | wing? | read | **USE** |
 | get_taxonomy | List all wings and rooms with drawer counts | none | read | **USE** |
 | get_aaak_spec | Read AAAK spec if configured | none | read | OPTIONAL |
-| search | Full-text + semantic search | query, wing?, room?, limit?, max_distance? | read | **USE** |
-| get_drawer | Read a specific drawer by ID | drawer_id | read | **USE** |
-| get_drawers | Read multiple drawers by ID | drawer_ids (array) | read | **USE** |
-| list_drawers | List drawers in a wing/room | wing, room?, limit?, offset? | read | **USE** |
-| diary_read | Read diary entries by agent | agent_name, since?, before?, limit? | read | **USE** |
-| diary_write | Write a diary entry | agent_name, entry (required), topic? | write | **USE** |
-| add_drawer | Write a new drawer | wing, room?, content (required), source_file? | write | **USE** |
-| update_drawer | Overwrite existing drawer | drawer_id, content?, wing?, room? | write | ASK FIRST |
-| delete_drawer | Delete a drawer by ID | drawer_id | destructive | ASK FIRST |
-| delete_drawers | Delete multiple drawers | drawer_ids (array) | destructive | ASK FIRST |
-| check_duplicate | Check for near-identical content | content, threshold? | read | **USE** |
-| mine | Mine a directory into a wing | source (required), wing?, mode?, include_ignored?, agent?, limit?, dry_run? | write | **USE** (wiki only) |
+| search | Full-text + semantic search | **query?**, limit?, wing?, room?, source_file?, since?, before?, max_distance?, candidate_strategy?, cli_compatible?, include_media?, query_task?, context? | read | **USE** |
+| get_drawer | Read a specific drawer by ID | **drawer_id?** | read | **USE** |
+| get_drawers | Read multiple drawers by ID | **drawer_ids?** | read | **USE** |
+| list_drawers | List drawers in a wing/room | wing?, room?, since?, before?, limit?, offset? | read | **USE** |
+| diary_read | Read diary entries by agent | **agent_name?**, last_n?, wing? | read | **USE** |
+| diary_write | Write a diary entry | **agent_name?**, entry?, topic?, wing?, content? | write | **USE** |
+| add_drawer | Write a new drawer | **wing?**, **room?**, **content?**, source_file?, added_by? | write | **USE** |
+| update_drawer | Overwrite existing drawer | **drawer_id?**, content?, wing?, room? | write | ASK FIRST |
+| delete_drawer | Delete a drawer by ID | **drawer_id?** | destructive | ASK FIRST |
+| delete_drawers | Delete multiple drawers | **drawer_ids?** | destructive | ASK FIRST |
+| check_duplicate | Check for near-identical content | **content?**, threshold? | read | **USE** |
+| mine | Mine a directory into a wing | **source?**, mode?, wing?, agent?, limit?, dry_run?, extract?, include_ignored?, include_subagents? | write | **USE** (wiki only) |
 | sync | Sync palace with gitignored files | project_dir?, wing?, apply? | write | ASK FIRST |
-| delete_by_source | Delete drawers from a source_file | source_file, dry_run? | destructive | ASK FIRST |
-| hook_settings | Read/write hook config | desktop_toast?, silent_save? | write | MEMPALACE OWNED |
+| delete_by_source | Delete drawers from a source_file | **source_file?**, dry_run? | destructive | ASK FIRST |
+| hook_settings | Read/write hook config | silent_save?, desktop_toast? | write | MEMPALACE OWNED |
 | memories_filed_away | Check recent filing activity | none | read | MEMPALACE OWNED |
 | reconnect | Reconnect to palace backend | none | write | MEMPALACE OWNED |
-| kg_query | Query knowledge graph facts | entity, direction?, as_of? | read | OPTIONAL |
-| kg_add | Add a knowledge graph fact | subject, predicate, object, valid_from?, valid_to?, source_file? | write | OPTIONAL |
-| kg_invalidate | Mark a fact as invalid | subject, predicate, object, ended? | write | OPTIONAL |
-| kg_supersede | Replace fact with successor | subject, predicate, old_object, new_object, at? | write | OPTIONAL |
+| kg_query | Query knowledge graph facts | **entity?**, as_of?, direction? | read | OPTIONAL |
+| kg_add | Add a knowledge graph fact | **subject?**, **predicate?**, **object?**, valid_from?, valid_to?, source_closet?, source_file?, source_drawer_id? | write | OPTIONAL |
+| kg_invalidate | Mark a fact as invalid | **subject?**, **predicate?**, **object?**, ended? | write | OPTIONAL |
+| kg_supersede | Replace fact with successor | **subject?**, **predicate?**, **old_object?**, **new_object?**, at? | write | OPTIONAL |
 | kg_timeline | Show fact history | entity?, limit?, offset? | read | OPTIONAL |
 | kg_stats | Get KG statistics | none | read | OPTIONAL |
-| traverse | Walk connected drawers from a start | start_room, max_hops? | read | DO NOT USE |
-| find_tunnels | Find tunnels to/from a drawer | wing_b?, wing_a? | read | DO NOT USE |
+| traverse | Walk connected drawers from a start | **start_room?**, max_hops? | read | DO NOT USE |
+| find_tunnels | Find tunnels to/from a drawer | wing_a?, wing_b? | read | DO NOT USE |
 | graph_stats | Get drawer graph statistics | none | read | DO NOT USE |
-| create_tunnel | Create cross-wing link | source_wing, source_room, target_wing, target_room, label? | write | DO NOT USE |
-| list_tunnels | List all tunnels | wing? | read | DO NOT USE |
-| delete_tunnel | Delete a tunnel | tunnel_id | destructive | DO NOT USE |
-| list_hallways | List within-wing co-occurrence links | wing?, limit?, offset? | read | DO NOT USE |
-| delete_hallway | Delete a hallway | hallway_id | destructive | DO NOT USE |
-| follow_tunnels | Traverse tunnel graph | wing, room | read | DO NOT USE |
 | mesh_peers | Get sync/peer status | none | read | DO NOT USE |
-| event_append | Post event to logstream | type, stream, room, from_agent, body?, metadata?, topic?, status?, to_agent?, correlation_id?, branch?, base_commit?, artifact_ids? | write | DO NOT USE |
-| event_list | List logstream events | type?, stream?, room?, topic?, writer?, to_agent?, correlation_id?, status?, since_event_id?, before_event_id?, limit?, order?, preview?, since_created_at? | read | DO NOT USE |
-| event_wait | Long-poll for events | type?, stream?, room?, topic?, writer?, to_agent?, correlation_id?, since_event_id?, timeout_ms?, limit? | read | DO NOT USE |
-| event_ack | Acknowledge an event | event_id, from_agent, body?, status?, topic? | write | DO NOT USE |
-| task_create | Create delegated task | project, from_agent, to_agent, goal, branch, base_commit, done | write | DO NOT USE |
-| artifact_put | Store artifact | kind, content, created_by, metadata? | write | DO NOT USE |
-| artifact_get | Retrieve artifact | artifact_id | read | DO NOT USE |
-| patch_submit | Submit patch to spec | content, stream, from_agent, branch?, topic?, correlation_id?, body?, room?, base_commit?, to_agent?, metadata? | write | DO NOT USE |
-| checkpoint | Save session in one call | items (array), diary?, added_by?, dedup_threshold? | write | DO NOT USE |
+| create_tunnel | Create cross-wing link | **source_wing?**, **source_room?**, **target_wing?**, **target_room?**, label?, source_drawer_id?, target_drawer_id? | write | DO NOT USE |
+| list_tunnels | List all tunnels | wing? | read | DO NOT USE |
+| delete_tunnel | Delete a tunnel | **tunnel_id?** | destructive | DO NOT USE |
+| list_hallways | List within-wing co-occurrence links | wing?, limit?, offset? | read | DO NOT USE |
+| delete_hallway | Delete a hallway | **hallway_id?** | destructive | DO NOT USE |
+| follow_tunnels | Traverse tunnel graph | **wing?**, **room?** | read | DO NOT USE |
+| event_append | Post event to logstream | **type?**, **stream?**, **room?**, topic?, **from_agent?**, to_agent?, correlation_id?, branch?, base_commit?, status?, body?, metadata?, artifact_ids? | write | DO NOT USE |
+| event_list | List logstream events | stream?, room?, topic?, type?, to_agent?, from_agent?, writer?, correlation_id?, status?, since_event_id?, before_event_id?, since_created_at?, limit?, order?, preview? | read | DO NOT USE |
+| event_wait | Long-poll for events | stream?, room?, topic?, type?, to_agent?, from_agent?, writer?, correlation_id?, status?, since_event_id?, since_created_at?, timeout_ms?, limit? | read | DO NOT USE |
+| event_ack | Acknowledge an event | **event_id?**, **from_agent?**, status?, body?, topic? | write | DO NOT USE |
+| task_create | Create delegated task | **project?**, **from_agent?**, **to_agent?**, **goal?**, **branch?**, **base_commit?**, **done?** | write | DO NOT USE |
+| artifact_put | Store artifact | **kind?**, **content?**, **created_by?**, metadata? | write | DO NOT USE |
+| artifact_get | Retrieve artifact | **artifact_id?** | read | DO NOT USE |
+| patch_submit | Submit patch to spec | **content?**, **from_agent?**, **stream?**, room?, topic?, to_agent?, correlation_id?, branch?, base_commit?, body?, metadata? | write | DO NOT USE |
+| checkpoint | Save session in one call | **items?**, diary?, dedup_threshold?, added_by? | write | DO NOT USE |
 
 ## Policy Definitions
 
@@ -66,6 +66,38 @@ This document catalogs all 47 MemPalace MCP tools with their exact schemas, usag
 - **ASK FIRST**: Confirm with user before calling (delete, sync, update operations)
 - **DO NOT USE**: Not needed for project-brain; may conflict with other uses
 - **MEMPALACE OWNED**: Managed by MemPalace's own hooks, never call from project-brain
+
+The DO NOT USE coordination tools (`event_*`, `task_create`, `patch_submit`) are
+governed by MemPalace's own `mempalace rules` command, not by project-brain. If a
+user asks about agent coordination, point them at `mempalace rules` rather than
+wiring the tools into the brain workflow.
+
+## The `sync` tool is dangerous
+
+`sync` bulk-ingests **gitignored** files into the palace. That is the opposite
+of what project-brain needs: the brain mines `.brain/wiki/` deliberately, but
+`sync` sweeps in whatever git is ignoring — `.env` files, local caches, build
+output, credentials, scratch notes.
+
+Rules:
+
+- Never call `sync` without explicit user confirmation.
+- Always pass a scoped `wing` (and `project_dir`) — never sync the repo root implicitly.
+- Preview first: `apply: false` (or `dry_run`) and show the user what would be ingested.
+- If `sync` already ran, treat it as a possible secret leak and tell the user immediately.
+
+For normal wiki-to-memory updates use Recipe 3 (`mempalace mine .brain/wiki`), not `sync`.
+
+## Concurrency
+
+MemPalace has no compare-and-swap on drawers. Two sessions writing at the same
+time can both pass `check_duplicate` and then both write, leaving near-identical
+drawers. It is last-write-wins on `update_drawer`.
+
+- Treat `check_duplicate` as advisory, not a lock.
+- Do not run two sessions against the same wing concurrently.
+- If a duplicate slips through, delete the extra drawer (ASK FIRST) rather than
+  editing both.
 
 ## Call Recipes
 
@@ -80,8 +112,8 @@ If `vector_disabled` is true:
 - Tell the user: "Run `mempalace repair rebuild-index` in a terminal with agents closed"
 - Continue brain work without MemPalace
 
-If `hnsw_capacity` shows divergence (current < expected):
-- The index is degraded; warn the user but continue — reads still work
+When MCP is unavailable, use the CLI fallback (Recipe 6): `mempalace repair-status`
+for index health and `mempalace status` for server health.
 
 ### 2. Recall Before Claims (at wake-up/orient)
 
@@ -95,13 +127,13 @@ mempalace_search({
 ### 3. Sync the Wiki (after wiki edits)
 
 ```
-mempalace_mine({
-  source: "<project-root>/.brain/wiki",
-  wing: "wiki-<project-slug>",
-  mode: "projects",
-  include_ignored: [".brain/wiki"],  # if .brain is gitignored
-  dry_run: false
-})
+mempalace mine .brain/wiki --wing wiki-<project-slug> --mode projects
+```
+
+If `.brain/` is gitignored, add `--include-ignored .brain/wiki`:
+
+```
+mempalace mine .brain/wiki --wing wiki-<project-slug> --mode projects --include-ignored .brain/wiki
 ```
 
 **IMPORTANT**: Mine only `.brain/wiki/` directory, not `.brain/raw/`, `.brain/state/`, `.brain/log/`, or the repo itself.
@@ -131,8 +163,17 @@ Next: [priority action]
 ```
 mempalace_diary_read({
   agent_name: "brain-<project-slug>",
-  limit: 5
+  last_n: 5
 })
+```
+
+### 6. Preflight Index Health (CLI fallback)
+
+When MCP is unavailable, use the CLI for preflight checks:
+
+```
+mempalace repair-status
+mempalace status
 ```
 
 ## Wing Naming Constants

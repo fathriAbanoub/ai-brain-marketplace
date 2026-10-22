@@ -93,10 +93,14 @@ COMMIT_LINE_RE = re.compile(r"Built from commit:\s*`([0-9a-fA-F]+)`")
 # git pathspec exclude syntax: ":(exclude)<path>".
 _DIRTY_EXCLUDES = [":(exclude).brain/", ":(exclude)graphify-out/"]
 MAX_DIRTY_LINES = 3  # How many porcelain lines to include in stale reason
+DIRTY_OMITTED_MARKER = "... (more paths omitted; run `git status` for the full list)"
 
 
 def graphify_freshness(root: Path) -> tuple[str, str]:
-    """Return ("fresh"|"stale", reason) for the graphify graph in `root`."""
+    """Return ("fresh"|"stale", reason) for the graphify graph in `root`.
+
+    After graphify runs, treats the graph as fresh until a source file changes again.
+    """
     report = root / GRAPH_REPORT_REL
     if not report.exists():
         return "stale", f"{GRAPH_REPORT_REL} missing"
@@ -114,7 +118,7 @@ def graphify_freshness(root: Path) -> tuple[str, str]:
         # graph), but exclude .brain/ and graphify-out/ which never affect it.
         dirty = subprocess.run(
             ["git", "status", "--porcelain", "--", *_DIRTY_EXCLUDES], cwd=root, capture_output=True, text=True, timeout=5
-        ).stdout.strip()
+        ).stdout.rstrip()
     except (FileNotFoundError, subprocess.SubprocessError) as exc:
         return "stale", f"git unavailable: {exc}"
     if not head:
@@ -122,8 +126,32 @@ def graphify_freshness(root: Path) -> tuple[str, str]:
     if not head.startswith(recorded):
         return "stale", f"graph built at {recorded}, HEAD is {head[:len(recorded)]}"
     if dirty:
-        dirty_lines = dirty.splitlines()[:MAX_DIRTY_LINES]
-        lines_str = "; ".join(dirty_lines)
+        dirty_lines = dirty.splitlines()
+        visible_lines = dirty_lines[:MAX_DIRTY_LINES]
+        omitted_count = len(dirty_lines) - len(visible_lines)
+
+        # ponytail: compares mtime only, not file hashes; a deletion made after
+        # the last graphify run is not detected. Upgrade path: graphify's own
+        # per-file hashes.
+        report_mtime = report.stat().st_mtime
+        any_newer_than_report = False
+        for line in dirty_lines:
+            # Parse git status --porcelain format: XY path [-> newpath]
+            # Handle renames (->), spaces in paths, and missing files
+            parts = line[3:].split(" -> ")
+            path_str = parts[-1].strip()  # Use new path for renames
+            path = root / path_str
+            if path.exists() and path.stat().st_mtime > report_mtime:
+                any_newer_than_report = True
+                break
+
+        if not any_newer_than_report:
+            # All dirty files predate the report - graph was rebuilt after edits
+            return "fresh", f"graph matches {recorded}"
+
+        lines_str = "; ".join(visible_lines)
+        if omitted_count > 0:
+            lines_str += f"; {DIRTY_OMITTED_MARKER}"
         return "stale", f"uncommitted changes to source files: {lines_str}"
     return "fresh", f"graph matches {recorded}"
 
@@ -291,13 +319,28 @@ def mempalace_wing_check(root: Path) -> tuple[str, str]:
     wing, source = resolve_wing_name(root)
     if source == "derived":
         return "warning", f"wing={wing} (derived — .brain/CLAUDE.md missing mempalace_wing)"
+
+    # Check if both files declare mempalace_wing
+    root_claude = root / "CLAUDE.md"
+    brain_claude = root / ".brain" / "CLAUDE.md"
+    other_source = ".brain/CLAUDE.md" if source == "CLAUDE.md" else "CLAUDE.md"
+    other_file = brain_claude if source == "CLAUDE.md" else root_claude
+    other_declares = False
+    if other_file.exists():
+        text = other_file.read_text(encoding="utf-8")
+        if re.search(r"mempalace_wing:\s*\S+", text):
+            other_declares = True
+
     if not wing.startswith(WIKI_WING_PREFIX):
-        return "warning", (
+        msg = (
             f"wing={wing} ({source}) does not start with '{WIKI_WING_PREFIX}'; "
-            "to migrate: use mempalace_update_drawer to move drawers to the new wing name, "
-            "then update mempalace_wing in .brain/CLAUDE.md — "
-            "re-scaffolding alone preserves the old wing name"
+            f"to migrate: use mempalace_update_drawer to move drawers to the new wing name, "
+            f"then update mempalace_wing in {source}"
         )
+        if other_declares:
+            msg += f" and change {other_source} to match"
+        msg += " — re-scaffolding alone preserves the old wing name"
+        return "warning", msg
     return "ok", f"wing={wing} ({source})"
 
 

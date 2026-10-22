@@ -11,7 +11,7 @@ Use this every time the agent writes or edits wiki pages.
 - [ ] Add uncertainties to `.brain/wiki/open-questions.md` (only genuine gaps that cannot be answered from available evidence).
 - [ ] **Run graphify only if the doctor says stale.** Run `project-brain-doctor <project-root>` and check the graphify freshness line. If it reports stale, choose the command based on the doctor's reason:
   - Reason starts with `"graphify-out/GRAPH_REPORT.md missing"` OR `"graph built at"` → `/graphify .` (full build, API cost)
-  - Reason starts with `"uncommitted changes to source files:"` → check what changed: code-only changes use `graphify update .` (AST-only, no API cost); docs/images/comments changes use `/graphify .`
+  - Reason starts with `"uncommitted changes to source files:"` → check what changed. If the reason says more paths follow (marker contains "more paths omitted"), run `git status` first to see the full list. Then decide: code-only changes use `graphify update .` (AST-only, no API cost); docs/images/comments changes use `/graphify .`
   - Any other stale reason → `/graphify .`
   Wiki edits alone do NOT change the repo — skip graphify for wiki-only changes.
 - [ ] Update `.brain/state/session-brief.md` if project understanding changed.

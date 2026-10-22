@@ -33,7 +33,7 @@ After creating or updating wiki pages, do not stop. Run this post-wiki checklist
 4. **Graph refresh**
    - **Run graphify only if the doctor says stale.** Run `project-brain-doctor <project-root>` and check the graphify freshness line. If it reports stale, choose the command based on the doctor's reason:
      - Reason starts with `"graphify-out/GRAPH_REPORT.md missing"` OR `"graph built at"` → `/graphify .` (full build, API cost)
-     - Reason starts with `"uncommitted changes to source files:"` → check what changed: code-only changes use `graphify update .` (AST-only, no API cost); docs/images/comments changes use `/graphify .`
+     - Reason starts with `"uncommitted changes to source files:"` → check what changed. If the reason says more paths follow (marker contains "more paths omitted"), run `git status` first to see the full list. Then decide: code-only changes use `graphify update .` (AST-only, no API cost); docs/images/comments changes use `/graphify .`
      - Any other stale reason → `/graphify .`
    - Wiki edits alone do NOT change the repo — skip graphify for wiki-only changes.
    - Read `graphify-out/GRAPH_REPORT.md`.
@@ -141,10 +141,11 @@ Goal: make relationships visible and queryable.
 Actions:
 
 1. Ensure `.graphifyignore` excludes noisy folders like `node_modules/`, `dist/`, vendor folders, caches, build outputs, and secrets.
-2. **Run graphify only if the repo changed.** Run `doctor -f` (or `python scripts/doctor.py -f`) and check the "freshness" gate. If it reports stale, choose the command based on the doctor's reason:
+2. **Run graphify only if the repo changed.** Run `project-brain-doctor <project-root>` and check the "freshness" gate. If it reports stale, choose the command based on the doctor's reason:
    - Reason starts with `"graphify-out/GRAPH_REPORT.md missing"` OR `"graph built at"` → `/graphify .` (full build, API cost)
-   - Reason starts with `"uncommitted changes to source files:"` → check what changed: code-only changes use `graphify update .` (AST-only, no API cost); docs/images/comments changes use `/graphify .`
+   - Reason starts with `"uncommitted changes to source files:"` → check what changed. If the reason says more paths follow (marker contains "more paths omitted"), run `git status` first to see the full list. Then decide: code-only changes use `graphify update .` (AST-only, no API cost); docs/images/comments changes use `/graphify .`
    - Any other stale reason → `/graphify .`
+   After graphify runs, the doctor reports fresh until a source file changes again.
 3. Read `graphify-out/GRAPH_REPORT.md`.
 4. Identify god nodes, communities, surprising connections, and suggested questions.
 5. Update `.brain/wiki/architecture/System Overview.md` and related pages.

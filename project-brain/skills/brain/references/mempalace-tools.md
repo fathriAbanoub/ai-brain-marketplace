@@ -27,7 +27,7 @@ This document catalogs all 47 MemPalace MCP tools with their exact schemas, usag
 | delete_drawers | Delete multiple drawers | **drawer_ids** | destructive | ASK FIRST |
 | check_duplicate | Check for near-identical content | **content**, threshold? | read | **USE** |
 | mine | Mine a directory into a wing | **source**, mode?, wing?, agent?, limit?, dry_run?, extract?, include_ignored?, include_subagents? | write | **USE** (wiki only) |
-| sync | Prune drawers whose source files are gitignored, deleted, or moved | project_dir?, wing?, apply? | write | ASK FIRST |
+| sync | Prune drawers whose source files are gitignored, deleted, or moved | project_dir?, wing?, apply? | write | ASK FIRST; never the wiki wing |
 | delete_by_source | Delete drawers from a source_file | **source_file**, dry_run? | destructive | ASK FIRST |
 | hook_settings | Read/write hook config | silent_save?, desktop_toast? | write | MEMPALACE OWNED |
 | memories_filed_away | Check recent filing activity | none | read | MEMPALACE OWNED |
@@ -80,10 +80,8 @@ is the opposite of ingestion: if `.brain/` is gitignored, a sync of the wiki win
 
 Rules:
 
-- Before calling `sync`, run `git check-ignore .brain` in the project root. If `.brain/` is gitignored,
-  **do not run sync against the wiki wing** — it would delete all wiki memories.
-- Where `.brain/` is tracked, always preview first (`apply: false`, the default) and show the user what
-  would be deleted before proceeding. Never apply on the agent's own initiative.
+- Never run `mempalace sync` or the `mempalace_sync` tool against the wiki wing, regardless of gitignore state.
+- `sync` may be used on other wings only with a dry run first and the user's explicit approval.
 - To delete the drawers of a single deleted wiki page, use `mempalace_delete_by_source` (ASK FIRST
   policy) — it targets one source file and has its own dry-run default.
 
@@ -159,20 +157,13 @@ Mine the wiki directory directly — gitignore does not apply when you name the 
 mempalace mine .brain/wiki --wing wiki-<project-slug>
 ```
 
-If you prefer to mine from the project root, add `--include-ignored .brain/wiki` (it also works, but
-is unnecessary when you point mine at the wiki directory directly):
-
-```
-mempalace mine <project-root> --wing wiki-<project-slug> --include-ignored .brain/wiki
-```
-
 Always do a dry run first and confirm with the user:
 
 ```
 mempalace mine .brain/wiki --wing wiki-<project-slug> --dry-run
 ```
 
-**IMPORTANT**: Mine only `.brain/wiki/` directory, not `.brain/raw/`, `.brain/state/`, `.brain/log/`, or the repo itself.
+**IMPORTANT**: Mine only `.brain/wiki/` directory, not `.brain/raw/`, `.brain/state/`, `.brain/log/`, or the repo itself. Never mine the project root into the wiki wing.
 
 ### 4. Write Session Diary (at handoff)
 

@@ -1,6 +1,6 @@
 # Project Brain Lifecycle
 
-This is the canonical operating loop. The LLM Wiki is only one phase. A project brain is complete only when the wiki, MemPalace, graphify, logs, and handoff state are synchronized.
+This is the canonical operating loop. The LLM Wiki is only one phase. A project brain is complete only when the wiki, MemPalace, graphify, logs, and handoff state are aligned.
 
 ## Layer order
 
@@ -30,13 +30,17 @@ After creating or updating wiki pages, do not stop. Run this post-wiki checklist
    - If the source or conversation contains a durable choice, create or update `.brain/wiki/decisions/<Decision>.md`.
    - Include context, options considered, consequences, status, and when to revisit.
 
-4. **Graph synchronization**
-   - If new code/docs/sources change project structure, run `/graphify .` or `graphify . --update` when available.
+4. **Graph refresh**
+   - **Run graphify only if the doctor says stale.** Run `project-brain-doctor <project-root>` and check the graphify freshness line. If it reports stale, choose the command based on the doctor's reason:
+     - Reason starts with `"graphify-out/GRAPH_REPORT.md missing"` OR `"graph built at"` → `/graphify .` (full build, API cost)
+     - Reason starts with `"uncommitted changes to source files:"` → check what changed. If the reason says more paths follow (marker contains "more paths omitted"), run `git status` first to see the full list. Then decide: code-only changes use `graphify update .` (AST-only, no API cost); docs/images/comments changes use `/graphify .`
+     - Any other stale reason → `/graphify .`
+   - Wiki edits alone do NOT change the repo — skip graphify for wiki-only changes.
    - Read `graphify-out/GRAPH_REPORT.md`.
    - Promote stable graph findings into `.brain/wiki/architecture/` or `.brain/wiki/concepts/`.
    - Mark graph-only inferences as leads until confirmed from files or sources.
 
-5. **Memory synchronization**
+5. **Memory consolidation**
    - If MemPalace tools are available, write a concise diary entry with what changed, why, decisions, user preferences, and unresolved next steps.
    - If MemPalace recalls something important, compile it into wiki form instead of leaving it only in memory.
 
@@ -137,7 +141,11 @@ Goal: make relationships visible and queryable.
 Actions:
 
 1. Ensure `.graphifyignore` excludes noisy folders like `node_modules/`, `dist/`, vendor folders, caches, build outputs, and secrets.
-2. Run `/graphify .` for first build or `graphify . --update` for refresh.
+2. **Run graphify only if the repo changed.** Run `project-brain-doctor <project-root>` and check the "freshness" gate. If it reports stale, choose the command based on the doctor's reason:
+   - Reason starts with `"graphify-out/GRAPH_REPORT.md missing"` OR `"graph built at"` → `/graphify .` (full build, API cost)
+   - Reason starts with `"uncommitted changes to source files:"` → check what changed. If the reason says more paths follow (marker contains "more paths omitted"), run `git status` first to see the full list. Then decide: code-only changes use `graphify update .` (AST-only, no API cost); docs/images/comments changes use `/graphify .`
+   - Any other stale reason → `/graphify .`
+   After graphify runs, the doctor reports fresh until a source file changes again.
 3. Read `graphify-out/GRAPH_REPORT.md`.
 4. Identify god nodes, communities, surprising connections, and suggested questions.
 5. Update `.brain/wiki/architecture/System Overview.md` and related pages.
@@ -152,13 +160,16 @@ Done when:
 
 Goal: preserve session-specific context without bloating the wiki.
 
+Before any MemPalace call, read `references/mempalace-tools.md` for the complete 47-tool reference, policy table, and call recipes. Follow those recipes exactly — preflight check before writes, search before claims, diary format for entries.
+
 Actions:
 
-1. Search MemPalace before making claims about previous work.
-2. Store diary entries after meaningful changes.
-3. Store user preferences that should survive model switches.
-4. Convert stable facts from memory into wiki pages or decisions.
-5. Do not store secrets or full raw dumps.
+1. Call `mempalace_status` (preflight). If `vector_disabled` is true, skip writes and tell the user to run `mempalace repair rebuild-index`.
+2. Search MemPalace before making claims about previous work (`mempalace_search`).
+3. Store diary entries after meaningful changes (follow diary format in `references/mempalace-tools.md`).
+4. Store user preferences that should survive model switches.
+5. Convert stable facts from memory into wiki pages or decisions.
+6. Do not store secrets or full raw dumps.
 
 Done when:
 
@@ -205,9 +216,9 @@ Actions:
    - List raw source files that have no wiki/sources/ summary page.
    - Create stub source summary pages for the top unreferenced raw files. A stub with title, type, status, and a one-line summary is better than nothing.
 
-   **Memory sync below 70 (estimated):**
+   **Memory consolidation below 70 (estimated):**
    - Write a MemPalace diary entry covering current project state, recent decisions, and active workstream.
-   - Call `mempalace_preferences_get` to verify known preferences are still current.
+   - Verify known preferences from wiki or `.brain/CLAUDE.md` are still current.
 
 3. After repairs, re-run `project-brain-lint <project-root>` and check that error count is zero.
 4. Log the scan: what was found, what was repaired, what was deferred.

@@ -4,7 +4,7 @@ description: Use when the user wants a persistent AI brain, project memory, LLM 
 
 # Project Brain
 
-Build and maintain a persistent AI brain for the current project. This skill is not only an LLM Wiki scaffold. The LLM Wiki is the compiled-knowledge layer; after wiki edits, synchronize the graph, memory, log, audit, health, vault, and handoff layers so the next model can understand the project without this chat.
+Build and maintain a persistent AI brain for the current project. This skill is not only an LLM Wiki scaffold. The LLM Wiki is the compiled-knowledge layer; after wiki edits, run the post-wiki loop so the graph, memory, log, audit, health, vault, and handoff layers stay aligned and the next model can understand the project without this chat.
 
 ## Core model
 
@@ -47,8 +47,8 @@ The same fallback applies to all `project-brain-*` commands: replace the bare co
 4. Read `.brain/state/session-brief.md` if present.
 5. Read `.brain/wiki/index.md` if present.
 6. Read `graphify-out/GRAPH_REPORT.md` before architecture, code navigation, or broad relationship questions if it exists.
-7. Check MemPalace before making claims about previous decisions, user preferences, or past work. Call `mempalace_status` when the tool is available, then use `mempalace_search` for relevant memory.
-8. If Obsidian MCP tools are available, note that the brain wiki can be synced to the vault. Do not sync automatically — wait for the user to request it.
+7. Check MemPalace before making claims about previous decisions, user preferences, or past work. Before any MemPalace call, read `references/mempalace-tools.md` for the 47-tool reference, policy table, and call recipes. Call `mempalace_status` when the tool is available (preflight), then use `mempalace_search` for relevant memory. **Never call `mempalace_sync` against the wiki wing** — sync prunes drawers whose source files are gitignored or deleted, and may be used on other wings only with a dry run first and explicit user confirmation. Use Recipe 3 (`mine .brain/wiki`) for normal wiki updates.
+8. If Obsidian MCP tools are available, note that the brain wiki can be mirrored to the vault (vault mirror). Do not mirror automatically — wait for the user to request it.
 9. If a tool is not available in the current session, say exactly which layer is unavailable and continue from the remaining layers.
 
 ## Behavioral Contracts
@@ -69,7 +69,7 @@ Every wiki edit must be followed by the post-wiki checklist. No exceptions. The 
 
 If the session brief exceeds 400 words, trim it. Depth belongs in wiki pages, not the brief. The brief is a map to the wiki, not a replacement for it.
 
-### Contract 5: Obsidian sync is opt-in
+### Contract 5: Obsidian vault mirror is opt-in
 
 Never push to the Obsidian vault without the user asking. The vault is the user's personal space. The brain writes to `.brain/wiki/` first; the vault is a view layer the user controls.
 
@@ -100,7 +100,7 @@ Use `references/brain-lifecycle.md` as the primary runbook. The short version:
 7. **Audit** with linting, open questions, contradiction tracking, and feedback files.
 8. **Handoff** by updating session brief, log, and next actions.
 
-If the user asks "what should the AI do after LLM Wiki?", the answer is: run the post-wiki synchronization loop in `references/post-wiki-checklist.md`.
+If the user asks "what should the AI do after LLM Wiki?", the answer is: run the post-wiki loop in `references/post-wiki-checklist.md`.
 
 
 ## Brain Reset
@@ -219,22 +219,21 @@ Steps:
 1. Call `mempalace_status`.
 2. Search MemPalace before making claims about previous work.
 3. Write a concise diary entry with `mempalace_diary_write` after substantial work, decisions, or context changes. Follow the diary entry minimum standard in `references/mempalace-workflow.md`.
-4. Store user preferences with `mempalace_preferences_set` when they should survive model switches.
-5. Convert stable memory into wiki pages, decisions, or `.brain/CLAUDE.md` preferences.
-6. Never store secrets.
+4. Convert stable memory into wiki pages, decisions, or `.brain/CLAUDE.md` preferences.
+5. Never store secrets.
 
-### Sync to Obsidian
+### Mirror to Obsidian (vault mirror)
 
 Use when the user asks to view, browse, save, mirror, sync, or open brain content in Obsidian, or asks for the vault to reflect current brain state.
 
 Steps:
 
 1. Read `references/obsidian-workflow.md`.
-2. Identify which wiki pages have changed since last sync by checking `.brain/log/` for the last sync timestamp.
+2. Identify which wiki pages have changed since last mirror by checking `.brain/log/` for the last mirror timestamp.
 3. Use Obsidian MCP write tools to mirror changed pages to `<vault>/project-brains/<project-name>/`.
 4. Preserve all wikilinks — they work natively in Obsidian.
-5. Do not sync `.brain/raw/`, `.brain/log/`, `.brain/audit/`, or `.brain/state/` unless explicitly requested.
-6. Log the sync.
+5. Do not mirror `.brain/raw/`, `.brain/log/`, `.brain/audit/`, or `.brain/state/` unless explicitly requested.
+6. Log the mirror.
 
 ### Audit / lint
 
@@ -271,7 +270,7 @@ Steps:
 
 1. Read `references/cross-brain-workflow.md`.
 2. Create pointer files rather than duplicating pages across projects.
-3. Store global user preferences in MemPalace, not in every project wiki.
+3. MemPalace has no verified store for global preferences. Keep durable preferences in `.brain/CLAUDE.md` or the project wiki, and create pointer files instead of duplicating them across projects.
 4. Use graphify `merge-graphs` only when a cross-repo relationship map is needed.
 5. Write a multi-project session brief that names each project and its next read targets.
 
@@ -295,8 +294,12 @@ Every time wiki pages change, perform this loop unless impossible:
 2. Add cross-links and backlinks.
 3. Extract decisions.
 4. **Resolve open questions**: For each question in `open-questions.md`, make a genuine attempt to answer it from the files already read. If the answer exists in any file you have access to, document it in the relevant wiki page and remove the question from open-questions.md. Only leave a question open if: (a) the answer requires reading a file not yet ingested, OR (b) the answer genuinely does not exist anywhere in the codebase. For case (a), name the specific file that needs to be read next. Never leave a question open if the answer is visible in a file you have already read.
-5. **Run `/graphify .` from project root.** If graphify is not installed, run `uv tool install graphify` (note: single y) and retry. If it fails after install, log the error in the session log and add a `graphify-not-available` flag to the session brief. Do NOT skip this step silently — the health score and relationship accuracy depend on it.
-6. Sync MemPalace if session memory changed.
+5. **Run graphify only if the doctor says stale.** Run `project-brain-doctor <project-root>` and check the graphify freshness line. If it reports stale, choose the command based on the doctor's reason:
+   - Reason starts with `"graphify-out/GRAPH_REPORT.md missing"` OR `"graph built at"` → `/graphify .` (full build, API cost)
+   - Reason starts with `"uncommitted changes to source files:"` → check what changed. If the reason says more paths follow (marker contains "more paths omitted"), run `git status` first to see the full list. Then decide: code-only changes use `graphify update .` (AST-only, no API cost); docs/images/comments changes use `/graphify .`
+   - Any other stale reason → `/graphify .`
+   Skip graphify for wiki-only changes.
+6. Consolidate MemPalace memory (diary entry) if session context changed.
 7. Record contradictions/open questions.
 8. Update session brief.
 9. Append log entry.

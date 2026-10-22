@@ -14,11 +14,82 @@ from datetime import date, datetime
 from pathlib import Path
 
 
+# Wing name prefixes — change these constants if the convention changes.
+WIKI_WING_PREFIX = "wiki-"
+BRAIN_DIARY_PREFIX = "brain-"
+
+
 def sanitize_wing_name(raw: str) -> str:
     normalized = raw.strip().lower()
     normalized = re.sub(r"[^a-z0-9._-]+", "-", normalized)
     normalized = re.sub(r"-+", "-", normalized).strip("-._")
     return normalized or "project-brain"
+
+
+def wiki_wing_name(title: str) -> str:
+    """Return the canonical wiki wing name: wiki-<sanitized-title>."""
+    return WIKI_WING_PREFIX + sanitize_wing_name(title)
+
+
+def ensure_graphifyignore(project_root: Path) -> None:
+    """Ensure .graphifyignore excludes .brain/ and graphify-out/ (idempotent).
+
+    Compares entries after stripping whitespace and a trailing slash so that
+    equivalent entries written by older scaffold runs are not duplicated.
+    Adds a leading newline before new entries if the file does not end with one.
+    """
+    ignore_path = project_root / ".graphifyignore"
+    # Required brain-specific exclusions — the only ones managed here.
+    required = {".brain/", "graphify-out/"}
+
+    existing_text = ignore_path.read_text(encoding="utf-8") if ignore_path.exists() else ""
+    # Normalise for comparison: strip whitespace + trailing slash.
+    existing_normalised = {line.strip().rstrip("/") for line in existing_text.splitlines()}
+
+    missing = [r for r in sorted(required) if r.rstrip("/") not in existing_normalised]
+    if not missing:
+        return
+
+    with open(ignore_path, "a", encoding="utf-8") as f:
+        if existing_text and not existing_text.endswith("\n"):
+            f.write("\n")
+        for line in missing:
+            f.write(line + "\n")
+
+
+def resolve_wing_name(root: Path) -> tuple[str, str]:
+    """Resolve MemPalace wing name from project root. Returns (wing, source)."""
+    claude_md = root / "CLAUDE.md"
+    if claude_md.exists():
+        text = claude_md.read_text(encoding="utf-8")
+        m = re.search(r"mempalace_wing:\s*(\S+)", text)
+        if m:
+            return m.group(1), "CLAUDE.md"
+    brain_claude = root / ".brain" / "CLAUDE.md"
+    if brain_claude.exists():
+        text = brain_claude.read_text(encoding="utf-8")
+        m = re.search(r"mempalace_wing:\s*(\S+)", text)
+        if m:
+            return m.group(1), ".brain/CLAUDE.md"
+    wing = sanitize_wing_name(root.name)
+    return wing, "derived"
+
+
+class MempalaceUnavailable(Exception):
+    """Raised when MemPalace MCP is unavailable."""
+    pass
+
+
+class MempalaceBridge:
+    """Simple bridge to MemPalace MCP client."""
+
+    def __init__(self) -> None:
+        raise MempalaceUnavailable("MempalaceBridge requires MCP client - use doctor MCP mode")
+
+
+def collect_mempalace_drawers(client, wing: str) -> tuple[list[str], list[str]]:
+    """Collect rooms and drawers from MemPalace wing."""
+    raise MempalaceUnavailable("collect_mempalace_drawers requires MCP client")
 
 
 def is_under(path: Path, parent: Path) -> bool:
@@ -119,9 +190,10 @@ def scaffold(project_root: Path, title: str, force: bool = False) -> None:
 
     installed_line = "MemPalace is already installed as a plugin. graphify is already installed as a CLI tool and skill. Do not reinstall either."
 
-    wing_name = sanitize_wing_name(title)
+    # New brains use the canonical wiki-<slug> prefix.
+    wing_name = wiki_wing_name(title)
 
-    # Reuse existing wing name if .brain/CLAUDE.md already has one
+    # Reuse existing wing name if .brain/CLAUDE.md already has one (idempotent re-scaffold).
     brain_claude = brain / "CLAUDE.md"
     if brain_claude.exists():
         existing_text = brain_claude.read_text(encoding="utf-8")
@@ -136,7 +208,7 @@ def scaffold(project_root: Path, title: str, force: bool = False) -> None:
     # Fallback: ensure wing_name is never empty
     if not wing_name:
         import hashlib
-        wing_name = "project-" + hashlib.sha1(str(project_root).encode()).hexdigest()[:8]
+        wing_name = WIKI_WING_PREFIX + hashlib.sha1(str(project_root).encode()).hexdigest()[:8]
 
     brain_schema = f"""---
 mempalace_wing: {wing_name}
@@ -549,7 +621,9 @@ Updated: {now}
 """
     write_template(brain / "tasks" / "next-actions.md", next_actions, project_root, brain, force)
 
-    graphifyignore = """.git/
+    # Default .graphifyignore for new projects — write once, then ensure_graphifyignore
+    # keeps .brain/ and graphify-out/ present on re-runs (idempotent).
+    graphifyignore_template = """.git/
 .venv/
 venv/
 node_modules/
@@ -566,9 +640,13 @@ secrets/
 .brain/audit/
 .brain/state/
 .brain/outputs/
+.brain/
 graphify-out/
 """
-    write_template(project_root / ".graphifyignore", graphifyignore, project_root, brain, force)
+    write_template(project_root / ".graphifyignore", graphifyignore_template, project_root, brain, force)
+    # Idempotent guard: ensure .brain/ and graphify-out/ are present even on
+    # projects scaffolded before this version (does nothing if already present).
+    ensure_graphifyignore(project_root)
 
     snippet = f"""# Project Brain
 

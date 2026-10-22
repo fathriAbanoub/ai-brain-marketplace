@@ -45,17 +45,17 @@ Use pointers for shared concepts, related decisions, reusable architecture, and 
 
 ## Global preferences
 
-Preferences that apply across all projects belong in MemPalace at a global scope, not duplicated in every project wiki.
+MemPalace does not have a verified store for global preferences. Document durable preferences in the project wiki or `.brain/CLAUDE.md` instead.
 
-Examples:
+Examples of project-level preferences:
 
 - preferred response style,
 - preferred tooling,
 - recurring safety boundaries,
-- naming conventions the user wants everywhere,
+- naming conventions,
 - review cadence.
 
-Before writing a global preference, confirm it is not project-specific. Use `mempalace_preferences_get` before relying on a preference and `mempalace_preferences_set` after the user states a durable preference.
+Store these in `.brain/CLAUDE.md` or the wiki so they persist across sessions and are discoverable by all agents in the project.
 
 ## Cross-repo graph maps
 

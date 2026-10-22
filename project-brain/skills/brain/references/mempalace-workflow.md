@@ -1,6 +1,8 @@
 # MemPalace Workflow
 
-MemPalace is available as a connected plugin (mempalace 3.12.0, 47 MCP tools). Use its MCP tools directly — do not install or re-init.
+MemPalace is available as a connected plugin (mempalace 3.11.0, 47 MCP tools). Use its MCP tools directly — do not install or re-init.
+
+**Do not run `mempalace init` from this skill.** Init is an LLM-assisted operation that inspects the repository and writes palace structure; running it unattended inside a project-brain flow can rewrite wing/room taxonomy the brain depends on. If the palace is not initialized, stop and ask the user to run it themselves.
 
 ## Wing namespacing (critical)
 
@@ -9,10 +11,10 @@ Every project has a dedicated MemPalace wing. The wing name is recorded in `.bra
 ```bash
 # Read the wing name for the current project:
 grep "mempalace_wing" .brain/CLAUDE.md
-# Output: mempalace_wing: ambient-studio_brain-test
+# Output: mempalace_wing: wiki-ambient-mixer
 ```
 
-If `.brain/CLAUDE.md` does not exist yet, derive the wing name using the **same rule as `sanitize_wing_name` in `scaffold_brain.py`**: lowercase, replace runs of characters outside `[a-z0-9._-]` with a single hyphen, collapse repeated hyphens, strip leading/trailing `-._`. Underscores are preserved. Write that name into `.brain/CLAUDE.md` frontmatter once the brain is initialized.
+Wing names follow the `wiki-<slug>` convention (e.g. `wiki-ambient-mixer`, `wiki-my-project`). The scaffold writes this automatically. If `.brain/CLAUDE.md` does not exist yet, derive the wing name as `wiki-` + `sanitize_wing_name(title)` where `sanitize_wing_name` is defined in `scaffold_brain.py`: lowercase, replace runs of characters outside `[a-z0-9._-]` with a single hyphen, collapse repeated hyphens, strip leading/trailing `-._`, preserve underscores. Write that name into `.brain/CLAUDE.md` frontmatter once the brain is initialized.
 
 If the derived name doesn't exist, call `mempalace_list_wings` and match on a distinctive substring of the project directory name before concluding the wing is empty.
 
@@ -148,7 +150,7 @@ Summary: Initialized project brain and ingested GEMINI.md and critic_report.md a
 Key finding: audio-renderer.js is imported by index.html at line 1750 — it is NOT orphaned despite GEMINI.md claiming otherwise.
 Contradictions: GEMINI.md says port 8080 but server.js uses 3000.
 Log: .brain/log/20260509.md
-Next: Run /graphify . to build dependency graph; verify all open questions against primary source.
+Next: Check if graphify-out/GRAPH_REPORT.md commit matches HEAD; run /graphify . only if commits differ or no graph exists.
 ```
 
 ### Knowledge graph

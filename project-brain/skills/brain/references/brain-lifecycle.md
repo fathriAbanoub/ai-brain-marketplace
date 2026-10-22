@@ -31,7 +31,11 @@ After creating or updating wiki pages, do not stop. Run this post-wiki checklist
    - Include context, options considered, consequences, status, and when to revisit.
 
 4. **Graph refresh**
-   - **Run graphify only if the doctor says stale.** Run `project-brain-doctor <project-root>` and check the graphify freshness line. Run `/graphify .` only if it reports stale. Wiki edits alone do NOT change the repo — skip graphify for wiki-only changes. Run `graphify update .` for incremental AST updates after code edits (no API cost).
+   - **Run graphify only if the doctor says stale.** Run `project-brain-doctor <project-root>` and check the graphify freshness line. If it reports stale, choose the command based on the doctor's reason:
+     - Reason starts with `"graphify-out/GRAPH_REPORT.md missing"` OR `"graph built at"` → `/graphify .` (full build, API cost)
+     - Reason starts with `"uncommitted changes to source files:"` → check what changed: code-only changes use `graphify update .` (AST-only, no API cost); docs/images/comments changes use `/graphify .`
+     - Any other stale reason → `/graphify .`
+   - Wiki edits alone do NOT change the repo — skip graphify for wiki-only changes.
    - Read `graphify-out/GRAPH_REPORT.md`.
    - Promote stable graph findings into `.brain/wiki/architecture/` or `.brain/wiki/concepts/`.
    - Mark graph-only inferences as leads until confirmed from files or sources.
@@ -137,7 +141,10 @@ Goal: make relationships visible and queryable.
 Actions:
 
 1. Ensure `.graphifyignore` excludes noisy folders like `node_modules/`, `dist/`, vendor folders, caches, build outputs, and secrets.
-2. **Run graphify only if the repo changed.** Run `doctor -f` (or `python scripts/doctor.py -f`) and check the "freshness" gate. If stale: run `/graphify .` for full rebuild OR `graphify update .` for AST-only incremental update (no API cost). The doctor gate checks: (a) no graph exists, OR (b) git commit differs, OR (c) uncommitted source files.
+2. **Run graphify only if the repo changed.** Run `doctor -f` (or `python scripts/doctor.py -f`) and check the "freshness" gate. If it reports stale, choose the command based on the doctor's reason:
+   - Reason starts with `"graphify-out/GRAPH_REPORT.md missing"` OR `"graph built at"` → `/graphify .` (full build, API cost)
+   - Reason starts with `"uncommitted changes to source files:"` → check what changed: code-only changes use `graphify update .` (AST-only, no API cost); docs/images/comments changes use `/graphify .`
+   - Any other stale reason → `/graphify .`
 3. Read `graphify-out/GRAPH_REPORT.md`.
 4. Identify god nodes, communities, surprising connections, and suggested questions.
 5. Update `.brain/wiki/architecture/System Overview.md` and related pages.

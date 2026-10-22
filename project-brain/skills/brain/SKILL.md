@@ -294,7 +294,11 @@ Every time wiki pages change, perform this loop unless impossible:
 2. Add cross-links and backlinks.
 3. Extract decisions.
 4. **Resolve open questions**: For each question in `open-questions.md`, make a genuine attempt to answer it from the files already read. If the answer exists in any file you have access to, document it in the relevant wiki page and remove the question from open-questions.md. Only leave a question open if: (a) the answer requires reading a file not yet ingested, OR (b) the answer genuinely does not exist anywhere in the codebase. For case (a), name the specific file that needs to be read next. Never leave a question open if the answer is visible in a file you have already read.
-5. **Run graphify only if the doctor says stale.** Run `project-brain-doctor <project-root>` and check the graphify freshness line. Run `/graphify .` only if it reports stale. For incremental AST-only updates after code edits, run `graphify update .` (no API cost). Skip graphify for wiki-only changes.
+5. **Run graphify only if the doctor says stale.** Run `project-brain-doctor <project-root>` and check the graphify freshness line. If it reports stale, choose the command based on the doctor's reason:
+   - Reason starts with `"graphify-out/GRAPH_REPORT.md missing"` OR `"graph built at"` → `/graphify .` (full build, API cost)
+   - Reason starts with `"uncommitted changes to source files:"` → check what changed: code-only changes use `graphify update .` (AST-only, no API cost); docs/images/comments changes use `/graphify .`
+   - Any other stale reason → `/graphify .`
+   Skip graphify for wiki-only changes.
 6. Consolidate MemPalace memory (diary entry) if session context changed.
 7. Record contradictions/open questions.
 8. Update session brief.

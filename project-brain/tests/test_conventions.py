@@ -143,6 +143,8 @@ def test_gate_stale_with_dirty_tree(git_repo: Path):
     head = _git(git_repo, "rev-parse", "HEAD").strip()
     _write_report(git_repo, head)
     # Modify a tracked file without committing.
+    import time
+    time.sleep(0.01)
     (git_repo / "a.txt").write_text("dirty\n", encoding="utf-8")
     status, reason = graphify_freshness(git_repo)
     assert status == "stale"
@@ -215,7 +217,64 @@ def test_gate_stale_with_tracked_source_edit(git_repo: Path):
     head = _git(git_repo, "rev-parse", "HEAD").strip()
     _write_report(git_repo, head)
     # Edit a tracked source file without committing.
+    import time
+    time.sleep(0.01)
     (git_repo / "a.txt").write_text("modified\n", encoding="utf-8")
+    status, reason = graphify_freshness(git_repo)
+    assert status == "stale"
+    assert "uncommitted" in reason
+
+
+def test_gate_fresh_after_graphify_with_newer_report(git_repo: Path):
+    # Edit a source file, then rebuild the graph. Report mtime should be newer than source.
+    head = _git(git_repo, "rev-parse", "HEAD").strip()
+    _write_report(git_repo, head)
+    (git_repo / "a.txt").write_text("edited\n", encoding="utf-8")
+    # Simulate graphify rebuild: rewrite report with newer mtime.
+    import time
+    time.sleep(0.01)
+    _write_report(git_repo, head)
+    status, reason = graphify_freshness(git_repo)
+    assert status == "fresh", reason
+
+
+def test_gate_stale_with_edit_after_report(git_repo: Path):
+    # Build graph, then edit a source file after the report mtime.
+    head = _git(git_repo, "rev-parse", "HEAD").strip()
+    _write_report(git_repo, head)
+    import time
+    time.sleep(0.01)
+    (git_repo / "a.txt").write_text("newer\n", encoding="utf-8")
+    status, reason = graphify_freshness(git_repo)
+    assert status == "stale"
+    assert "uncommitted" in reason
+
+
+def test_gate_fresh_with_wiki_only_edit(git_repo: Path):
+    # Edit a .brain/ file after the report — should still be fresh.
+    head = _git(git_repo, "rev-parse", "HEAD").strip()
+    _write_report(git_repo, head)
+    brain = git_repo / ".brain"
+    brain.mkdir()
+    wiki = brain / "wiki.md"
+    wiki.write_text("old\n", encoding="utf-8")
+    import time
+    time.sleep(0.01)
+    wiki.write_text("new\n", encoding="utf-8")
+    status, reason = graphify_freshness(git_repo)
+    assert status == "fresh", reason
+
+
+def test_gate_stale_with_new_edit_after_fresh(git_repo: Path):
+    # Build graph, edit source (stale), rebuild graph (fresh), edit again (stale).
+    head = _git(git_repo, "rev-parse", "HEAD").strip()
+    _write_report(git_repo, head)
+    (git_repo / "a.txt").write_text("v1\n", encoding="utf-8")
+    import time
+    time.sleep(0.01)
+    _write_report(git_repo, head)
+    time.sleep(0.01)
+    (git_repo / "a.txt").write_text("v2\n", encoding="utf-8")
     status, reason = graphify_freshness(git_repo)
     assert status == "stale"
     assert "uncommitted" in reason
@@ -278,35 +337,85 @@ def _parse_args_cell(cell: str) -> tuple[set[str], set[str]]:
     return required, optional
 
 
+def _check_args_match(doc_text: str, fixture: dict, tool_name: str, cell: str) -> list[str]:
+    """Check if documented args match fixture. Returns list of mismatches."""
+    if tool_name not in fixture:
+        return [f"{tool_name}: in doc but not in fixture"]
+
+    fix = fixture[tool_name]
+    fix_required = set(fix["required"])
+    fix_props = set(fix["properties"])
+
+    doc_required, doc_optional = _parse_args_cell(cell)
+    doc_all = doc_required | doc_optional
+
+    mismatches: list[str] = []
+
+    # Every required arg in fixture must be bold in doc
+    missing_required = fix_required - doc_required
+    if missing_required:
+        mismatches.append(f"{tool_name}: fixture required {sorted(missing_required)} not bold in doc")
+
+    # No optional arg in fixture should be bold in doc
+    bold_optional = doc_required - fix_required
+    if bold_optional:
+        mismatches.append(f"{tool_name}: doc bolds optional args {sorted(bold_optional)}")
+
+    # Every fixture property must appear somewhere in doc args
+    missing_props = fix_props - doc_all
+    if missing_props:
+        mismatches.append(f"{tool_name}: fixture props {sorted(missing_props)} missing from doc")
+
+    # No doc arg that isn't in fixture (catches stale args)
+    extra = doc_all - fix_props - fix_required
+    if extra:
+        mismatches.append(f"{tool_name}: doc args {sorted(extra)} not in fixture")
+
+    return mismatches
+
+
 def test_tools_doc_args_match_fixture():
     fixture = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
     doc_text = TOOLS_DOC.read_text(encoding="utf-8")
     mismatches: list[str] = []
 
     for tool_name, cell in TABLE_ROW_RE.findall(doc_text):
-        if tool_name not in fixture:
-            mismatches.append(f"{tool_name}: in doc but not in fixture")
-            continue
-        fix = fixture[tool_name]
-        fix_required = set(fix["required"])
-        fix_props = set(fix["properties"])
-
-        doc_required, doc_optional = _parse_args_cell(cell)
-        doc_all = doc_required | doc_optional
-
-        # Every required arg in fixture must be bold in doc
-        missing_required = fix_required - doc_required
-        if missing_required:
-            mismatches.append(f"{tool_name}: fixture required {sorted(missing_required)} not bold in doc")
-
-        # Every fixture property must appear somewhere in doc args
-        missing_props = fix_props - doc_all
-        if missing_props:
-            mismatches.append(f"{tool_name}: fixture props {sorted(missing_props)} missing from doc")
-
-        # No doc arg that isn't in fixture (catches stale args)
-        extra = doc_all - fix_props - fix_required
-        if extra:
-            mismatches.append(f"{tool_name}: doc args {sorted(extra)} not in fixture")
+        mismatches.extend(_check_args_match(doc_text, fixture, tool_name, cell))
 
     assert not mismatches, "Tool doc args drift from fixture:\n" + "\n".join(mismatches)
+
+
+def test_bold_optional_arg_detected():
+    """Verify that bolding an optional arg in doc is caught as a mismatch."""
+    fixture = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
+
+    # diary_read has last_n as optional in fixture
+    assert "diary_read" in fixture
+    assert "last_n" in fixture["diary_read"]["properties"]
+    assert "last_n" not in fixture["diary_read"]["required"]
+
+    # Simulate bolding last_n in the doc
+    fake_cell = "**agent_name**, **last_n?**, topic?"
+    mismatches = _check_args_match("", fixture, "diary_read", fake_cell)
+
+    assert any("bolds optional args" in m and "last_n" in m for m in mismatches), \
+        f"Expected bold optional arg mismatch, got: {mismatches}"
+
+
+def test_no_mine_project_root_in_docs():
+    """Verify docs don't contain mine <project-root> command."""
+    docs_to_check = [
+        TOOLS_DOC,
+        PLUGIN_ROOT / "skills" / "brain" / "SKILL.md",
+        PLUGIN_ROOT / "skills" / "brain" / "references" / "mempalace-workflow.md",
+    ]
+
+    violations = []
+    for doc_path in docs_to_check:
+        if not doc_path.exists():
+            continue
+        content = doc_path.read_text()
+        if "mine <project-root>" in content or "mine $PROJECT_ROOT" in content:
+            violations.append(f"{doc_path.relative_to(PLUGIN_ROOT)}: contains mine <project-root>")
+
+    assert not violations, "Found mine <project-root> in docs:\n" + "\n".join(violations)

@@ -14,6 +14,15 @@ When a model changes, a chat resets, or a teammate returns to a codebase weeks l
 
 Six layers: evidence (`.brain/raw/` + repo files), synthesis (`.brain/wiki/`), memory (MemPalace), map (`graphify-out/`), handoff (`.brain/state/session-brief.md`), and vault (Obsidian MCP, opt-in).
 
+## Awareness hooks (bundled, automatic)
+
+The plugin ships `hooks/hooks.json` (auto-attached on install by OpenClaude-style harnesses):
+
+- **SessionStart** (also fires after context compaction, `source: "compact"`) — injects a short status line into the model's context: `.brain` presence, the doctor's graphify freshness line, pointers to `session-brief.md` / `index.md`, and the detected harness. ~40 ms, read-only.
+- **PostToolUse** (matcher `Write|Edit|MultiEdit|NotebookEdit`) — when source files changed since the graph was built, emits a short throttled reminder (≥ 300 s apart; same reason at most once per 1800 s) to update the relevant wiki pages, run the doctor-chosen graphify command, and write a session diary entry.
+
+Hooks never call MemPalace write tools or the CLI (MemPalace's own hooks already write session transcripts; a second writer fails with exit code 1), do no network I/O, are silent no-ops when `.brain/` does not exist, and always exit 0. Turn them off with `PROJECT_BRAIN_HOOKS_DISABLED=1` or by removing `hooks/hooks.json`.
+
 ## Install
 
 ```bash

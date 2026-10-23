@@ -10,17 +10,19 @@ variables, e.g. `CLAUDE_PROJECT_DIR`, `CLAUDE_PLUGIN_ROOT`,
 `CLAUDE_PLUGIN_DATA`). Detect with these signals, in this order:
 
 1. **OpenClaude** — `OPENCLAUDE_CONFIG_DIR` is set (OpenClaude's config-dir
-   override), or `CLAUDE_PLUGIN_DATA` is set (OpenClaude sets it for plugin
-   hook processes), or the session's transcript path lives under
-   `~/.openclaude/`. The plugin system uses `~/.openclaude/plugins/`.
+   override), or the session's transcript path lives under `/.openclaude/`.
+   The plugin system uses `~/.openclaude/plugins/`.
 
-2. **Claude Code** — none of the above matched but the transcript path lives
-   under `~/.claude/`, or Claude Code settings exist at
-   `~/.claude/settings.json`. Claude Code's exact variable set is UNVERIFIED
-   from the material — treat any single-signal answer as provisional.
+2. **Claude Code** — the session's transcript path lives under `/.claude/`.
+   Claude Code's exact variable set is UNVERIFIED from the material — treat
+   any single-signal answer as provisional.
 
-3. **Ambiguous** — fall through to filesystem evidence and label the harness
-   "unknown" rather than guessing. `project-brain-doctor` checks BOTH
+3. **Unknown** — anything else, INCLUDING a set `CLAUDE_PLUGIN_DATA` on its
+   own: both OpenClaude (src/utils/hooks.ts:1038) and Claude Code (its
+   persistent plugin data dir `~/.claude/plugins/data/<id>/`) set that
+   variable for plugin hook processes, so it alone is INCONCLUSIVE and must
+   NOT be used to identify the harness. Label the harness "unknown" rather
+   than guessing. `project-brain-doctor` checks BOTH
    `~/.openclaude/settings.json` and `~/.claude/settings.json` for the
    plugin-enabled check, so it works under either harness.
 

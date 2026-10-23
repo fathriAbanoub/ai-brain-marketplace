@@ -4,6 +4,35 @@ MemPalace is available as a connected plugin (mempalace 3.11.0, 47 MCP tools). U
 
 **Do not run `mempalace init` from this skill.** Init is an LLM-assisted operation that inspects the repository and writes palace structure; running it unattended inside a project-brain flow can rewrite wing/room taxonomy the brain depends on. If the palace is not initialized, stop and ask the user to run it themselves.
 
+## MemPalace's own hooks already write — one writer at a time
+
+MemPalace ships its own harness hooks (stop, session-end, precompact) that
+automatically write session transcripts and diary checkpoints into the
+palace, plus a transcript miner. Never duplicate that work: the brain's own
+diary entry (`mempalace_diary_write` with agent `brain-<project-slug>`) is a
+separate, deliberate record — it coexists with the automatic checkpoints.
+
+- Never run two palace writers concurrently. A second writer exits 1 with
+  `palace <path> is held by PID <n> ...` and there is no waiting.
+- The `mine` CLI accepts `--daemon/--direct/--background` write routing and
+  honors `MEMPALACE_WRITE_ROUTING`; hooks never cold-start the daemon. The
+  default routing is fine for the brain's recipes — do not add flags unless
+  the user runs a daemon deliberately.
+- Never call the `checkpoint` MCP tool from the brain: that is MemPalace's own
+  hooks' job (see `mempalace-tools.md`, MEMPALACE OWNED). (The CLI has no
+  `checkpoint` subcommand in 3.11.0; the tool is MCP-only.)
+
+## Diary wing (how `diary_write` actually lands)
+
+`mempalace_diary_write` stores to wing `wing_<agent_name>` unless an explicit
+`wing` is passed (MemPalace's diary tool default). With the brain's agent
+name `brain-<project-slug>` and no wing override, diary entries land in wing
+`wing_brain-<project-slug>` — NOT in the `wiki-<project-slug>` wiki wing.
+That is the intended layout: the wiki wing holds mined wiki pages; the diary
+wing holds session continuity. The `mempalace_wing:` frontmatter in
+`.brain/CLAUDE.md` names the WIKI wing for mining and search; diary recipes
+name their own agent and wing.
+
 ## Wing namespacing (critical)
 
 Every project has a dedicated MemPalace wing. The wing name is recorded in `.brain/CLAUDE.md` frontmatter as `mempalace_wing`. Always read that value and use it — never write to a generic or guessed wing name.

@@ -191,6 +191,7 @@ def scaffold(project_root: Path, title: str, force: bool = False) -> None:
     installed_line = "MemPalace is already installed as a plugin. graphify is already installed as a CLI tool and skill. Do not reinstall either."
 
     # New brains use the canonical wiki-<slug> prefix.
+    slug = sanitize_wing_name(title)
     wing_name = wiki_wing_name(title)
 
     # Reuse existing wing name if .brain/CLAUDE.md already has one (idempotent re-scaffold).
@@ -222,7 +223,10 @@ Created: {today}
 
 ## MemPalace namespace
 
-All MemPalace operations for this project use wing: `{wing_name}`. Never write to a different wing for this project.
+Wiki pages are mined into MemPalace wing `{wing_name}` — mining and memory
+search for this project use that wing. The session diary is separate:
+`mempalace_diary_write` with agent `brain-{slug}` stores under MemPalace's
+diary default `wing_brain-{slug}`. Never mine or diary into other projects' wings.
 
 ## Environment
 

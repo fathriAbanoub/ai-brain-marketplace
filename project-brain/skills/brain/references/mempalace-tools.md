@@ -175,6 +175,11 @@ mempalace_diary_write({
 })
 ```
 
+Wing note: with no `wing` argument, MemPalace stores diary entries under
+`wing_<agent_name>` (its own default), i.e. `wing_brain-<project-slug>` — a
+different wing from the mined wiki wing `wiki-<project-slug>`. That split is
+intentional; see "Diary wing" in `references/mempalace-workflow.md`.
+
 The diary entry format follows `references/mempalace-workflow.md`:
 ```
 [DATE] | [PROJECT] | [ACTION]

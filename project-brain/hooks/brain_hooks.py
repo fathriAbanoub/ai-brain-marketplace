@@ -17,6 +17,8 @@ Hard constraints (report Part 7):
     or MCP write tools. MemPalace's own hooks already write session
     transcripts into the palace; a second writer fails with exit code 1
     ("palace ... is held by PID ...").
+  - Throttle state is per project (keyed by the resolved project root), so a
+    reminder in project A never suppresses one in project B (0.9.2 fix).
   - No network, standard library only (plus the plugin's own doctor.py).
   - Bounded output (MAX_CONTEXT_CHARS), throttled + deduplicated reminders.
   - Silent no-op when .brain/ does not exist or anything fails; always exits
@@ -69,6 +71,29 @@ REASON_MAX_CHARS = 160  # doctor reason text bound inside the reminder
 EVENT_SESSION_START = "session-start"
 EVENT_POST_TOOL_USE = "post-tool-use"
 EVENTS = (EVENT_SESSION_START, EVENT_POST_TOOL_USE)
+BRAIN_DIR_NAME = ".brain"
+GRAPHIFY_OUT_DIR_NAME = "graphify-out"
+# Edits inside these directories ARE the remedy the reminder asks for, so
+# they must never trigger the reminder itself.
+REMINDER_IMMUNE_DIRS = frozenset({BRAIN_DIR_NAME, GRAPHIFY_OUT_DIR_NAME})
+# PostToolUse tool_input keys that may carry the edited path. file_path is
+# verified for Edit/Write and notebook_path for NotebookEdit in OpenClaude
+# 0.33.0 (FileEditTool/types.ts:8, FileWriteTool/FileWriteTool.ts:58,
+# NotebookEditTool/NotebookEditTool.ts:32). "path" is a defensive fallback:
+# no OpenClaude 0.33.0 core tool uses it (MultiEdit does not exist there), so
+# it covers other harnesses' tools and is UNVERIFIED as a real key.
+TOOL_PATH_KEYS = ("file_path", "notebook_path", "path")
+# State file format v2: {"version": 2, "projects": {<root>: {"ts": ..., "sig": ...}}}.
+# Legacy flat keys (post_tool_use_ts / post_tool_use_sig, one shared project)
+# are ignored, not crash-worthy (0.9.2 fix).
+STATE_FORMAT_VERSION = 2
+STATE_VERSION_KEY = "version"
+PROJECTS_KEY = "projects"
+TS_KEY = "ts"
+SIG_KEY = "sig"
+# Upper bound on how many projects keep throttle state; the oldest entries by
+# timestamp are dropped first so one long-lived state file cannot grow forever.
+MAX_TRACKED_PROJECTS = 32
 # Event names as OpenClaude's hookSpecificOutput union discriminates them
 # (src/types/hooks.ts:84,101) and as hooks.json keys them.
 HOOK_EVENT_NAME_SESSION_START = "SessionStart"
@@ -97,11 +122,12 @@ def read_payload() -> dict:
 def detect_harness(payload: dict) -> str:
     """Best-effort harness label. Never guessed harder than the evidence.
 
-    Evidence, strongest first: OPENCLAUDE_CONFIG_DIR is OpenClaude's config
-    override (src/utils/envUtils.ts:76); the transcript path location;
-    CLAUDE_PLUGIN_DATA is set by OpenClaude hook processes
-    (src/utils/hooks.ts:1038) — Claude Code behavior UNVERIFIED, so it is the
-    weakest signal and maps to "openclaude-compatible".
+    Signals, in this order: OPENCLAUDE_CONFIG_DIR is OpenClaude's config
+    override (src/utils/envUtils.ts:76); the transcript path location
+    (/.openclaude/ vs /.claude/). CLAUDE_PLUGIN_DATA is set by BOTH OpenClaude
+    (src/utils/hooks.ts:1038) and Claude Code (its persistent plugin data dir
+    ~/.claude/plugins/data/<id>/ — user-verified correction, 2026-10-23), so
+    on its own it is INCONCLUSIVE and must not change the label.
     """
     if os.environ.get(OPENCLAUDE_CONFIG_ENV):
         return HARNESS_OPENCLAUDE
@@ -110,15 +136,50 @@ def detect_harness(payload: dict) -> str:
         return HARNESS_OPENCLAUDE
     if "/.claude/" in transcript:
         return HARNESS_CLAUDE_CODE
-    if os.environ.get(PLUGIN_DATA_ENV):
-        return "openclaude-compatible"
     return HARNESS_UNKNOWN
 
 
 def resolve_root(payload: dict) -> Path:
-    cwd = str(payload.get("cwd") or os.environ.get(PROJECT_DIR_ENV) or "").strip()
-    root = Path(cwd) if cwd else Path.cwd()
-    return root.expanduser().resolve()
+    """Return the project root: the nearest ancestor (starting dir included)
+    that contains a .brain directory; the starting directory itself when no
+    ancestor has one (keeps the silent no-op behavior). The starting directory
+    is the payload cwd, else CLAUDE_PROJECT_DIR, else the process cwd; the
+    walk stops at the filesystem root."""
+    start = str(payload.get("cwd") or os.environ.get(PROJECT_DIR_ENV) or "").strip()
+    root = (Path(start) if start else Path.cwd()).expanduser().resolve()
+    for candidate in (root, *root.parents):
+        if (candidate / BRAIN_DIR_NAME).is_dir():
+            return candidate
+    return root
+
+
+def _edited_path(payload: dict) -> Path | None:
+    """First readable path from tool_input, or None if the payload carries no
+    usable path. Key order follows TOOL_PATH_KEYS (verified names first)."""
+    tool_input = payload.get("tool_input")
+    if not isinstance(tool_input, dict):
+        return None
+    for key in TOOL_PATH_KEYS:
+        value = tool_input.get(key)
+        if isinstance(value, str) and value.strip():
+            return Path(value.strip())
+    return None
+
+
+def edits_reminder_immune_dir(payload: dict, root: Path) -> bool:
+    """True when the edited path lies inside .brain/ or graphify-out/ (inside
+    the project). Editing those IS the remedy the reminder asks for, so the
+    hook must stay silent for them. Paths outside the project root, or a
+    payload without any path, return False (current behavior applies)."""
+    edited = _edited_path(payload)
+    if edited is None:
+        return False
+    candidate = edited if edited.is_absolute() else root / edited
+    try:
+        rel = candidate.resolve().relative_to(root.resolve())
+    except (ValueError, OSError):
+        return False
+    return bool(rel.parts) and rel.parts[0] in REMINDER_IMMUNE_DIRS
 
 
 def _state_path() -> Path:
@@ -172,21 +233,55 @@ def session_start_context(root: Path, payload: dict) -> str:
     return "\n".join(lines)
 
 
-def post_tool_use_context(root: Path) -> str:
+def _project_entry(state: dict, root: Path) -> dict:
+    """This project's throttle entry from state v2; legacy/unknown shapes
+    yield an empty entry (no crash, no suppression)."""
+    projects = state.get(PROJECTS_KEY)
+    if not isinstance(projects, dict):
+        return {}
+    entry = projects.get(str(root))
+    return dict(entry) if isinstance(entry, dict) else {}
+
+
+def _record_fire(state: dict, root: Path, now: float, sig: str) -> dict:
+    """Merge this fire into the state, keyed by project root, bounded to
+    MAX_TRACKED_PROJECTS (oldest by timestamp dropped first)."""
+    new_state = dict(state)
+    projects = dict(new_state.get(PROJECTS_KEY)) if isinstance(new_state.get(PROJECTS_KEY), dict) else {}
+    projects[str(root)] = {TS_KEY: now, SIG_KEY: sig}
+    if len(projects) > MAX_TRACKED_PROJECTS:
+        ranked = sorted(
+            projects.items(),
+            key=lambda item: float(item[1].get(TS_KEY, 0.0)) if isinstance(item[1], dict) else 0.0,
+            reverse=True,
+        )
+        projects = dict(ranked[:MAX_TRACKED_PROJECTS])
+    new_state[PROJECTS_KEY] = projects
+    new_state[STATE_VERSION_KEY] = STATE_FORMAT_VERSION
+    return new_state
+
+
+def post_tool_use_context(root: Path, payload: dict | None = None) -> str:
+    # Reminder-immune edits (.brain/, graphify-out/) cost nothing: decided
+    # before state or git work (main() also guards this earlier — defense in
+    # depth for direct callers).
+    if payload is not None and edits_reminder_immune_dir(payload, root):
+        return ""
     # Cheap interval throttle FIRST: this hook fires on every Write/Edit, and
     # graphify_freshness costs two git subprocesses (5 s timeouts each). While
     # throttled, return before paying that cost; freshness is computed only
-    # when a reminder could actually fire.
+    # when a reminder could actually fire. State is per project.
     now = time.time()
     state = load_state()
-    last_ts = float(state.get("post_tool_use_ts", 0.0))
+    entry = _project_entry(state, root)
+    last_ts = float(entry.get(TS_KEY, 0.0))
     if (now - last_ts) < POST_TOOL_USE_MIN_INTERVAL_SECS:
         return ""
     freshness, reason = graphify_freshness(root)
     if freshness == "fresh":
         return ""
     sig = reason[:REASON_MAX_CHARS]
-    same_reason_recent = (sig == str(state.get("post_tool_use_sig", ""))) and (
+    same_reason_recent = (sig == str(entry.get(SIG_KEY, ""))) and (
         (now - last_ts) < SAME_REASON_REPEAT_SECS
     )
     if same_reason_recent:
@@ -194,10 +289,7 @@ def post_tool_use_context(root: Path) -> str:
     # ponytail: if the state file cannot be written (read-only HOME), dedupe
     # silently degrades and the reminder may repeat; bounded text keeps that
     # harmless. Upgrade path: fall back to a temp dir next to the project.
-    new_state = dict(state)
-    new_state["post_tool_use_ts"] = now
-    new_state["post_tool_use_sig"] = sig
-    save_state(new_state)
+    save_state(_record_fire(state, root, now, sig))
     return (
         "project-brain: source changed since the graph was built "
         f"({sig}). Before finishing this turn: update the relevant "
@@ -217,12 +309,16 @@ def main(argv: list[str]) -> int:
             return 0
         payload = read_payload()
         root = resolve_root(payload)
-        if not (root / ".brain").is_dir():
+        if not (root / BRAIN_DIR_NAME).is_dir():
             return 0  # silent no-op without a brain
         if event == EVENT_SESSION_START:
             emit(HOOK_EVENT_NAME_SESSION_START, session_start_context(root, payload))
         else:
-            emit(HOOK_EVENT_NAME_POST_TOOL_USE, post_tool_use_context(root))
+            # Skip BEFORE any state or git work: an edit inside .brain/ or
+            # graphify-out/ is the remedy, not a trigger.
+            if edits_reminder_immune_dir(payload, root):
+                return 0
+            emit(HOOK_EVENT_NAME_POST_TOOL_USE, post_tool_use_context(root, payload))
     except Exception:
         # Never break or block the session on any failure.
         return 0

@@ -458,3 +458,123 @@ def test_no_mine_project_root_in_docs():
             violations.append(f"{doc_path.relative_to(PLUGIN_ROOT)}: contains mine <project-root>")
 
     assert not violations, "Found mine <project-root> in docs:\n" + "\n".join(violations)
+
+
+# --- Finding 1: Recall step mentions both search and diary_read ---------------
+
+
+def test_skill_step7_mentions_both_mempalace_tools():
+    """SKILL.md step 7 must mention both mempalace_search and mempalace_diary_read."""
+    skill_md = PLUGIN_ROOT / "skills" / "brain" / "SKILL.md"
+    content = skill_md.read_text(encoding="utf-8")
+
+    # Find step 7 section (starts with "7. Check MemPalace")
+    step7_start = content.find("7. Check MemPalace")
+    assert step7_start != -1, "Step 7 not found in SKILL.md"
+
+    # Find next numbered step (8.) to bound the section
+    step8_start = content.find("\n8. ", step7_start)
+    if step8_start == -1:
+        step7_section = content[step7_start:]
+    else:
+        step7_section = content[step7_start:step8_start]
+
+    assert "mempalace_search" in step7_section, "Step 7 must mention mempalace_search"
+    assert "mempalace_diary_read" in step7_section, "Step 7 must mention mempalace_diary_read"
+
+
+def test_lifecycle_consolidate_mentions_both_mempalace_tools():
+    """brain-lifecycle.md consolidate memory section must mention both tools."""
+    lifecycle_md = PLUGIN_ROOT / "skills" / "brain" / "references" / "brain-lifecycle.md"
+    content = lifecycle_md.read_text(encoding="utf-8")
+
+    # Find "Consolidate memory" section
+    section_start = content.find("### Consolidate memory")
+    assert section_start != -1, "Consolidate memory section not found"
+
+    # Find next ### heading to bound the section
+    next_section = content.find("\n### ", section_start + 1)
+    if next_section == -1:
+        section = content[section_start:]
+    else:
+        section = content[section_start:next_section]
+
+    assert "mempalace_search" in section, "Consolidate memory must mention mempalace_search"
+    assert "mempalace_diary_read" in section, "Consolidate memory must mention mempalace_diary_read"
+
+
+# --- Finding 2: Diary read recipe links to existing brains procedure ----------
+
+
+def test_diary_read_recipe_links_to_existing_brains():
+    """mempalace-tools.md diary read recipe must link to existing brains procedure."""
+    tools_md = PLUGIN_ROOT / "skills" / "brain" / "references" / "mempalace-tools.md"
+    workflow_md = PLUGIN_ROOT / "skills" / "brain" / "references" / "mempalace-workflow.md"
+
+    tools_content = tools_md.read_text(encoding="utf-8")
+    workflow_content = workflow_md.read_text(encoding="utf-8")
+
+    # Find diary read recipe section
+    recipe_start = tools_content.find("### 5. Read Diary at Wake-up")
+    assert recipe_start != -1, "Diary read recipe not found"
+
+    # Find next ### to bound the section
+    next_recipe = tools_content.find("\n### ", recipe_start + 1)
+    if next_recipe == -1:
+        recipe_section = tools_content[recipe_start:]
+    else:
+        recipe_section = tools_content[recipe_start:next_recipe]
+
+    # Must link to existing brains procedure
+    assert "mempalace-workflow.md#existing-brains-older-diary-entries" in recipe_section, \
+        "Diary read recipe must link to existing brains procedure"
+
+    # Verify the heading exists in mempalace-workflow.md
+    assert "### Existing brains: older diary entries" in workflow_content, \
+        "Existing brains heading must exist in mempalace-workflow.md"
+
+
+# --- Finding 3: Missing wing guard ---------------------------------------------
+
+
+def test_skill_step7_has_missing_wing_guard():
+    """SKILL.md step 7 must guard against missing mempalace_wing."""
+    skill_md = PLUGIN_ROOT / "skills" / "brain" / "SKILL.md"
+    content = skill_md.read_text(encoding="utf-8")
+
+    step7_start = content.find("7. Check MemPalace")
+    assert step7_start != -1, "Step 7 not found"
+
+    step8_start = content.find("\n8. ", step7_start)
+    step7_section = content[step7_start:step8_start] if step8_start != -1 else content[step7_start:]
+
+    # Must mention missing/not defined check
+    assert "missing or does not define" in step7_section.lower(), \
+        "Step 7 must check if .brain/CLAUDE.md is missing or has no mempalace_wing"
+
+    # Must tell user to initialize
+    assert "initialize" in step7_section.lower() or "project-brain-init" in step7_section, \
+        "Step 7 must tell user to run project-brain-init"
+
+    # Must warn against inferring wing
+    assert "never infer" in step7_section.lower(), \
+        "Step 7 must warn against inferring a wing"
+
+
+def test_mempalace_tools_search_recipe_has_wing_guard():
+    """mempalace-tools.md search recipe must guard against missing wing."""
+    tools_md = PLUGIN_ROOT / "skills" / "brain" / "references" / "mempalace-tools.md"
+    content = tools_md.read_text(encoding="utf-8")
+
+    # Find Recipe 2 (Recall Before Claims)
+    recipe_start = content.find("### 2. Recall Before Claims")
+    assert recipe_start != -1, "Recall Before Claims recipe not found"
+
+    next_recipe = content.find("\n### ", recipe_start + 1)
+    recipe_section = content[recipe_start:next_recipe] if next_recipe != -1 else content[recipe_start:]
+
+    # Must have the guard
+    assert "missing or does not define" in recipe_section.lower(), \
+        "Recall recipe must check for missing mempalace_wing"
+    assert "never infer" in recipe_section.lower(), \
+        "Recall recipe must warn against inferring wing"

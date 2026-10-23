@@ -2,6 +2,9 @@
 
 graphify is installed as both a CLI tool and an MCP server (graphify 0.9.92+). Use it via `/graphify` skill, shell commands, or MCP tools depending on the task.
 
+> Version note: the command guidance in this file is verified against
+> graphify 0.9.93; check yours with `uv tool list | grep graphify`.
+
 ## Finding the binary
 
 ```bash
@@ -31,13 +34,25 @@ Use the skill for first-time graph builds, broad relationship analysis, architec
 Use for targeted operations:
 
 ```bash
-graphify extract <path>                  # build or rebuild graph from source
+graphify extract <path>                  # full build or rebuild (semantic pass costs API calls)
 graphify update <path>                   # incremental AST update (no API cost)
 graphify query "<question>"              # natural language query over the graph
 graphify path "<NodeA>" "<NodeB>"        # shortest path between two nodes
 graphify explain "<concept>"             # explain a concept using graph context
-graphify report <path>                   # generate GRAPH_REPORT.md
+graphify watch <path>                    # watch mode: auto-rebuild code changes (Ctrl+C to stop)
+graphify cluster-only <path>             # (re)cluster and write GRAPH_REPORT.md / graph.html
 ```
+
+There is no `build` subcommand and no `report` subcommand in the graphify CLI
+(verified against graphify 0.9.93's dispatch). The full build is
+`graphify extract`.
+`GRAPH_REPORT.md` is written by `update`/`watch` rebuilds and by
+`cluster-only` — a full `extract` intentionally stops at `graph.json` +
+analysis and does NOT write the report.
+
+`update` re-extracts code files only (AST, no LLM). Doc/paper/image changes
+need the `/graphify --update` skill (LLM semantic pass) or a full
+`/graphify .` run.
 
 ### MCP server mode
 
@@ -50,7 +65,7 @@ graphify-mcp is registered in `~/.mcp.json` and loads automatically in OpenClaud
 The server needs a `graph.json` to exist at `graphify-out/graph.json` in the project root. If it doesn't exist yet:
 
 ```bash
-graphify build .                # builds graphify-out/graph.json
+graphify extract .              # builds graphify-out/graph.json (no `build` subcommand exists)
 ```
 
 Then restart the MCP server (restart OpenClaude or reconnect). The graphify-mcp server can also be started manually for a specific graph:
@@ -145,9 +160,9 @@ Inferred relationships are leads until verified from source files.
 
 If graphify MCP tools are missing from the session:
 
-1. Check that `graphify-out/graph.json` exists in the project root. If not, run `graphify build .` first.
+1. Check that `graphify-out/graph.json` exists in the project root. If not, run `graphify extract .` first.
 2. Check that `~/.mcp.json` has a `graphify` entry pointing to the result of `which graphify-mcp`.
-3. Fall back to shell commands (`graphify query`, `graphify path`, `graphify report`) for the same queries.
+3. Fall back to shell commands (`graphify query`, `graphify path`, `graphify explain`) for the same queries.
 4. Fall back to reading `graphify-out/GRAPH_REPORT.md` directly for structural overviews.
 
 Never grep the source tree manually to answer relationship questions that graphify can answer.

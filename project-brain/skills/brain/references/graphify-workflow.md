@@ -43,6 +43,11 @@ graphify watch <path>                    # watch mode: auto-rebuild code changes
 graphify cluster-only <path>             # (re)cluster and write GRAPH_REPORT.md / graph.html
 ```
 
+`watch` needs the optional `watch` extra (it provides `watchdog`): install with
+`uv tool install "graphifyy[watch]"` (verified in the graphifyy 0.9.93 package
+metadata: `Provides-Extra: watch`, `Requires-Dist: watchdog; extra == "watch"`).
+Watch mode stays optional — no workflow step below requires it.
+
 There is no `build` subcommand and no `report` subcommand in the graphify CLI
 (verified against graphify 0.9.93's dispatch). The full build is
 `graphify extract`.

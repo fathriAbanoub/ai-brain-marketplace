@@ -46,7 +46,7 @@ name `brain-<project-slug>` and no wing override, diary entries land in wing
 That is the intended layout: the wiki wing holds mined wiki pages; the diary
 wing holds session continuity. The `mempalace_wing:` frontmatter in
 `.brain/CLAUDE.md` names the WIKI wing for mining and search; diary recipes
-name their own agent and wing.
+name their own agent and wing. The exact agent name is recorded in `.brain/CLAUDE.md` as `mempalace_diary_agent`.
 
 ### Existing brains: older diary entries
 
@@ -232,7 +232,7 @@ Use `.brain/state/session-brief.md` for the short current handoff, next read tar
 
 MemPalace is not the final source of project truth. When memory contains stable facts:
 
-1. Search MemPalace for the relevant context.
+1. Follow the recall rule in the plugin's SKILL.md step 7.
 2. Verify against raw sources, repo files, or existing wiki pages.
 3. Promote durable findings into `.brain/wiki/` pages.
 4. Add or update decision records when the memory captures a decision.

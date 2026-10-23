@@ -90,7 +90,7 @@ Actions:
 2. Read `.brain/state/session-brief.md`.
 3. Read `.brain/wiki/index.md`.
 4. Read `graphify-out/GRAPH_REPORT.md` if present.
-5. Query MemPalace for project name, current task, recent decisions, and user preferences if available.
+5. Follow the recall rule in the plugin's SKILL.md step 7.
 6. Produce a concise orientation with project purpose, components, current workstream, known risks, and next files/pages.
 7. Update the session brief if the current state differs from the stored state.
 
@@ -124,7 +124,7 @@ Actions:
 1. Read the wiki index first.
 2. Search/read relevant wiki pages.
 3. Use graphify for relationship, architecture, path, or code-navigation questions.
-4. Search MemPalace for past conversations, preferences, and decision context.
+4. Follow the recall rule in the plugin's SKILL.md step 7.
 5. Check raw sources for high-stakes or contested claims.
 6. Answer with citations to wiki pages, raw paths, graph report, or memory notes as appropriate.
 7. If the answer creates durable value, save it to `.brain/outputs/queries/` or promote it into the wiki.

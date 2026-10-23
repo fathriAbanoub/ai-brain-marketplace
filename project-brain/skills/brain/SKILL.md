@@ -154,7 +154,7 @@ Steps:
 2. Read `.brain/state/session-brief.md`.
 3. Read `.brain/wiki/index.md`.
 4. Read `graphify-out/GRAPH_REPORT.md` if present.
-5. Call `mempalace_status` and search MemPalace for the project name, current task, recent decisions, and relevant user preferences when available.
+5. Follow the recall rule in step 7 below.
 6. Produce a short orientation: project purpose, current state, architecture map, decisions, risks, and next read targets.
 7. Update the session brief if it is stale.
 
@@ -190,7 +190,7 @@ Steps:
 1. Identify the question type and route to the right layer first using `references/retrieval-strategy.md` or the routing table in `references/agent-playbook.md`.
 2. Read only the relevant pages, graph reports, memories, logs, or raw sources needed for that question type.
 3. Use graphify first for relationship, architecture, path, dependency, or code-navigation questions.
-4. Search MemPalace first for prior decisions, preferences, or previous session context.
+4. Follow the recall rule in step 7 below.
 5. Check raw sources first for high-stakes, uncertain, or contested evidence claims.
 6. Answer with clear citations/paths/wikilinks and state confidence when only one layer supports the answer.
 7. If the answer is durable, save it under `.brain/outputs/queries/` or promote it into `.brain/wiki/`.
@@ -217,7 +217,7 @@ Use after significant project conversations, decisions, preference changes, or h
 Steps:
 
 1. Call `mempalace_status`.
-2. Search MemPalace before making claims about previous work. For claims about wiki knowledge (decisions, architecture, project facts), use `mempalace_search` with the wiki wing from `.brain/CLAUDE.md`; for claims about what happened in earlier sessions (continuity, what was done last time, open threads), use `mempalace_diary_read` with agent brain-<project-slug>; the wiki search does not read the diary and the diary read does not search wiki pages, so use the one that fits the claim, or both.
+2. Follow the recall rule in step 7 above.
 3. Write a concise diary entry with `mempalace_diary_write` after substantial work, decisions, or context changes. Follow the diary entry minimum standard in `references/mempalace-workflow.md`.
 4. Convert stable memory into wiki pages, decisions, or `.brain/CLAUDE.md` preferences.
 5. Never store secrets.

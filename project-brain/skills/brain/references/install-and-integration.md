@@ -106,7 +106,7 @@ syntax and can only exclude more than `.gitignore`, never re-include.
 2. `.brain/state/session-brief.md`
 3. `.brain/wiki/index.md`
 4. `graphify-out/GRAPH_REPORT.md` when available
-5. MemPalace before making claims about past work
+5. MemPalace before making claims about past work. For claims about wiki knowledge (decisions, architecture, project facts), use `mempalace_search` with the wiki wing from `.brain/CLAUDE.md`; for claims about what happened in earlier sessions (continuity, what was done last time, open threads), use `mempalace_diary_read` with agent brain-<project-slug>; the wiki search does not read the diary and the diary read does not search wiki pages, so use the one that fits the claim, or both.
 
 If the project already has a `CLAUDE.md`, the scaffold appends the block only when it is missing.
 

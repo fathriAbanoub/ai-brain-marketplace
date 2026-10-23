@@ -21,7 +21,7 @@ Use this every time the agent writes or edits wiki pages.
 
 - [ ] Read `graphify-out/GRAPH_REPORT.md` and promote stable findings into the wiki.
 - [ ] Consolidate MemPalace memory: write a diary entry if the session created durable context. Follow the diary entry minimum standard in `references/mempalace-workflow.md`.
-- [ ] Search MemPalace before summarizing prior decisions or preferences.
+- [ ] Search MemPalace before summarizing prior decisions or preferences. For claims about wiki knowledge (decisions, architecture, project facts), use `mempalace_search` with the wiki wing from `.brain/CLAUDE.md`; for claims about what happened in earlier sessions (continuity, what was done last time, open threads), use `mempalace_diary_read` with agent brain-<project-slug>; the wiki search does not read the diary and the diary read does not search wiki pages, so use the one that fits the claim, or both.
 - [ ] Run `project-brain-lint <project-root>` after large edits.
 - [ ] Create audit notes for uncertain claims that need later review.
 

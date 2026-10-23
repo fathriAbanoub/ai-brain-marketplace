@@ -146,7 +146,7 @@ for index health and `mempalace status` for server health.
 ### 2. Recall Before Claims (at wake-up/orient)
 
 Always pass the project's wiki wing. Without `wing`, the search scans the
-whole palace — other projects' transcript wings included.
+whole palace — other projects' transcript wings included. If `.brain/CLAUDE.md` is missing or does not define a non-empty `mempalace_wing`, skip the MemPalace search, tell the user the brain is not initialized or configured and to run project-brain-init (or fix the file), and never infer a wing or search without one.
 
 ```
 mempalace_search({
@@ -211,6 +211,8 @@ mempalace_diary_read({
   last_n: 5
 })
 ```
+
+If this read is empty for an older brain, follow [Existing brains: older diary entries](mempalace-workflow.md#existing-brains-older-diary-entries) in mempalace-workflow.md, which does the read-only legacy-wing lookup.
 
 ### 6. Preflight Index Health (CLI fallback)
 

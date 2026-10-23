@@ -4,17 +4,28 @@ How to detect whether you're running in OpenClaude or Claude Code, and how to up
 
 ## Detecting the harness
 
-Check in this order:
+There is NO dedicated `OPENCLAUDE` environment variable (verified against the
+OpenClaude 0.33.0 source: hook processes receive only `CLAUDE_*`-named
+variables, e.g. `CLAUDE_PROJECT_DIR`, `CLAUDE_PLUGIN_ROOT`,
+`CLAUDE_PLUGIN_DATA`). Detect with these signals, in this order:
 
-1. **OpenClaude** — the `OPENCLAUDE` environment variable is set, or the session prompt mentions "OpenClaude". The plugin system uses `~/.openclaude/`. MCP tools are loaded from `~/.openclaude/plugins/`.
+1. **OpenClaude** — `OPENCLAUDE_CONFIG_DIR` is set (OpenClaude's config-dir
+   override), or `CLAUDE_PLUGIN_DATA` is set (OpenClaude sets it for plugin
+   hook processes), or the session's transcript path lives under
+   `~/.openclaude/`. The plugin system uses `~/.openclaude/plugins/`.
 
-2. **Claude Code** — no `OPENCLAUDE` env var. Plugin system uses `~/.claude/`. MCP servers are configured in `~/.claude/settings.json` under `mcpServers`.
+2. **Claude Code** — none of the above matched but the transcript path lives
+   under `~/.claude/`, or Claude Code settings exist at
+   `~/.claude/settings.json`. Claude Code's exact variable set is UNVERIFIED
+   from the material — treat any single-signal answer as provisional.
 
-3. **Ambiguous** — run `echo $OPENCLAUDE` in bash. Empty = Claude Code. Non-empty (any value) = OpenClaude.
+3. **Ambiguous** — fall through to filesystem evidence and label the harness
+   "unknown" rather than guessing. `project-brain-doctor` checks BOTH
+   `~/.openclaude/settings.json` and `~/.claude/settings.json` for the
+   plugin-enabled check, so it works under either harness.
 
 ```bash
-# Quick harness check
-echo "OPENCLAUDE=${OPENCLAUDE:-<unset>}"
+# Quick harness check (filesystem evidence only — no env var is guaranteed)
 ls ~/.openclaude/plugins/ 2>/dev/null && echo "OpenClaude plugins dir exists" || echo "no OpenClaude plugins dir"
 ls ~/.claude/settings.json 2>/dev/null && echo "Claude Code settings exist" || echo "no Claude Code settings"
 ```

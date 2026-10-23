@@ -31,7 +31,7 @@ At the start of any serious project-brain session:
 project-brain-init <project-root> "<Project Name>"
 ```
 
-If `project-brain-init` is not on PATH (exit code 127), find the plugin root and run the script directly:
+If `project-brain-init` is not on PATH (exit code 127), find the plugin root and run the script directly. Prefer the harness-provided plugin root when available (`${CLAUDE_PLUGIN_ROOT}` — substituted by OpenClaude/Claude Code in skill and command text); otherwise use the concrete fallbacks:
 
 ```bash
 # Option 1: use the OpenClaude plugin cache path

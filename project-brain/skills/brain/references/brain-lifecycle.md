@@ -165,7 +165,7 @@ Before any MemPalace call, read `references/mempalace-tools.md` for the complete
 Actions:
 
 1. Call `mempalace_status` (preflight). If `vector_disabled` is true, skip writes and tell the user to run `mempalace repair rebuild-index`.
-2. Search MemPalace before making claims about previous work (`mempalace_search`).
+2. Search MemPalace before making claims about previous work (`mempalace_search`, passing the project's wiki wing from `.brain/CLAUDE.md`).
 3. Store diary entries after meaningful changes (follow diary format in `references/mempalace-tools.md`).
 4. Store user preferences that should survive model switches.
 5. Convert stable facts from memory into wiki pages or decisions.

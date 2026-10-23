@@ -22,6 +22,21 @@ separate, deliberate record — it coexists with the automatic checkpoints.
   hooks' job (see `mempalace-tools.md`, MEMPALACE OWNED). (The CLI has no
   `checkpoint` subcommand in 3.11.0; the tool is MCP-only.)
 
+### Diary writes and the palace lock
+
+A diary write near the end of a session can collide with MemPalace's own
+hooks (stop, session-end, precompact), which write at session end. Rules:
+
+- Never write the diary while the brain's own mine is running — do the mine
+  and the diary write one after another, never interleaved.
+- If `mempalace_diary_write` fails with `palace <path> is held by PID <n> ...`,
+  wait for the holder to finish, retry ONCE, and if the retry still fails,
+  append the diary text to `.brain/log/<YYYYMMDD>.md` (the plugin's existing
+  daily log) and tell the user the MemPalace write failed.
+- "Never retry in a loop" still applies to every OTHER palace write (mine,
+  add_drawer, update_drawer): one failure means wait for the holder to finish
+  and let the user decide; do not retry automatically.
+
 ## Diary wing (how `diary_write` actually lands)
 
 `mempalace_diary_write` stores to wing `wing_<agent_name>` unless an explicit
@@ -33,9 +48,24 @@ wing holds session continuity. The `mempalace_wing:` frontmatter in
 `.brain/CLAUDE.md` names the WIKI wing for mining and search; diary recipes
 name their own agent and wing.
 
+### Existing brains: older diary entries
+
+Brains scaffolded by plugin versions before the diary-wing split were told
+that ALL MemPalace operations use the project wing, so their diary entries may
+sit in the project's wiki wing (the one named in `.brain/CLAUDE.md`) instead
+of `wing_brain-<project-slug>`. If `mempalace_diary_read` (agent
+`brain-<project-slug>`) looks empty for an older brain:
+
+1. Read the old entries ONCE, read-only: `mempalace_list_drawers` with
+   `wing` = the old wing named in `.brain/CLAUDE.md` and `room: "diary"`.
+2. Moving them to the new diary wing is possible with
+   `mempalace_update_drawer` (it accepts a `wing` argument) — ONLY after
+   asking the user. UNVERIFIED: this move has never been tested.
+3. There is no automatic migration, and none should be written.
+
 ## Wing namespacing (critical)
 
-Every project has a dedicated MemPalace wing. The wing name is recorded in `.brain/CLAUDE.md` frontmatter as `mempalace_wing`. Always read that value and use it — never write to a generic or guessed wing name.
+Every project has a dedicated MemPalace wiki wing. The wing name is recorded in `.brain/CLAUDE.md` frontmatter as `mempalace_wing`. That value names the WIKI wing: it applies to wiki mining and wiki search only — NOT to diary operations. Diary reads and writes use the agent name `brain-<project-slug>` and MemPalace's diary wing `wing_brain-<project-slug>` (see "Diary wing" above). Never write to a generic or guessed wing name.
 
 ```bash
 # Read the wing name for the current project:
@@ -66,7 +96,7 @@ The MCP server is registered in the OpenClaude mempalace plugin — it launches 
 ### Core palace tools
 
 - `mempalace_status` — verify the memory layer before making claims about availability or prior sessions. Call this at the start of serious work.
-- `mempalace_search` — full-text + semantic search across all wings, rooms, and drawers. Primary way to find prior context.
+- `mempalace_search` — full-text + semantic search across all wings, rooms, and drawers. Primary way to find prior context. For project knowledge always pass the project's wiki wing (see "Wing namespacing").
 - `mempalace_list_wings` — list all wings in the palace.
 - `mempalace_list_rooms` — list rooms in a wing.
 - `mempalace_list_drawers` — list drawers in a wing/room.
@@ -149,7 +179,7 @@ Call `mempalace_status` at the start of serious project-brain work and before an
 
 ### Finding prior context
 
-Call `mempalace_search` before summarizing past project decisions, prior work, user preferences, remembered constraints, or unresolved threads. Search with the project name, current task, important entities, and decision terms.
+Call `mempalace_search` before summarizing past project decisions, prior work, user preferences, remembered constraints, or unresolved threads. Search with the project name, current task, important entities, and decision terms, and pass `wing` = the wiki wing from `.brain/CLAUDE.md` so the search stays inside this project's namespace (a wingless search scans the whole palace, other projects included).
 
 ### Writing a new memory
 
@@ -158,7 +188,7 @@ Call `mempalace_search` before summarizing past project decisions, prior work, u
 
 ### Diary writes
 
-Call `mempalace_diary_write` after substantial work, decisions, or context changes.
+Call `mempalace_diary_write` after substantial work, decisions, or context changes — never while the brain's own mine is running (see "Diary writes and the palace lock").
 
 **Required diary entry format:**
 

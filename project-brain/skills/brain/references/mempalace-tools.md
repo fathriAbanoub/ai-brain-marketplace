@@ -105,7 +105,10 @@ These behaviors were confirmed by running MemPalace 3.11.0 against scratch palac
 **Concurrent writes (lock contention):** A second writer on the same palace exits immediately with
 exit code 1 and prints `palace <path> is held by PID <n> (...); wait for it to finish or stop the
 holder before retrying`. Never run two `mine`/`add_drawer`/`checkpoint` calls against the same palace
-concurrently. Never retry in a loop — wait for the holder to finish.
+concurrently. Never retry in a loop — wait for the holder to finish. The ONE exception is the
+session diary write (`mempalace_diary_write`): after the holder finishes it may retry once, and if
+that still fails, append the diary text to `.brain/log/<YYYYMMDD>.md` and tell the user — see
+"Diary writes and the palace lock" in `references/mempalace-workflow.md`.
 
 **Page length cutoff:** Pages with a body of 51 characters or fewer are silently skipped by mining
 (verified: 60-char pages are filed, sub-51 pages are skipped). The exact boundary is between 51 and 59
@@ -142,12 +145,19 @@ for index health and `mempalace status` for server health.
 
 ### 2. Recall Before Claims (at wake-up/orient)
 
+Always pass the project's wiki wing. Without `wing`, the search scans the
+whole palace — other projects' transcript wings included.
+
 ```
 mempalace_search({
   query: "<project-name> decisions preferences",
+  wing: "wiki-<project-slug>",
   limit: 10
 })
 ```
+
+Read the exact wing from `mempalace_wing:` in `.brain/CLAUDE.md` (it names
+the WIKI wing — wiki mining and wiki search only).
 
 ### 3. Sync the Wiki (after wiki edits)
 
@@ -191,6 +201,9 @@ Next: [priority action]
 ```
 
 ### 5. Read Diary at Wake-up
+
+Session-continuity recall — the diary is stored under `wing_brain-<project-slug>`;
+`mempalace_diary_read` finds it via the agent name:
 
 ```
 mempalace_diary_read({

@@ -223,10 +223,16 @@ Created: {today}
 
 ## MemPalace namespace
 
-Wiki pages are mined into MemPalace wing `{wing_name}` — mining and memory
-search for this project use that wing. The session diary is separate:
-`mempalace_diary_write` with agent `brain-{slug}` stores under MemPalace's
-diary default `wing_brain-{slug}`. Never mine or diary into other projects' wings.
+Wiki pages are mined into MemPalace wing `{wing_name}`. Wiki knowledge is
+searched in that wing: pass `wing: "{wing_name}"` to `mempalace_search` —
+a search without `wing` scans the whole palace, other projects' wings
+included. The session diary is separate: `mempalace_diary_write` with agent
+`brain-{slug}` stores under MemPalace's diary default `wing_brain-{slug}`,
+and it is read back with `mempalace_diary_read` (agent `brain-{slug}`).
+Never mine or diary into other projects' wings. Brains scaffolded by older
+plugin versions may keep diary entries in the wiki wing — see "Existing
+brains: older diary entries" in the plugin's
+`skills/brain/references/mempalace-workflow.md`.
 
 ## Environment
 

@@ -35,6 +35,7 @@ NON_TOOL_IDENTIFIERS = {
     "cache",
     "preferences_get",
     "preferences_set",
+    "diary_agent",  # frontmatter field name, not a tool
 }
 
 

@@ -95,6 +95,7 @@ def read_enabled_plugins() -> set[str]:
 
 
 GRAPH_REPORT_REL = Path("graphify-out") / "GRAPH_REPORT.md"
+GRAPH_MANIFEST_REL = Path("graphify-out") / "manifest.json"
 # graphify writes short hashes; 7 is git's own minimum abbreviation length.
 MIN_COMMIT_HASH_LEN = 7
 COMMIT_LINE_RE = re.compile(r"Built from commit:\s*`([0-9a-fA-F]+)`")
@@ -123,6 +124,16 @@ def graphify_freshness(root: Path) -> tuple[str, str]:
     recorded = match.group(1)
     if len(recorded) < MIN_COMMIT_HASH_LEN:
         return "stale", f"recorded commit hash too short: {recorded!r}"
+
+    manifest_path = root / GRAPH_MANIFEST_REL
+    manifest_keys: set[str] = set()
+    try:
+        manifest_data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if isinstance(manifest_data, dict):
+            manifest_keys = set(manifest_data.keys())
+    except Exception:
+        pass
+
     try:
         head = subprocess.run(
             ["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True, timeout=5
@@ -143,9 +154,9 @@ def graphify_freshness(root: Path) -> tuple[str, str]:
         visible_lines = dirty_lines[:MAX_DIRTY_LINES]
         omitted_count = len(dirty_lines) - len(visible_lines)
 
-        # ponytail: compares mtime only, not file hashes; a deletion made after
-        # the last graphify run is not detected. Upgrade path: graphify's own
-        # per-file hashes.
+        # ponytail: compares mtime for existing files; for deletions consults
+        # manifest. Remaining limit: missing manifest. Upgrade path: Graphify's
+        # own change detection.
         report_mtime = report.stat().st_mtime
         any_newer_than_report = False
         for line in dirty_lines:
@@ -154,9 +165,18 @@ def graphify_freshness(root: Path) -> tuple[str, str]:
             parts = line[3:].split(" -> ")
             path_str = parts[-1].strip()  # Use new path for renames
             path = root / path_str
-            if path.exists() and path.stat().st_mtime > report_mtime:
-                any_newer_than_report = True
-                break
+            if path.exists():
+                if path.stat().st_mtime > report_mtime:
+                    any_newer_than_report = True
+                    break
+            else:
+                # Deleted file: check manifest
+                if manifest_keys:
+                    path_posix = path.relative_to(root).as_posix()
+                    path_abs = str(path.resolve())
+                    if path_posix in manifest_keys or path_abs in manifest_keys:
+                        any_newer_than_report = True
+                        break
 
         if not any_newer_than_report:
             # All dirty files predate the report - graph was rebuilt after edits

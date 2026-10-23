@@ -71,18 +71,27 @@ def parse_date(raw: object) -> datetime | None:
         return None
 
 
+# ponytail: Claude Code's settings path is UNVERIFIED from material; we check
+# both known locations defensively instead of guessing one.
+SETTINGS_PATHS = (
+    Path.home() / ".openclaude" / "settings.json",
+    Path.home() / ".claude" / "settings.json",
+)
+
+
 def read_enabled_plugins() -> set[str]:
-    settings = Path.home() / ".openclaude" / "settings.json"
-    try:
-        data = json.loads(settings.read_text(encoding="utf-8"))
-        enabled = data.get("enabledPlugins", {})
-        if isinstance(enabled, dict):
-            return {str(k) for k in enabled.keys()}
-        if isinstance(enabled, list):
-            return {str(item) for item in enabled}
-    except Exception:
-        pass
-    return set()
+    enabled: set[str] = set()
+    for settings in SETTINGS_PATHS:
+        try:
+            data = json.loads(settings.read_text(encoding="utf-8"))
+            raw = data.get("enabledPlugins", {})
+            if isinstance(raw, dict):
+                enabled.update(str(k) for k in raw.keys())
+            elif isinstance(raw, list):
+                enabled.update(str(item) for item in raw)
+        except Exception:
+            continue
+    return enabled
 
 
 GRAPH_REPORT_REL = Path("graphify-out") / "GRAPH_REPORT.md"
@@ -90,6 +99,10 @@ GRAPH_REPORT_REL = Path("graphify-out") / "GRAPH_REPORT.md"
 MIN_COMMIT_HASH_LEN = 7
 COMMIT_LINE_RE = re.compile(r"Built from commit:\s*`([0-9a-fA-F]+)`")
 # Paths that never affect the graph: brain metadata and graphify's own output.
+# .graphifyignore is deliberately NOT excluded: editing it changes which files
+# graphify indexes, so a dirty .graphifyignore is real graph staleness. The
+# report-mtime check below already treats "all dirty files older than the
+# report" as fresh, which covers the scaffold-then-graph case.
 # git pathspec exclude syntax: ":(exclude)<path>".
 _DIRTY_EXCLUDES = [":(exclude).brain/", ":(exclude)graphify-out/"]
 MAX_DIRTY_LINES = 3  # How many porcelain lines to include in stale reason
@@ -382,7 +395,7 @@ def main(argv: list[str]) -> int:
     if any("mempalace" in p.lower() for p in plugins):
         print("✓ MemPalace plugin enabled in settings.json")
     else:
-        print("⚠ mempalace not found in enabledPlugins — check ~/.openclaude/settings.json")
+        print("⚠ mempalace not found in enabledPlugins — check ~/.openclaude/settings.json (or ~/.claude/settings.json)")
 
     ok, ver = graphify_version()
     if ok:

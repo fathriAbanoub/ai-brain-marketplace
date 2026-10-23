@@ -1,6 +1,7 @@
 """Tests for wing naming, .graphifyignore handling, graphify gating, and tool-list drift."""
 
 import json
+import os
 import re
 import subprocess
 import sys
@@ -165,7 +166,15 @@ def test_gate_stale_with_new_untracked_source_file(git_repo: Path):
     head = _git(git_repo, "rev-parse", "HEAD").strip()
     _write_report(git_repo, head)
     # New untracked source file — graphify indexes it, so the graph is stale.
-    (git_repo / "new_module.py").write_text("x = 1\n", encoding="utf-8")
+    new_file = git_repo / "new_module.py"
+    new_file.write_text("x = 1\n", encoding="utf-8")
+    # Pin mtimes explicitly: filesystems with coarse timestamp granularity
+    # (e.g. overlayfs) give same-tick writes identical mtimes, which makes the
+    # mtime comparison in doctor.graphify_freshness order-dependent otherwise.
+    report_path = git_repo / "graphify-out" / "GRAPH_REPORT.md"
+    report_m = report_path.stat().st_mtime
+    os.utime(report_path, (report_m, report_m))
+    os.utime(new_file, (report_m + 10, report_m + 10))
     status, reason = graphify_freshness(git_repo)
     assert status == "stale"
     assert "uncommitted" in reason
@@ -211,6 +220,36 @@ def test_gate_fresh_with_tracked_graphify_out_edit(git_repo: Path):
     report.write_text(f"- Built from commit: `{head[:8]}`\n", encoding="utf-8")
     status, reason = graphify_freshness(git_repo)
     assert status == "fresh", reason
+
+
+def test_gate_fresh_with_scaffolded_graphifyignore_then_graph(git_repo: Path):
+    # FIX 3a: .graphifyignore is NOT excluded from the dirty check anymore.
+    # Scaffold order (ignore created untracked, graph built after) must report
+    # fresh via the report-mtime check, not via an exclusion.
+    ignore = git_repo / ".graphifyignore"
+    ignore.write_text("node_modules/\n", encoding="utf-8")
+    head = _git(git_repo, "rev-parse", "HEAD").strip()
+    _write_report(git_repo, head)
+    report_path = git_repo / "graphify-out" / "GRAPH_REPORT.md"
+    m = report_path.stat().st_mtime
+    os.utime(report_path, (m + 10, m + 10))  # report strictly newer than ignore
+    status, reason = graphify_freshness(git_repo)
+    assert status == "fresh", reason
+
+
+def test_gate_stale_when_graphifyignore_edited_after_graph(git_repo: Path):
+    # FIX 3b: editing .graphifyignore after the report changes which files
+    # graphify indexes — it must count as real staleness.
+    head = _git(git_repo, "rev-parse", "HEAD").strip()
+    _write_report(git_repo, head)
+    report_path = git_repo / "graphify-out" / "GRAPH_REPORT.md"
+    m = report_path.stat().st_mtime
+    ignore = git_repo / ".graphifyignore"
+    ignore.write_text("dist/\n", encoding="utf-8")
+    os.utime(ignore, (m + 10, m + 10))  # ignore strictly newer than report
+    status, reason = graphify_freshness(git_repo)
+    assert status == "stale"
+    assert ".graphifyignore" in reason
 
 
 def test_gate_stale_with_tracked_source_edit(git_repo: Path):

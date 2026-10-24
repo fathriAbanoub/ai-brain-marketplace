@@ -67,11 +67,12 @@ Healthy output should show:
 
 ## Recommended `.graphifyignore`
 
-Graphify runs on the repository only — never on `.brain/`. Graphify 0.9.93
-does not skip `.brain/` on its own (it is not in Graphify's built-in skip
-list), so the ignore entries below are mandatory, not optional. The scaffold
-writes them for you (`scripts/scaffold_brain.py`), and `project-brain-init`
-keeps them present on re-runs.
+Graphify scans the entire repository, including `.brain/` and `graphify-out/`,
+unless these directories are explicitly excluded. Since `.brain/` contains brain
+metadata and `graphify-out/` is graphify's own output, both must be excluded to
+prevent indexing them. The scaffold writes these entries for you
+(`scripts/scaffold_brain.py`), and `project-brain-init` keeps them present on
+re-runs.
 
 Use or adapt these patterns:
 

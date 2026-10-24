@@ -698,3 +698,52 @@ def test_gate_corrupt_manifest_no_exception(git_repo: Path):
     status, reason = graphify_freshness(git_repo)
     # No crash, returns fresh because manifest failed to load
     assert status == "fresh"
+
+# --- ITEM 1: recall instructions must have guard and wing scope --------------
+
+def test_guard_key_phrase_in_all_files():
+    """Each doc file must contain the guard phrase OR a pointer to the recall rule."""
+    guard_phrase = "does not define a non-empty"
+    recall_rule_pointer = "recall rule in"
+    required_files = [
+        "skills/brain/SKILL.md",
+        "skills/brain/references/brain-lifecycle.md",
+        "skills/brain/references/post-wiki-checklist.md",
+        "skills/brain/references/install-and-integration.md",
+        "skills/brain/references/mempalace-tools.md",
+    ]
+    for rel in required_files:
+        path = PLUGIN_ROOT / rel
+        content = path.read_text(encoding="utf-8")
+        has_guard = guard_phrase in content
+        has_pointer = recall_rule_pointer in content
+        assert has_guard or has_pointer, \
+            f"{rel} must contain guard phrase '{guard_phrase}' OR pointer '{recall_rule_pointer}'"
+
+
+def test_no_unscoped_mempalace_search():
+    """No doc line with '(search|query) mempalace' lacks wing/diary/recall-rule."""
+    import re
+    doc_files = list((PLUGIN_ROOT / "skills").rglob("*.md"))
+    doc_files.extend((PLUGIN_ROOT / "scripts").rglob("*.py"))
+    doc_files.extend((PLUGIN_ROOT / "hooks").rglob("*.py"))
+
+    search_re = re.compile(r"(search|query|check)\s+mempalace", re.IGNORECASE)
+    scope_indicators = ["wing", "mempalace_diary_read", "recall rule"]
+    # Skip table rows (lines starting with |)
+    table_row_re = re.compile(r"^\s*\|")
+
+    violations = []
+    for path in doc_files:
+        content = path.read_text(encoding="utf-8")
+        for i, line in enumerate(content.splitlines(), 1):
+            # Skip table rows
+            if table_row_re.match(line):
+                continue
+            if search_re.search(line):
+                line_lower = line.lower()
+                if not any(ind in line_lower for ind in scope_indicators):
+                    violations.append(f"{path.relative_to(PLUGIN_ROOT)}:{i}")
+
+    assert not violations, \
+        f"Lines with '(search|query) mempalace' lack wing/diary/recall-rule:\n" + "\n".join(violations)

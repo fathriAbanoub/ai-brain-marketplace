@@ -1,7 +1,14 @@
 """Tests for doctor.py script."""
 
 import pytest
+import sys
+import tempfile
 from pathlib import Path
+
+PLUGIN_ROOT = Path(__file__).parent.parent
+sys.path.insert(0, str(PLUGIN_ROOT / "scripts"))
+
+from doctor import graphify_freshness  # noqa: E402
 
 
 class TestDoctor:
@@ -113,3 +120,218 @@ class TestDoctor:
         # Should report missing session-brief
         output_lower = result.stdout.lower()
         assert "session" in output_lower and ("missing" in output_lower or "brief" in output_lower)
+
+
+# --- ITEM 3: detect deletions using manifest ----------------------------------
+
+def test_graphify_deletion_in_manifest_reports_stale():
+    """Deleted file present in manifest reports stale."""
+    import json
+    import subprocess
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        subprocess.run(["git", "init"], cwd=root, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@test"], cwd=root, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=root, check=True, capture_output=True)
+
+        src = root / "src.py"
+        src.write_text("print('hello')")
+        subprocess.run(["git", "add", "src.py"], cwd=root, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "init"], cwd=root, check=True, capture_output=True)
+
+        head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True, check=True).stdout.strip()
+
+        graphify_out = root / "graphify-out"
+        graphify_out.mkdir()
+        report = graphify_out / "GRAPH_REPORT.md"
+        report.write_text(f"Built from commit: `{head[:12]}`\n")
+
+        manifest = graphify_out / "manifest.json"
+        manifest.write_text(json.dumps({"src.py": {"mtime": 1000, "seen": 1}}))
+
+        src.unlink()
+
+        status, reason = graphify_freshness(root)
+        assert status == "stale", "Deleted file in manifest must report stale"
+        assert "uncommitted changes" in reason
+
+
+def test_graphify_deletion_not_in_manifest_reports_fresh():
+    """Deleted file not in manifest reports fresh."""
+    import json
+    import subprocess
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        subprocess.run(["git", "init"], cwd=root, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@test"], cwd=root, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=root, check=True, capture_output=True)
+
+        src = root / "src.py"
+        src.write_text("print('hello')")
+        subprocess.run(["git", "add", "src.py"], cwd=root, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "init"], cwd=root, check=True, capture_output=True)
+
+        head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True, check=True).stdout.strip()
+
+        graphify_out = root / "graphify-out"
+        graphify_out.mkdir()
+        report = graphify_out / "GRAPH_REPORT.md"
+        report.write_text(f"Built from commit: `{head[:12]}`\n")
+
+        manifest = graphify_out / "manifest.json"
+        manifest.write_text(json.dumps({"other.py": {"mtime": 1000, "seen": 1}}))
+
+        src.unlink()
+
+        status, reason = graphify_freshness(root)
+        assert status == "fresh", "Deleted file not in manifest must report fresh"
+
+
+def test_graphify_deletion_absolute_key_reports_stale():
+    """Deleted file with absolute path key in manifest reports stale."""
+    import json
+    import subprocess
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        subprocess.run(["git", "init"], cwd=root, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@test"], cwd=root, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=root, check=True, capture_output=True)
+
+        src = root / "src.py"
+        src.write_text("print('hello')")
+        subprocess.run(["git", "add", "src.py"], cwd=root, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "init"], cwd=root, check=True, capture_output=True)
+
+        head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True, check=True).stdout.strip()
+
+        graphify_out = root / "graphify-out"
+        graphify_out.mkdir()
+        report = graphify_out / "GRAPH_REPORT.md"
+        report.write_text(f"Built from commit: `{head[:12]}`\n")
+
+        manifest = graphify_out / "manifest.json"
+        manifest.write_text(json.dumps({str(src.resolve()): {"mtime": 1000, "seen": 1}}))
+
+        src.unlink()
+
+        status, reason = graphify_freshness(root)
+        assert status == "stale", "Deleted file with absolute key must report stale"
+
+
+def test_graphify_missing_manifest_no_exception():
+    """Missing manifest does not raise exception."""
+    import subprocess
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        subprocess.run(["git", "init"], cwd=root, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@test"], cwd=root, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=root, check=True, capture_output=True)
+
+        src = root / "src.py"
+        src.write_text("print('hello')")
+        subprocess.run(["git", "add", "src.py"], cwd=root, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "init"], cwd=root, check=True, capture_output=True)
+
+        head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True, check=True).stdout.strip()
+
+        graphify_out = root / "graphify-out"
+        graphify_out.mkdir()
+        report = graphify_out / "GRAPH_REPORT.md"
+        report.write_text(f"Built from commit: `{head[:12]}`\n")
+
+        src.unlink()
+
+        status, reason = graphify_freshness(root)
+        assert status == "fresh", "Missing manifest must not crash and keep old behavior"
+
+
+def test_graphify_corrupt_manifest_no_exception():
+    """Corrupt manifest does not raise exception."""
+    import subprocess
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        subprocess.run(["git", "init"], cwd=root, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@test"], cwd=root, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=root, check=True, capture_output=True)
+
+        src = root / "src.py"
+        src.write_text("print('hello')")
+        subprocess.run(["git", "add", "src.py"], cwd=root, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "init"], cwd=root, check=True, capture_output=True)
+
+        head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True, check=True).stdout.strip()
+
+        graphify_out = root / "graphify-out"
+        graphify_out.mkdir()
+        report = graphify_out / "GRAPH_REPORT.md"
+        report.write_text(f"Built from commit: `{head[:12]}`\n")
+
+        manifest = graphify_out / "manifest.json"
+        manifest.write_text("not json at all")
+
+        src.unlink()
+
+        status, reason = graphify_freshness(root)
+        assert status == "fresh", "Corrupt manifest must not crash"
+
+
+def test_graphify_list_manifest_no_exception():
+    """Manifest that is a JSON list does not raise exception."""
+    import json
+    import subprocess
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        subprocess.run(["git", "init"], cwd=root, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@test"], cwd=root, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=root, check=True, capture_output=True)
+
+        src = root / "src.py"
+        src.write_text("print('hello')")
+        subprocess.run(["git", "add", "src.py"], cwd=root, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "init"], cwd=root, check=True, capture_output=True)
+
+        head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True, check=True).stdout.strip()
+
+        graphify_out = root / "graphify-out"
+        graphify_out.mkdir()
+        report = graphify_out / "GRAPH_REPORT.md"
+        report.write_text(f"Built from commit: `{head[:12]}`\n")
+
+        manifest = graphify_out / "manifest.json"
+        manifest.write_text(json.dumps(["src.py"]))
+
+        src.unlink()
+
+        status, reason = graphify_freshness(root)
+        assert status == "fresh", "List manifest must not crash"
+
+
+def test_graphify_renamed_file_old_path_in_manifest_reports_stale():
+    """Renamed file whose old path is in manifest reports stale."""
+    import json
+    import subprocess
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        subprocess.run(["git", "init"], cwd=root, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@test"], cwd=root, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=root, check=True, capture_output=True)
+
+        old = root / "old.py"
+        old.write_text("print('hello')")
+        subprocess.run(["git", "add", "old.py"], cwd=root, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "init"], cwd=root, check=True, capture_output=True)
+
+        head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True, check=True).stdout.strip()
+
+        graphify_out = root / "graphify-out"
+        graphify_out.mkdir()
+        report = graphify_out / "GRAPH_REPORT.md"
+        report.write_text(f"Built from commit: `{head[:12]}`\n")
+
+        manifest = graphify_out / "manifest.json"
+        manifest.write_text(json.dumps({"old.py": {"mtime": 1000, "seen": 1}}))
+
+        old.rename(root / "new.py")
+
+        status, reason = graphify_freshness(root)
+        assert status == "stale", "Renamed file with old path in manifest must report stale"

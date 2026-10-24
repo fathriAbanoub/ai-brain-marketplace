@@ -108,6 +108,25 @@ COMMIT_LINE_RE = re.compile(r"Built from commit:\s*`([0-9a-fA-F]+)`")
 _DIRTY_EXCLUDES = [":(exclude).brain/", ":(exclude)graphify-out/"]
 MAX_DIRTY_LINES = 3  # How many porcelain lines to include in stale reason
 DIRTY_OMITTED_MARKER = "... (more paths omitted; run `git status` for the full list)"
+# git status -z uses NUL as the record separator (one record per modified file,
+# two consecutive records for renames: new path, then old path).
+STATUS_RECORD_SEP = "\0"
+
+
+def _load_manifest_keys(root: Path) -> set[str]:
+    """Load manifest keys from graphify-out/manifest.json, or empty set on failure.
+
+    Reads the manifest only when called (lazy); catches OSError and ValueError
+    (JSON decode errors); returns empty set for non-dict JSON.
+    """
+    manifest_path = root / GRAPH_MANIFEST_REL
+    try:
+        manifest_data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if isinstance(manifest_data, dict):
+            return set(manifest_data.keys())
+        return set()
+    except (OSError, ValueError):
+        return set()
 
 
 def graphify_freshness(root: Path) -> tuple[str, str]:
@@ -125,24 +144,17 @@ def graphify_freshness(root: Path) -> tuple[str, str]:
     if len(recorded) < MIN_COMMIT_HASH_LEN:
         return "stale", f"recorded commit hash too short: {recorded!r}"
 
-    manifest_path = root / GRAPH_MANIFEST_REL
-    manifest_keys: set[str] = set()
-    try:
-        manifest_data = json.loads(manifest_path.read_text(encoding="utf-8"))
-        if isinstance(manifest_data, dict):
-            manifest_keys = set(manifest_data.keys())
-    except Exception:
-        pass
-
     try:
         head = subprocess.run(
             ["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True, timeout=5
         ).stdout.strip()
         # Dirty check: include untracked source files (they are indexed by the
         # graph), but exclude .brain/ and graphify-out/ which never affect it.
+        # Use -z for NUL-separated records to handle paths with spaces/non-ASCII.
         dirty = subprocess.run(
-            ["git", "status", "--porcelain", "--", *_DIRTY_EXCLUDES], cwd=root, capture_output=True, text=True, timeout=5
-        ).stdout.rstrip()
+            ["git", "status", "--porcelain", "-z", "--", *_DIRTY_EXCLUDES],
+            cwd=root, capture_output=True, text=True, timeout=5
+        ).stdout
     except (FileNotFoundError, subprocess.SubprocessError) as exc:
         return "stale", f"git unavailable: {exc}"
     if not head:
@@ -150,27 +162,47 @@ def graphify_freshness(root: Path) -> tuple[str, str]:
     if not head.startswith(recorded):
         return "stale", f"graph built at {recorded}, HEAD is {head[:len(recorded)]}"
     if dirty:
-        dirty_lines = dirty.splitlines()
-        visible_lines = dirty_lines[:MAX_DIRTY_LINES]
-        omitted_count = len(dirty_lines) - len(visible_lines)
+        # Parse NUL-separated records. Each record is "XY path" or "XY path" for
+        # renames (R), where old path follows in the next record.
+        records = [r for r in dirty.split(STATUS_RECORD_SEP) if r]
+        # For renames/copies (XY starts with R or C), git gives: "RXY new_path\0old_path\0"
+        # We want the new path for mtime checking, so skip old-path records.
+        # ponytail: tracks which records are old paths by checking if previous was R/C.
+        paths_to_check = []
+        skip_next = False
+        for i, rec in enumerate(records):
+            if skip_next:
+                skip_next = False
+                continue
+            if len(rec) >= 2 and rec[0] in "RC":
+                # This is a rename/copy; path is rec[3:], next record is old path
+                paths_to_check.append(rec[3:])
+                skip_next = True
+            else:
+                # Normal entry: XY path
+                paths_to_check.append(rec[3:] if len(rec) > 3 else "")
+
+        visible_paths = paths_to_check[:MAX_DIRTY_LINES]
+        omitted_count = len(paths_to_check) - len(visible_paths)
 
         # ponytail: compares mtime for existing files; for deletions consults
-        # manifest. Remaining limit: missing manifest. Upgrade path: Graphify's
-        # own change detection.
+        # manifest lazily (only when first deleted path found). Upgrade path:
+        # Graphify's own change detection.
         report_mtime = report.stat().st_mtime
         any_newer_than_report = False
-        for line in dirty_lines:
-            # Parse git status --porcelain format: XY path [-> newpath]
-            # Handle renames (->), spaces in paths, and missing files
-            parts = line[3:].split(" -> ")
-            path_str = parts[-1].strip()  # Use new path for renames
+        manifest_keys: set[str] | None = None  # Lazy load
+        for path_str in paths_to_check:
+            if not path_str:
+                continue
             path = root / path_str
             if path.exists():
                 if path.stat().st_mtime > report_mtime:
                     any_newer_than_report = True
                     break
             else:
-                # Deleted file: check manifest
+                # Deleted file: check manifest (load on first deletion only)
+                if manifest_keys is None:
+                    manifest_keys = _load_manifest_keys(root)
                 if manifest_keys:
                     path_posix = path.relative_to(root).as_posix()
                     path_abs = str(path.resolve())
@@ -182,7 +214,7 @@ def graphify_freshness(root: Path) -> tuple[str, str]:
             # All dirty files predate the report - graph was rebuilt after edits
             return "fresh", f"graph matches {recorded}"
 
-        lines_str = "; ".join(visible_lines)
+        lines_str = "; ".join(visible_paths)
         if omitted_count > 0:
             lines_str += f"; {DIRTY_OMITTED_MARKER}"
         return "stale", f"uncommitted changes to source files: {lines_str}"

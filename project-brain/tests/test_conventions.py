@@ -103,6 +103,7 @@ def git_repo(tmp_path: Path) -> Path:
     _git(root, "init", "-q")
     _git(root, "config", "user.email", "t@example.com")
     _git(root, "config", "user.name", "t")
+    _git(root, "config", "commit.gpgsign", "false")
     (root / "a.txt").write_text("a\n", encoding="utf-8")
     _git(root, "add", ".")
     _git(root, "commit", "-qm", "init")
@@ -579,3 +580,121 @@ def test_mempalace_tools_search_recipe_has_wing_guard():
         "Recall recipe must check for missing mempalace_wing"
     assert "never infer" in recipe_section.lower(), \
         "Recall recipe must warn against inferring wing"
+
+
+# --- A1/A2: paths with spaces/non-ASCII, manifest lazy loading ---------------
+
+
+def test_gate_stale_with_space_in_filename_edited_after_report(git_repo: Path):
+    """File with space in name edited after report -> stale."""
+    head = _git(git_repo, "rev-parse", "HEAD").strip()
+    _write_report(git_repo, head)
+    import time
+    time.sleep(0.01)
+    spaced = git_repo / "my file.py"
+    spaced.write_text("print('hello')\n", encoding="utf-8")
+    status, reason = graphify_freshness(git_repo)
+    assert status == "stale"
+    assert "uncommitted changes" in reason
+    assert "my file.py" in reason
+
+
+def test_gate_stale_with_utf8_filename_edited_after_report(git_repo: Path):
+    """File with non-ASCII name edited after report -> stale."""
+    head = _git(git_repo, "rev-parse", "HEAD").strip()
+    _write_report(git_repo, head)
+    import time
+    time.sleep(0.01)
+    utf8_file = git_repo / "café.py"
+    utf8_file.write_text("print('bonjour')\n", encoding="utf-8")
+    status, reason = graphify_freshness(git_repo)
+    assert status == "stale"
+    assert "uncommitted changes" in reason
+    assert "café.py" in reason
+
+
+def test_gate_stale_with_spaced_filename_deleted_and_in_manifest(git_repo: Path):
+    """Deleted file with space, present in manifest -> stale."""
+    spaced = git_repo / "my file.py"
+    spaced.write_text("x = 1\n", encoding="utf-8")
+    _git(git_repo, "add", ".")
+    _git(git_repo, "commit", "-qm", "add spaced file")
+    head = _git(git_repo, "rev-parse", "HEAD").strip()
+    _write_report(git_repo, head)
+    # Write manifest with the spaced file
+    manifest = git_repo / "graphify-out" / "manifest.json"
+    manifest.write_text(json.dumps({"my file.py": {"mtime": 1000, "seen": 1}}), encoding="utf-8")
+    spaced.unlink()
+    status, reason = graphify_freshness(git_repo)
+    assert status == "stale"
+    assert "uncommitted changes" in reason
+
+
+def test_gate_fresh_with_spaced_filename_deleted_not_in_manifest(git_repo: Path):
+    """Deleted file with space, absent from manifest -> fresh."""
+    spaced = git_repo / "my file.py"
+    spaced.write_text("x = 1\n", encoding="utf-8")
+    _git(git_repo, "add", ".")
+    _git(git_repo, "commit", "-qm", "add spaced file")
+    head = _git(git_repo, "rev-parse", "HEAD").strip()
+    _write_report(git_repo, head)
+    # Manifest without the spaced file
+    manifest = git_repo / "graphify-out" / "manifest.json"
+    manifest.write_text(json.dumps({"other.py": {"mtime": 1000, "seen": 1}}), encoding="utf-8")
+    spaced.unlink()
+    status, reason = graphify_freshness(git_repo)
+    assert status == "fresh"
+
+
+def test_gate_stale_with_renamed_spaced_file_old_path_in_manifest(git_repo: Path):
+    """Renamed file with space; old path in manifest -> stale."""
+    old_name = git_repo / "my file.py"
+    old_name.write_text("x = 1\n", encoding="utf-8")
+    _git(git_repo, "add", ".")
+    _git(git_repo, "commit", "-qm", "add old file")
+    head = _git(git_repo, "rev-parse", "HEAD").strip()
+    _write_report(git_repo, head)
+    manifest = git_repo / "graphify-out" / "manifest.json"
+    manifest.write_text(json.dumps({"my file.py": {"mtime": 1000, "seen": 1}}), encoding="utf-8")
+    old_name.rename(git_repo / "new.py")
+    status, reason = graphify_freshness(git_repo)
+    assert status == "stale"
+    assert "uncommitted changes" in reason
+
+
+def test_gate_manifest_not_loaded_when_no_deletions(git_repo: Path, monkeypatch):
+    """Manifest helper not called when no files are deleted."""
+    from doctor import _load_manifest_keys
+    head = _git(git_repo, "rev-parse", "HEAD").strip()
+    _write_report(git_repo, head)
+    import time
+    time.sleep(0.01)
+    # Edit an existing file (no deletion)
+    (git_repo / "a.txt").write_text("modified\n", encoding="utf-8")
+
+    called = []
+    original = _load_manifest_keys
+    def spy(root):
+        called.append(root)
+        return original(root)
+    monkeypatch.setattr("doctor._load_manifest_keys", spy)
+
+    status, reason = graphify_freshness(git_repo)
+    assert status == "stale"
+    assert not called, "Manifest should not be loaded when no deletions"
+
+
+def test_gate_corrupt_manifest_no_exception(git_repo: Path):
+    """Corrupt manifest returns fresh (no crash) when file deleted."""
+    victim = git_repo / "victim.py"
+    victim.write_text("x = 1\n", encoding="utf-8")
+    _git(git_repo, "add", ".")
+    _git(git_repo, "commit", "-qm", "add victim")
+    head = _git(git_repo, "rev-parse", "HEAD").strip()
+    _write_report(git_repo, head)
+    manifest = git_repo / "graphify-out" / "manifest.json"
+    manifest.write_text("not json at all", encoding="utf-8")
+    victim.unlink()
+    status, reason = graphify_freshness(git_repo)
+    # No crash, returns fresh because manifest failed to load
+    assert status == "fresh"

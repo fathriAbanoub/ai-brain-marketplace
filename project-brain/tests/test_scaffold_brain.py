@@ -1,8 +1,14 @@
 """Tests for scaffold_brain.py script."""
 
-import pytest
-import tempfile
+import sys
 from pathlib import Path
+
+import pytest
+
+PLUGIN_ROOT = Path(__file__).parent.parent
+sys.path.insert(0, str(PLUGIN_ROOT / "scripts"))
+
+from scaffold_brain import scaffold  # noqa: E402
 
 
 class TestScaffoldBrain:
@@ -213,17 +219,11 @@ class TestScaffoldBrain:
         index_path = brain_dir / "wiki" / "index.md"
         content = index_path.read_text(encoding="utf-8")
         assert unicode_name in content
-# --- B1/B2: diary agent preservation across refresh --------------------------
+# --- diary agent preservation across refresh ----------------------------------
 
 
 def test_scaffold_configured_agent_vs_stale_sentence(tmp_path: Path):
-    """B1: Configured agent in frontmatter not overridden by stale sentence."""
-    import sys
-    from pathlib import Path
-    plugin_root = Path(__file__).resolve().parent.parent
-    sys.path.insert(0, str(plugin_root / "scripts"))
-    from scaffold_brain import scaffold
-
+    """Configured agent in frontmatter not overridden by stale sentence."""
     root = tmp_path / "project"
     root.mkdir()
     (root / ".git").mkdir()
@@ -249,13 +249,7 @@ def test_scaffold_configured_agent_vs_stale_sentence(tmp_path: Path):
 
 
 def test_scaffold_custom_agent_without_prefix_survives(tmp_path: Path):
-    """B2: Custom agent name without 'brain-' prefix preserved exactly."""
-    import sys
-    from pathlib import Path
-    plugin_root = Path(__file__).resolve().parent.parent
-    sys.path.insert(0, str(plugin_root / "scripts"))
-    from scaffold_brain import scaffold
-
+    """Custom agent name without 'brain-' prefix preserved exactly."""
     root = tmp_path / "project"
     root.mkdir()
     (root / ".git").mkdir()
@@ -283,66 +277,46 @@ def test_scaffold_custom_agent_without_prefix_survives(tmp_path: Path):
     assert "wing_my-custom-agent" in new_content
 
 
-# --- ITEM 2: diary agent preserved on refresh ---------------------------------
-
-def test_scaffold_new_brain_gets_diary_agent():
+def test_scaffold_new_brain_gets_diary_agent(tmp_path: Path):
     """A new brain gets mempalace_diary_agent frontmatter."""
-    import sys
-    from pathlib import Path
-    plugin_root = Path(__file__).resolve().parent.parent
-    sys.path.insert(0, str(plugin_root / "scripts"))
-    from scaffold_brain import scaffold
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        root = Path(tmpdir)
-        (root / ".git").mkdir()
-        scaffold(root, "Test Project")
-        claude_md = root / ".brain" / "CLAUDE.md"
-        content = claude_md.read_text(encoding="utf-8")
-        assert "mempalace_diary_agent: brain-test-project" in content, \
-            "New brain must have mempalace_diary_agent frontmatter"
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / ".git").mkdir()
+    scaffold(root, "Test Project")
+    claude_md = root / ".brain" / "CLAUDE.md"
+    content = claude_md.read_text(encoding="utf-8")
+    assert "mempalace_diary_agent: brain-test-project" in content, \
+        "New brain must have mempalace_diary_agent frontmatter"
 
 
-def test_scaffold_refresh_keeps_original_agent():
+def test_scaffold_refresh_keeps_original_agent(tmp_path: Path):
     """Refresh with --force and different title keeps original diary agent."""
-    import sys
-    from pathlib import Path
-    plugin_root = Path(__file__).resolve().parent.parent
-    sys.path.insert(0, str(plugin_root / "scripts"))
-    from scaffold_brain import scaffold
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / ".git").mkdir()
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        root = Path(tmpdir)
-        (root / ".git").mkdir()
+    scaffold(root, "Original Title")
+    claude_md = root / ".brain" / "CLAUDE.md"
+    first_content = claude_md.read_text(encoding="utf-8")
+    assert "mempalace_diary_agent: brain-original-title" in first_content
 
-        scaffold(root, "Original Title")
-        claude_md = root / ".brain" / "CLAUDE.md"
-        first_content = claude_md.read_text(encoding="utf-8")
-        assert "mempalace_diary_agent: brain-original-title" in first_content
-
-        scaffold(root, "New Title", force=True)
-        second_content = claude_md.read_text(encoding="utf-8")
-        assert "mempalace_diary_agent: brain-original-title" in second_content, \
-            "Refresh must keep original diary agent"
-        assert "brain-new-title" not in second_content
+    scaffold(root, "New Title", force=True)
+    second_content = claude_md.read_text(encoding="utf-8")
+    assert "mempalace_diary_agent: brain-original-title" in second_content, \
+        "Refresh must keep original diary agent"
+    assert "brain-new-title" not in second_content
 
 
-def test_scaffold_old_brain_recovers_slug_from_sentence():
+def test_scaffold_old_brain_recovers_slug_from_sentence(tmp_path: Path):
     """Refresh of older brain without frontmatter recovers slug from sentence."""
-    import sys
-    from pathlib import Path
-    plugin_root = Path(__file__).resolve().parent.parent
-    sys.path.insert(0, str(plugin_root / "scripts"))
-    from scaffold_brain import scaffold
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / ".git").mkdir()
+    brain = root / ".brain"
+    brain.mkdir()
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        root = Path(tmpdir)
-        (root / ".git").mkdir()
-        brain = root / ".brain"
-        brain.mkdir()
-
-        old_claude = brain / "CLAUDE.md"
-        old_content = """---
+    old_claude = brain / "CLAUDE.md"
+    old_content = """---
 mempalace_wing: wiki-legacy
 ---
 
@@ -350,39 +324,33 @@ mempalace_wing: wiki-legacy
 
 The session diary uses `mempalace_diary_write` with agent `brain-legacy-slug`.
 """
-        old_claude.write_text(old_content, encoding="utf-8")
+    old_claude.write_text(old_content, encoding="utf-8")
 
-        scaffold(root, "New Title", force=True)
-        new_content = old_claude.read_text(encoding="utf-8")
-        assert "mempalace_diary_agent: brain-legacy-slug" in new_content, \
-            "Must recover slug from old diary sentence"
+    scaffold(root, "New Title", force=True)
+    new_content = old_claude.read_text(encoding="utf-8")
+    assert "mempalace_diary_agent: brain-legacy-slug" in new_content, \
+        "Must recover slug from old diary sentence"
 
 
-def test_scaffold_empty_diary_agent_falls_back():
+def test_scaffold_empty_diary_agent_falls_back(tmp_path: Path):
     """Empty mempalace_diary_agent value falls back to title-derived slug."""
-    import sys
-    from pathlib import Path
-    plugin_root = Path(__file__).resolve().parent.parent
-    sys.path.insert(0, str(plugin_root / "scripts"))
-    from scaffold_brain import scaffold
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / ".git").mkdir()
+    brain = root / ".brain"
+    brain.mkdir()
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        root = Path(tmpdir)
-        (root / ".git").mkdir()
-        brain = root / ".brain"
-        brain.mkdir()
-
-        broken_claude = brain / "CLAUDE.md"
-        broken_content = """---
+    broken_claude = brain / "CLAUDE.md"
+    broken_content = """---
 mempalace_wing: wiki-test
 mempalace_diary_agent:
 ---
 
 # Test
 """
-        broken_claude.write_text(broken_content, encoding="utf-8")
+    broken_claude.write_text(broken_content, encoding="utf-8")
 
-        scaffold(root, "Fallback Title", force=True)
-        new_content = broken_claude.read_text(encoding="utf-8")
-        assert "mempalace_diary_agent: brain-fallback-title" in new_content, \
-            "Empty diary agent must fall back to title-derived slug"
+    scaffold(root, "Fallback Title", force=True)
+    new_content = broken_claude.read_text(encoding="utf-8")
+    assert "mempalace_diary_agent: brain-fallback-title" in new_content, \
+        "Empty diary agent must fall back to title-derived slug"

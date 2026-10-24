@@ -226,7 +226,7 @@ def session_start_context(root: Path, payload: dict) -> str:
     lines = [
         "project-brain: this project has a persistent brain in .brain/.",
         "Read .brain/state/session-brief.md and .brain/wiki/index.md first; "
-        "follow the recall rule in .brain/CLAUDE.md or the plugin's SKILL.md step 7.",
+        "follow the recall rule in the plugin's SKILL.md step 7.",
         graph_line,
         f"harness: {detect_harness(payload)}",
     ]

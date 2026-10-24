@@ -167,9 +167,8 @@ Actions:
 1. Call `mempalace_status` (preflight). If `vector_disabled` is true, skip writes and tell the user to run `mempalace repair rebuild-index`.
 2. If `.brain/CLAUDE.md` is missing or does not define a non-empty `mempalace_wing`, skip the MemPalace search and diary read, tell the user the brain is not initialized or configured and to run project-brain-init (or fix the file), and never infer a wing or search without one. For claims about wiki knowledge (decisions, architecture, project facts), use `mempalace_search` with the wiki wing from `.brain/CLAUDE.md`; for claims about what happened in earlier sessions (continuity, what was done last time, open threads), use `mempalace_diary_read` with agent brain-<project-slug> (the recipe in mempalace-tools.md, "Read Diary at Wake-up"); the wiki search does not read the diary and the diary read does not search wiki pages, so use the one that fits the claim, or both.
 3. Store diary entries after meaningful changes (follow diary format in `references/mempalace-tools.md`).
-4. Store user preferences that should survive model switches.
-5. Convert stable facts from memory into wiki pages or decisions.
-6. Do not store secrets or full raw dumps.
+4. Convert stable facts from memory into wiki pages or decisions.
+5. Do not store secrets or full raw dumps.
 
 Done when:
 

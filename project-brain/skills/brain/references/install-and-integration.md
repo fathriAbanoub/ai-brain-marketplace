@@ -94,10 +94,11 @@ secrets/
 graphify-out/
 ```
 
-`.brain/` and `graphify-out/` must stay excluded: `.brain/` is the brain's own
-memory (it is mined into MemPalace instead, never into the graph), and
-`graphify-out/` is graphify's own output. Graphifyignore follows gitignore
-syntax and can only exclude more than `.gitignore`, never re-include.
+`.brain/` and `graphify-out/` must stay excluded: `.brain/` is scanned by
+graphify (its wiki pages and logs contain searchable project knowledge), but
+`graphify-out/` is graphify's own output and must never be scanned.
+Graphifyignore follows gitignore syntax and can only exclude more than
+`.gitignore`, never re-include.
 
 ## CLAUDE.md integration
 

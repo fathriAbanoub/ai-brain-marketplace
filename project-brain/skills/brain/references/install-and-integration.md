@@ -67,6 +67,13 @@ Healthy output should show:
 
 ## Recommended `.graphifyignore`
 
+Graphify scans the entire repository, including `.brain/` and `graphify-out/`,
+unless these directories are explicitly excluded. Since `.brain/` contains brain
+metadata and `graphify-out/` is graphify's own output, both must be excluded to
+prevent indexing them. The scaffold writes these entries for you
+(`scripts/scaffold_brain.py`), and `project-brain-init` keeps them present on
+re-runs.
+
 Use or adapt these patterns:
 
 ```gitignore
@@ -83,14 +90,15 @@ __pycache__/
 .env
 .env.*
 secrets/
-.brain/log/
-.brain/audit/
-.brain/state/
-.brain/outputs/
+.brain/
 graphify-out/
 ```
 
-Do not ignore `.brain/wiki/` or `.brain/raw/refs/` if you want graphify to map the brain itself.
+`.brain/` and `graphify-out/` must stay excluded: `.brain/` is scanned by
+graphify (its wiki pages and logs contain searchable project knowledge), but
+`graphify-out/` is graphify's own output and must never be scanned.
+Graphifyignore follows gitignore syntax and can only exclude more than
+`.gitignore`, never re-include.
 
 ## CLAUDE.md integration
 
@@ -100,7 +108,7 @@ Do not ignore `.brain/wiki/` or `.brain/raw/refs/` if you want graphify to map t
 2. `.brain/state/session-brief.md`
 3. `.brain/wiki/index.md`
 4. `graphify-out/GRAPH_REPORT.md` when available
-5. MemPalace before making claims about past work
+5. Follow the recall rule in the plugin's SKILL.md step 7 before making claims about past work.
 
 If the project already has a `CLAUDE.md`, the scaffold appends the block only when it is missing.
 

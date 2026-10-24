@@ -1,0 +1,28 @@
+{
+  "description": "project-brain awareness: inject brain status at session start (incl. after compaction) and throttle reminders to update wiki/graph/diary after source edits. Read-only toward MemPalace; silent no-op without .brain/; opt out with PROJECT_BRAIN_HOOKS_DISABLED=1.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/brain_hooks.py\" session-start",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit|MultiEdit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/brain_hooks.py\" post-tool-use",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

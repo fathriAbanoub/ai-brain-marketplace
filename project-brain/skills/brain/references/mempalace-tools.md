@@ -105,7 +105,10 @@ These behaviors were confirmed by running MemPalace 3.11.0 against scratch palac
 **Concurrent writes (lock contention):** A second writer on the same palace exits immediately with
 exit code 1 and prints `palace <path> is held by PID <n> (...); wait for it to finish or stop the
 holder before retrying`. Never run two `mine`/`add_drawer`/`checkpoint` calls against the same palace
-concurrently. Never retry in a loop — wait for the holder to finish.
+concurrently. Never retry in a loop — wait for the holder to finish. The ONE exception is the
+session diary write (`mempalace_diary_write`): after the holder finishes it may retry once, and if
+that still fails, append the diary text to `.brain/log/<YYYYMMDD>.md` and tell the user — see
+"Diary writes and the palace lock" in `references/mempalace-workflow.md`.
 
 **Page length cutoff:** Pages with a body of 51 characters or fewer are silently skipped by mining
 (verified: 60-char pages are filed, sub-51 pages are skipped). The exact boundary is between 51 and 59
@@ -142,12 +145,19 @@ for index health and `mempalace status` for server health.
 
 ### 2. Recall Before Claims (at wake-up/orient)
 
+Always pass the project's wiki wing. Without `wing`, the search scans the
+whole palace — other projects' transcript wings included. If `.brain/CLAUDE.md` is missing or does not define a non-empty `mempalace_wing`, skip the MemPalace search, tell the user the brain is not initialized or configured and to run project-brain-init (or fix the file), and never infer a wing or search without one.
+
 ```
 mempalace_search({
   query: "<project-name> decisions preferences",
+  wing: "wiki-<project-slug>",
   limit: 10
 })
 ```
+
+Read the exact wing from `mempalace_wing:` in `.brain/CLAUDE.md` (it names
+the WIKI wing — wiki mining and wiki search only).
 
 ### 3. Sync the Wiki (after wiki edits)
 
@@ -169,11 +179,19 @@ mempalace mine .brain/wiki --wing wiki-<project-slug> --dry-run
 
 ```
 mempalace_diary_write({
-  agent_name: "brain-<project-slug>",
+  agent_name: "<mempalace_diary_agent>",
   entry: "[DATE] | [PROJECT] | [ACTION]\nSummary: ...\nKey finding: ...\nContradictions: ...\nLog: ...\nNext: ...",
   topic: "session-diary"
 })
 ```
+
+The `agent_name` is read from `mempalace_diary_agent` in `.brain/CLAUDE.md` (for
+an older brain without that field, from the agent named in the diary sentence of
+that file; if neither exists, skip the diary and tell the user). With no `wing`
+argument, MemPalace stores diary entries under `wing_<agent_name>` (its own
+default), i.e. `wing_<mempalace_diary_agent>` — a different wing from the mined
+wiki wing. That split is intentional; see "Diary wing" in
+`references/mempalace-workflow.md`.
 
 The diary entry format follows `references/mempalace-workflow.md`:
 ```
@@ -187,12 +205,21 @@ Next: [priority action]
 
 ### 5. Read Diary at Wake-up
 
+Session-continuity recall — the diary is stored under `wing_<agent_name>`;
+`mempalace_diary_read` finds it via the agent name:
+
 ```
 mempalace_diary_read({
-  agent_name: "brain-<project-slug>",
+  agent_name: "<mempalace_diary_agent>",
   last_n: 5
 })
 ```
+
+The `agent_name` is read from `mempalace_diary_agent` in `.brain/CLAUDE.md` (for
+an older brain without that field, from the agent named in the diary sentence of
+that file; if neither exists, skip the diary and tell the user).
+
+If this read is empty for an older brain, follow [Existing brains: older diary entries](mempalace-workflow.md#existing-brains-older-diary-entries) in mempalace-workflow.md, which does the read-only legacy-wing lookup.
 
 ### 6. Preflight Index Health (CLI fallback)
 
@@ -205,8 +232,12 @@ mempalace status
 
 ## Wing Naming Constants
 
-- Wiki wing: `wiki-<project-slug>`
-- Diary agent: `brain-<project-slug>`
+- Wiki wing: `wiki-<project-slug>` (recorded in `mempalace_wing` in `.brain/CLAUDE.md`)
+- Diary agent: `<mempalace_diary_agent>` (recorded in `mempalace_diary_agent` in `.brain/CLAUDE.md`)
+
+Read both values from `.brain/CLAUDE.md` frontmatter. For an older brain without
+the `mempalace_diary_agent` field, extract it from the diary sentence in that file;
+if neither exists, skip the diary and tell the user.
 
 `<project-slug>` is derived from `sanitize_wing_name(title)` in `scaffold_brain.py`:
 - Lowercase
@@ -219,8 +250,8 @@ mempalace status
 
 These tools were referenced in older documentation but are NOT in the 47-tool set:
 
-- `mempalace_preferences_get` — Use wiki page or diary instead
-- `mempalace_preferences_set` — Use wiki page or diary instead
+- `mempalace_preferences_get` — Use `.brain/wiki/` pages or `.brain/CLAUDE.md` instead
+- `mempalace_preferences_set` — Use `.brain/wiki/` pages or `.brain/CLAUDE.md` instead
 
 ## Notes
 

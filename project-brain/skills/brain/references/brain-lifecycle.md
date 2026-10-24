@@ -90,7 +90,7 @@ Actions:
 2. Read `.brain/state/session-brief.md`.
 3. Read `.brain/wiki/index.md`.
 4. Read `graphify-out/GRAPH_REPORT.md` if present.
-5. Query MemPalace for project name, current task, recent decisions, and user preferences if available.
+5. Follow the recall rule in the plugin's SKILL.md step 7.
 6. Produce a concise orientation with project purpose, components, current workstream, known risks, and next files/pages.
 7. Update the session brief if the current state differs from the stored state.
 
@@ -124,7 +124,7 @@ Actions:
 1. Read the wiki index first.
 2. Search/read relevant wiki pages.
 3. Use graphify for relationship, architecture, path, or code-navigation questions.
-4. Search MemPalace for past conversations, preferences, and decision context.
+4. Follow the recall rule in the plugin's SKILL.md step 7.
 5. Check raw sources for high-stakes or contested claims.
 6. Answer with citations to wiki pages, raw paths, graph report, or memory notes as appropriate.
 7. If the answer creates durable value, save it to `.brain/outputs/queries/` or promote it into the wiki.
@@ -165,11 +165,10 @@ Before any MemPalace call, read `references/mempalace-tools.md` for the complete
 Actions:
 
 1. Call `mempalace_status` (preflight). If `vector_disabled` is true, skip writes and tell the user to run `mempalace repair rebuild-index`.
-2. Search MemPalace before making claims about previous work (`mempalace_search`).
+2. If `.brain/CLAUDE.md` is missing or does not define a non-empty `mempalace_wing`, skip the MemPalace search and diary read, tell the user the brain is not initialized or configured and to run project-brain-init (or fix the file), and never infer a wing or search without one. For claims about wiki knowledge (decisions, architecture, project facts), use `mempalace_search` with the wiki wing from `.brain/CLAUDE.md`; for claims about what happened in earlier sessions (continuity, what was done last time, open threads), use `mempalace_diary_read` with the agent from `mempalace_diary_agent` in `.brain/CLAUDE.md` (for an older brain without that field, from the agent named in the diary sentence of that file; if neither exists, skip the diary and tell the user) — see the recipe in mempalace-tools.md, "Read Diary at Wake-up". The wiki search does not read the diary and the diary read does not search wiki pages, so use the one that fits the claim, or both.
 3. Store diary entries after meaningful changes (follow diary format in `references/mempalace-tools.md`).
-4. Store user preferences that should survive model switches.
-5. Convert stable facts from memory into wiki pages or decisions.
-6. Do not store secrets or full raw dumps.
+4. Convert stable facts from memory into wiki pages or decisions.
+5. Do not store secrets or full raw dumps.
 
 Done when:
 

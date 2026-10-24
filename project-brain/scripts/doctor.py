@@ -71,29 +71,95 @@ def parse_date(raw: object) -> datetime | None:
         return None
 
 
+# ponytail: Claude Code's settings path is UNVERIFIED from material; we check
+# both known locations defensively instead of guessing one.
+SETTINGS_PATHS = (
+    Path.home() / ".openclaude" / "settings.json",
+    Path.home() / ".claude" / "settings.json",
+)
+
+
 def read_enabled_plugins() -> set[str]:
-    settings = Path.home() / ".openclaude" / "settings.json"
-    try:
-        data = json.loads(settings.read_text(encoding="utf-8"))
-        enabled = data.get("enabledPlugins", {})
-        if isinstance(enabled, dict):
-            return {str(k) for k in enabled.keys()}
-        if isinstance(enabled, list):
-            return {str(item) for item in enabled}
-    except Exception:
-        pass
-    return set()
+    enabled: set[str] = set()
+    for settings in SETTINGS_PATHS:
+        try:
+            data = json.loads(settings.read_text(encoding="utf-8"))
+            raw = data.get("enabledPlugins", {})
+            if isinstance(raw, dict):
+                enabled.update(str(k) for k in raw.keys())
+            elif isinstance(raw, list):
+                enabled.update(str(item) for item in raw)
+        except Exception:
+            continue
+    return enabled
 
 
 GRAPH_REPORT_REL = Path("graphify-out") / "GRAPH_REPORT.md"
+GRAPH_MANIFEST_REL = Path("graphify-out") / "manifest.json"
 # graphify writes short hashes; 7 is git's own minimum abbreviation length.
 MIN_COMMIT_HASH_LEN = 7
 COMMIT_LINE_RE = re.compile(r"Built from commit:\s*`([0-9a-fA-F]+)`")
 # Paths that never affect the graph: brain metadata and graphify's own output.
+# .graphifyignore is deliberately NOT excluded: editing it changes which files
+# graphify indexes, so a dirty .graphifyignore is real graph staleness. The
+# report-mtime check below already treats "all dirty files older than the
+# report" as fresh, which covers the scaffold-then-graph case.
 # git pathspec exclude syntax: ":(exclude)<path>".
 _DIRTY_EXCLUDES = [":(exclude).brain/", ":(exclude)graphify-out/"]
 MAX_DIRTY_LINES = 3  # How many porcelain lines to include in stale reason
 DIRTY_OMITTED_MARKER = "... (more paths omitted; run `git status` for the full list)"
+# git status -z uses NUL as the record separator (one record per modified file,
+# two consecutive records for renames: new path, then old path).
+STATUS_RECORD_SEP = "\0"
+
+
+def _load_manifest_keys(root: Path) -> set[str]:
+    """Load manifest keys from graphify-out/manifest.json, or empty set on failure.
+
+    Reads the manifest only when called (lazy); catches OSError and ValueError
+    (JSON decode errors); returns empty set for non-dict JSON.
+    """
+    manifest_path = root / GRAPH_MANIFEST_REL
+    try:
+        manifest_data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if isinstance(manifest_data, dict):
+            return set(manifest_data.keys())
+        return set()
+    except (OSError, ValueError):
+        return set()
+
+
+def _parse_status_z(output: str) -> tuple[list[str], list[str]]:
+    """Parse git status --porcelain -z output into current and origin paths.
+
+    Returns (current_paths, origin_paths). For renames/copies (R or C in either
+    status column), the next record is the origin path; for all others, the path
+    after "XY " is a current path. Renames/copies appear in origin_paths AND
+    current_paths (the destination).
+    """
+    records = [r for r in output.split(STATUS_RECORD_SEP) if r]
+    current_paths: list[str] = []
+    origin_paths: list[str] = []
+    i = 0
+    while i < len(records):
+        rec = records[i]
+        if len(rec) < 2:
+            i += 1
+            continue
+        # R or C in either index (rec[0]) or worktree (rec[1]) column
+        if rec[0] in "RC" or rec[1] in "RC":
+            # Rename/copy: rec[3:] is the new path, next record is the origin
+            current_paths.append(rec[3:] if len(rec) > 3 else "")
+            if i + 1 < len(records):
+                origin_paths.append(records[i + 1])
+                i += 2  # Skip the origin record
+            else:
+                i += 1
+        else:
+            # Normal entry: "XY path"
+            current_paths.append(rec[3:] if len(rec) > 3 else "")
+            i += 1
+    return current_paths, origin_paths
 
 
 def graphify_freshness(root: Path) -> tuple[str, str]:
@@ -110,15 +176,18 @@ def graphify_freshness(root: Path) -> tuple[str, str]:
     recorded = match.group(1)
     if len(recorded) < MIN_COMMIT_HASH_LEN:
         return "stale", f"recorded commit hash too short: {recorded!r}"
+
     try:
         head = subprocess.run(
             ["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True, timeout=5
         ).stdout.strip()
         # Dirty check: include untracked source files (they are indexed by the
         # graph), but exclude .brain/ and graphify-out/ which never affect it.
+        # Use -z for NUL-separated records to handle paths with spaces/non-ASCII.
         dirty = subprocess.run(
-            ["git", "status", "--porcelain", "--", *_DIRTY_EXCLUDES], cwd=root, capture_output=True, text=True, timeout=5
-        ).stdout.rstrip()
+            ["git", "status", "--porcelain", "-z", "--", *_DIRTY_EXCLUDES],
+            cwd=root, capture_output=True, text=True, timeout=5
+        ).stdout
     except (FileNotFoundError, subprocess.SubprocessError) as exc:
         return "stale", f"git unavailable: {exc}"
     if not head:
@@ -126,30 +195,69 @@ def graphify_freshness(root: Path) -> tuple[str, str]:
     if not head.startswith(recorded):
         return "stale", f"graph built at {recorded}, HEAD is {head[:len(recorded)]}"
     if dirty:
-        dirty_lines = dirty.splitlines()
-        visible_lines = dirty_lines[:MAX_DIRTY_LINES]
-        omitted_count = len(dirty_lines) - len(visible_lines)
+        # Parse NUL-separated records. Git emits "XY path\0" for each modification,
+        # plus "XY new_path\0old_path\0" for renames/copies (R or C in either index
+        # or worktree status column). Collect current paths and origin paths separately.
+        current_paths, origin_paths = _parse_status_z(dirty)
 
-        # ponytail: compares mtime only, not file hashes; a deletion made after
-        # the last graphify run is not detected. Upgrade path: graphify's own
-        # per-file hashes.
+        visible_paths = current_paths[:MAX_DIRTY_LINES]
+        omitted_count = len(current_paths) - len(visible_paths)
+
+        # ponytail: compares mtime for existing files; for deletions (including
+        # rename origins) consults manifest lazily (only when first deleted path
+        # found). Upgrade path: Graphify's own change detection.
         report_mtime = report.stat().st_mtime
         any_newer_than_report = False
-        for line in dirty_lines:
-            # Parse git status --porcelain format: XY path [-> newpath]
-            # Handle renames (->), spaces in paths, and missing files
-            parts = line[3:].split(" -> ")
-            path_str = parts[-1].strip()  # Use new path for renames
+        manifest_keys: set[str] | None = None  # Lazy load
+
+        # Check current paths (new files, edits, rename/copy destinations)
+        for path_str in current_paths:
+            if not path_str:
+                continue
             path = root / path_str
-            if path.exists() and path.stat().st_mtime > report_mtime:
-                any_newer_than_report = True
-                break
+            if path.exists():
+                if path.stat().st_mtime > report_mtime:
+                    any_newer_than_report = True
+                    break
+            else:
+                # Deleted file: check manifest (load on first deletion only)
+                if manifest_keys is None:
+                    manifest_keys = _load_manifest_keys(root)
+                if manifest_keys:
+                    path_posix = path.relative_to(root).as_posix()
+                    path_abs = str(path.resolve())
+                    if path_posix in manifest_keys or path_abs in manifest_keys:
+                        any_newer_than_report = True
+                        break
+
+        # Check origin paths (renames and copies): if the origin no longer exists
+        # and was in the manifest, the graph is stale; if it still exists (copy),
+        # compare by mtime.
+        if not any_newer_than_report:
+            for path_str in origin_paths:
+                if not path_str:
+                    continue
+                path = root / path_str
+                if path.exists():
+                    if path.stat().st_mtime > report_mtime:
+                        any_newer_than_report = True
+                        break
+                else:
+                    # Origin no longer exists (rename): check manifest
+                    if manifest_keys is None:
+                        manifest_keys = _load_manifest_keys(root)
+                    if manifest_keys:
+                        path_posix = path.relative_to(root).as_posix()
+                        path_abs = str(path.resolve())
+                        if path_posix in manifest_keys or path_abs in manifest_keys:
+                            any_newer_than_report = True
+                            break
 
         if not any_newer_than_report:
             # All dirty files predate the report - graph was rebuilt after edits
             return "fresh", f"graph matches {recorded}"
 
-        lines_str = "; ".join(visible_lines)
+        lines_str = "; ".join(visible_paths)
         if omitted_count > 0:
             lines_str += f"; {DIRTY_OMITTED_MARKER}"
         return "stale", f"uncommitted changes to source files: {lines_str}"
@@ -382,7 +490,7 @@ def main(argv: list[str]) -> int:
     if any("mempalace" in p.lower() for p in plugins):
         print("✓ MemPalace plugin enabled in settings.json")
     else:
-        print("⚠ mempalace not found in enabledPlugins — check ~/.openclaude/settings.json")
+        print("⚠ mempalace not found in enabledPlugins — check ~/.openclaude/settings.json (or ~/.claude/settings.json)")
 
     ok, ver = graphify_version()
     if ok:

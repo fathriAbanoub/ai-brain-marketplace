@@ -191,10 +191,13 @@ def scaffold(project_root: Path, title: str, force: bool = False) -> None:
     installed_line = "MemPalace is already installed as a plugin. graphify is already installed as a CLI tool and skill. Do not reinstall either."
 
     # New brains use the canonical wiki-<slug> prefix.
+    slug = sanitize_wing_name(title)
     wing_name = wiki_wing_name(title)
+    diary_agent = f"{BRAIN_DIARY_PREFIX}{slug}"  # Default for new brains
 
-    # Reuse existing wing name if .brain/CLAUDE.md already has one (idempotent re-scaffold).
+    # Reuse existing wing name and diary agent if .brain/CLAUDE.md already has them (idempotent re-scaffold).
     brain_claude = brain / "CLAUDE.md"
+    found_diary_agent = False
     if brain_claude.exists():
         existing_text = brain_claude.read_text(encoding="utf-8")
         for line in existing_text.splitlines():
@@ -203,7 +206,16 @@ def scaffold(project_root: Path, title: str, force: bool = False) -> None:
                 existing_wing = stripped.split(":", 1)[1].strip()
                 if existing_wing:
                     wing_name = existing_wing
-                    break
+            elif stripped.startswith("mempalace_diary_agent:"):
+                existing_agent = stripped.split(":", 1)[1].strip()
+                if existing_agent:
+                    diary_agent = existing_agent
+                    found_diary_agent = True
+        # Fallback: recover from old diary sentence ONLY if no frontmatter agent
+        if not found_diary_agent:
+            diary_sentence_match = re.search(r"`mempalace_diary_write`\s+with\s+agent\s+`([^`]+)`", existing_text)
+            if diary_sentence_match:
+                diary_agent = diary_sentence_match.group(1)
 
     # Fallback: ensure wing_name is never empty
     if not wing_name:
@@ -212,6 +224,7 @@ def scaffold(project_root: Path, title: str, force: bool = False) -> None:
 
     brain_schema = f"""---
 mempalace_wing: {wing_name}
+mempalace_diary_agent: {diary_agent}
 ---
 
 # {title} Project Brain
@@ -222,7 +235,16 @@ Created: {today}
 
 ## MemPalace namespace
 
-All MemPalace operations for this project use wing: `{wing_name}`. Never write to a different wing for this project.
+Wiki pages are mined into MemPalace wing `{wing_name}`. Wiki knowledge is
+searched in that wing: pass `wing: "{wing_name}"` to `mempalace_search` —
+a search without `wing` scans the whole palace, other projects' wings
+included. The session diary is separate: `mempalace_diary_write` with agent
+`{diary_agent}` stores under MemPalace's diary default `wing_{diary_agent}`,
+and it is read back with `mempalace_diary_read` (agent `{diary_agent}`).
+Never mine or diary into other projects' wings. Brains scaffolded by older
+plugin versions may keep diary entries in the wiki wing — see "Existing
+brains: older diary entries" in the plugin's
+`skills/brain/references/mempalace-workflow.md`.
 
 ## Environment
 

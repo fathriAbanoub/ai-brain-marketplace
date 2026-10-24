@@ -179,16 +179,19 @@ mempalace mine .brain/wiki --wing wiki-<project-slug> --dry-run
 
 ```
 mempalace_diary_write({
-  agent_name: "brain-<project-slug>",
+  agent_name: "<mempalace_diary_agent>",
   entry: "[DATE] | [PROJECT] | [ACTION]\nSummary: ...\nKey finding: ...\nContradictions: ...\nLog: ...\nNext: ...",
   topic: "session-diary"
 })
 ```
 
-Wing note: with no `wing` argument, MemPalace stores diary entries under
-`wing_<agent_name>` (its own default), i.e. `wing_brain-<project-slug>` — a
-different wing from the mined wiki wing `wiki-<project-slug>`. That split is
-intentional; see "Diary wing" in `references/mempalace-workflow.md`.
+The `agent_name` is read from `mempalace_diary_agent` in `.brain/CLAUDE.md` (for
+an older brain without that field, from the agent named in the diary sentence of
+that file; if neither exists, skip the diary and tell the user). With no `wing`
+argument, MemPalace stores diary entries under `wing_<agent_name>` (its own
+default), i.e. `wing_<mempalace_diary_agent>` — a different wing from the mined
+wiki wing. That split is intentional; see "Diary wing" in
+`references/mempalace-workflow.md`.
 
 The diary entry format follows `references/mempalace-workflow.md`:
 ```
@@ -202,15 +205,19 @@ Next: [priority action]
 
 ### 5. Read Diary at Wake-up
 
-Session-continuity recall — the diary is stored under `wing_brain-<project-slug>`;
+Session-continuity recall — the diary is stored under `wing_<agent_name>`;
 `mempalace_diary_read` finds it via the agent name:
 
 ```
 mempalace_diary_read({
-  agent_name: "brain-<project-slug>",
+  agent_name: "<mempalace_diary_agent>",
   last_n: 5
 })
 ```
+
+The `agent_name` is read from `mempalace_diary_agent` in `.brain/CLAUDE.md` (for
+an older brain without that field, from the agent named in the diary sentence of
+that file; if neither exists, skip the diary and tell the user).
 
 If this read is empty for an older brain, follow [Existing brains: older diary entries](mempalace-workflow.md#existing-brains-older-diary-entries) in mempalace-workflow.md, which does the read-only legacy-wing lookup.
 
@@ -225,8 +232,12 @@ mempalace status
 
 ## Wing Naming Constants
 
-- Wiki wing: `wiki-<project-slug>`
-- Diary agent: `brain-<project-slug>`
+- Wiki wing: `wiki-<project-slug>` (recorded in `mempalace_wing` in `.brain/CLAUDE.md`)
+- Diary agent: `<mempalace_diary_agent>` (recorded in `mempalace_diary_agent` in `.brain/CLAUDE.md`)
+
+Read both values from `.brain/CLAUDE.md` frontmatter. For an older brain without
+the `mempalace_diary_agent` field, extract it from the diary sentence in that file;
+if neither exists, skip the diary and tell the user.
 
 `<project-slug>` is derived from `sanitize_wing_name(title)` in `scaffold_brain.py`:
 - Lowercase
@@ -239,8 +250,8 @@ mempalace status
 
 These tools were referenced in older documentation but are NOT in the 47-tool set:
 
-- `mempalace_preferences_get` — Use wiki page or diary instead
-- `mempalace_preferences_set` — Use wiki page or diary instead
+- `mempalace_preferences_get` — Use `.brain/wiki/` pages or `.brain/CLAUDE.md` instead
+- `mempalace_preferences_set` — Use `.brain/wiki/` pages or `.brain/CLAUDE.md` instead
 
 ## Notes
 

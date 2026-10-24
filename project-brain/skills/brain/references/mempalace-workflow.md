@@ -9,8 +9,9 @@ MemPalace is available as a connected plugin (mempalace 3.11.0, 47 MCP tools). U
 MemPalace ships its own harness hooks (stop, session-end, precompact) that
 automatically write session transcripts and diary checkpoints into the
 palace, plus a transcript miner. Never duplicate that work: the brain's own
-diary entry (`mempalace_diary_write` with agent `brain-<project-slug>`) is a
-separate, deliberate record — it coexists with the automatic checkpoints.
+diary entry (`mempalace_diary_write` with the agent named by `mempalace_diary_agent`
+in `.brain/CLAUDE.md`) is a separate, deliberate record — it coexists with the
+automatic checkpoints.
 
 - Never run two palace writers concurrently. A second writer exits 1 with
   `palace <path> is held by PID <n> ...` and there is no waiting.
@@ -41,20 +42,21 @@ hooks (stop, session-end, precompact), which write at session end. Rules:
 
 `mempalace_diary_write` stores to wing `wing_<agent_name>` unless an explicit
 `wing` is passed (MemPalace's diary tool default). With the brain's agent
-name `brain-<project-slug>` and no wing override, diary entries land in wing
-`wing_brain-<project-slug>` — NOT in the `wiki-<project-slug>` wiki wing.
-That is the intended layout: the wiki wing holds mined wiki pages; the diary
-wing holds session continuity. The `mempalace_wing:` frontmatter in
+name from `mempalace_diary_agent` in `.brain/CLAUDE.md` and no wing override,
+diary entries land in `wing_<that-agent>` — NOT in the `wiki-<project-slug>`
+wiki wing. That is the intended layout: the wiki wing holds mined wiki pages;
+the diary wing holds session continuity. The `mempalace_wing:` frontmatter in
 `.brain/CLAUDE.md` names the WIKI wing for mining and search; diary recipes
-name their own agent and wing. The exact agent name is recorded in `.brain/CLAUDE.md` as `mempalace_diary_agent`.
+use the agent from `mempalace_diary_agent` in that same file.
 
 ### Existing brains: older diary entries
 
 Brains scaffolded by plugin versions before the diary-wing split were told
 that ALL MemPalace operations use the project wing, so their diary entries may
 sit in the project's wiki wing (the one named in `.brain/CLAUDE.md`) instead
-of `wing_brain-<project-slug>`. If `mempalace_diary_read` (agent
-`brain-<project-slug>`) looks empty for an older brain:
+of the diary wing. If `mempalace_diary_read` with the agent from
+`mempalace_diary_agent` in `.brain/CLAUDE.md` (or for older brains without that
+field, the agent named in the diary sentence of that file) looks empty:
 
 1. Read the old entries ONCE, read-only: `mempalace_list_drawers` with
    `wing` = the old wing named in `.brain/CLAUDE.md` and `room: "diary"`.
@@ -65,7 +67,7 @@ of `wing_brain-<project-slug>`. If `mempalace_diary_read` (agent
 
 ## Wing namespacing (critical)
 
-Every project has a dedicated MemPalace wiki wing. The wing name is recorded in `.brain/CLAUDE.md` frontmatter as `mempalace_wing`. That value names the WIKI wing: it applies to wiki mining and wiki search only — NOT to diary operations. Diary reads and writes use the agent name `brain-<project-slug>` and MemPalace's diary wing `wing_brain-<project-slug>` (see "Diary wing" above). Never write to a generic or guessed wing name.
+Every project has a dedicated MemPalace wiki wing. The wing name is recorded in `.brain/CLAUDE.md` frontmatter as `mempalace_wing`. That value names the WIKI wing: it applies to wiki mining and wiki search only — NOT to diary operations. Diary reads and writes use the agent from `mempalace_diary_agent` in `.brain/CLAUDE.md` and MemPalace's diary wing `wing_<that-agent>` (see "Diary wing" above). Never write to a generic or guessed wing name.
 
 ```bash
 # Read the wing name for the current project:
@@ -73,7 +75,7 @@ grep "mempalace_wing" .brain/CLAUDE.md
 # Output: mempalace_wing: wiki-ambient-mixer
 ```
 
-Wing names follow the `wiki-<slug>` convention (e.g. `wiki-ambient-mixer`, `wiki-my-project`). The scaffold writes this automatically. If `.brain/CLAUDE.md` does not exist yet, derive the wing name as `wiki-` + `sanitize_wing_name(title)` where `sanitize_wing_name` is defined in `scaffold_brain.py`: lowercase, replace runs of characters outside `[a-z0-9._-]` with a single hyphen, collapse repeated hyphens, strip leading/trailing `-._`, preserve underscores. Write that name into `.brain/CLAUDE.md` frontmatter once the brain is initialized.
+Wing names follow the `wiki-<slug>` convention (e.g. `wiki-ambient-mixer`, `wiki-my-project`). The scaffold writes this automatically. If `.brain/CLAUDE.md` is missing or does not define a non-empty `mempalace_wing`, follow the recall guard: skip MemPalace operations, tell the user to run project-brain-init or fix the file, and never derive or guess a wing. The derivation rules live in `mempalace-tools.md` ("Wing Naming Constants"); project-brain-init derives the wing name and writes it into `.brain/CLAUDE.md`.
 
 **Why this matters:** MemPalace is a global store shared across all projects in a session. Without namespacing, the model writes project A's context into project B's wing, or pollutes a shared wing with mixed content from every project it touches. The wing is the namespace — stay inside it.
 

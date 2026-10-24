@@ -212,3 +212,71 @@ class TestScaffoldBrain:
         index_path = brain_dir / "wiki" / "index.md"
         content = index_path.read_text(encoding="utf-8")
         assert unicode_name in content
+# --- B1/B2: diary agent preservation across refresh --------------------------
+
+
+def test_scaffold_configured_agent_vs_stale_sentence(tmp_path: Path):
+    """B1: Configured agent in frontmatter not overridden by stale sentence."""
+    import sys
+    from pathlib import Path
+    plugin_root = Path(__file__).resolve().parent.parent
+    sys.path.insert(0, str(plugin_root / "scripts"))
+    from scaffold_brain import scaffold
+
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / ".git").mkdir()
+
+    # Initial scaffold
+    scaffold(root, "New Title")
+    claude_md = root / ".brain" / "CLAUDE.md"
+
+    # Manually set frontmatter to brain-new-title and insert old sentence
+    content = claude_md.read_text(encoding="utf-8")
+    # Add stale sentence after frontmatter
+    lines = content.split("\n")
+    insert_pos = next(i for i, line in enumerate(lines) if line.startswith("# New Title"))
+    lines.insert(insert_pos + 2, "The session diary uses `mempalace_diary_write` with agent `brain-old-title`.")
+    claude_md.write_text("\n".join(lines), encoding="utf-8")
+
+    # Refresh with --force
+    scaffold(root, "New Title", force=True)
+
+    new_content = claude_md.read_text(encoding="utf-8")
+    assert "mempalace_diary_agent: brain-new-title" in new_content
+    assert "agent `brain-new-title`" in new_content
+
+
+def test_scaffold_custom_agent_without_prefix_survives(tmp_path: Path):
+    """B2: Custom agent name without 'brain-' prefix preserved exactly."""
+    import sys
+    from pathlib import Path
+    plugin_root = Path(__file__).resolve().parent.parent
+    sys.path.insert(0, str(plugin_root / "scripts"))
+    from scaffold_brain import scaffold
+
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / ".git").mkdir()
+
+    # Initial scaffold
+    scaffold(root, "Test")
+    claude_md = root / ".brain" / "CLAUDE.md"
+
+    # Set custom agent without prefix
+    content = claude_md.read_text(encoding="utf-8")
+    content = content.replace(
+        "mempalace_diary_agent: brain-test",
+        "mempalace_diary_agent: my-custom-agent"
+    )
+    claude_md.write_text(content, encoding="utf-8")
+
+    # Refresh with --force
+    scaffold(root, "Different Title", force=True)
+
+    new_content = claude_md.read_text(encoding="utf-8")
+    assert "mempalace_diary_agent: my-custom-agent" in new_content
+    assert "brain-my-custom-agent" not in new_content
+    # Check diary wing text uses the custom agent
+    assert "agent `my-custom-agent`" in new_content
+    assert "wing_my-custom-agent" in new_content

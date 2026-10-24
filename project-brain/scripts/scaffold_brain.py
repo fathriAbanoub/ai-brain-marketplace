@@ -193,9 +193,11 @@ def scaffold(project_root: Path, title: str, force: bool = False) -> None:
     # New brains use the canonical wiki-<slug> prefix.
     slug = sanitize_wing_name(title)
     wing_name = wiki_wing_name(title)
+    diary_agent = f"{BRAIN_DIARY_PREFIX}{slug}"  # Default for new brains
 
     # Reuse existing wing name and diary agent if .brain/CLAUDE.md already has them (idempotent re-scaffold).
     brain_claude = brain / "CLAUDE.md"
+    found_diary_agent = False
     if brain_claude.exists():
         existing_text = brain_claude.read_text(encoding="utf-8")
         for line in existing_text.splitlines():
@@ -207,12 +209,13 @@ def scaffold(project_root: Path, title: str, force: bool = False) -> None:
             elif stripped.startswith("mempalace_diary_agent:"):
                 existing_agent = stripped.split(":", 1)[1].strip()
                 if existing_agent:
-                    slug = existing_agent.removeprefix(BRAIN_DIARY_PREFIX)
-        # Fallback: recover slug from the old diary sentence if frontmatter is missing
-        if slug == sanitize_wing_name(title):
-            diary_sentence_match = re.search(r"`mempalace_diary_write`\s+with\s+agent\s+`brain-([^`]+)`", existing_text)
+                    diary_agent = existing_agent
+                    found_diary_agent = True
+        # Fallback: recover from old diary sentence ONLY if no frontmatter agent
+        if not found_diary_agent:
+            diary_sentence_match = re.search(r"`mempalace_diary_write`\s+with\s+agent\s+`([^`]+)`", existing_text)
             if diary_sentence_match:
-                slug = diary_sentence_match.group(1)
+                diary_agent = diary_sentence_match.group(1)
 
     # Fallback: ensure wing_name is never empty
     if not wing_name:
@@ -221,7 +224,7 @@ def scaffold(project_root: Path, title: str, force: bool = False) -> None:
 
     brain_schema = f"""---
 mempalace_wing: {wing_name}
-mempalace_diary_agent: {BRAIN_DIARY_PREFIX}{slug}
+mempalace_diary_agent: {diary_agent}
 ---
 
 # {title} Project Brain
@@ -236,8 +239,8 @@ Wiki pages are mined into MemPalace wing `{wing_name}`. Wiki knowledge is
 searched in that wing: pass `wing: "{wing_name}"` to `mempalace_search` —
 a search without `wing` scans the whole palace, other projects' wings
 included. The session diary is separate: `mempalace_diary_write` with agent
-`{BRAIN_DIARY_PREFIX}{slug}` stores under MemPalace's diary default `wing_brain-{slug}`,
-and it is read back with `mempalace_diary_read` (agent `{BRAIN_DIARY_PREFIX}{slug}`).
+`{diary_agent}` stores under MemPalace's diary default `wing_{diary_agent}`,
+and it is read back with `mempalace_diary_read` (agent `{diary_agent}`).
 Never mine or diary into other projects' wings. Brains scaffolded by older
 plugin versions may keep diary entries in the wiki wing — see "Existing
 brains: older diary entries" in the plugin's

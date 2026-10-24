@@ -46,6 +46,19 @@ def documented_tools() -> set[str]:
 # --- item 3: wing naming ----------------------------------------------------
 
 
+def test_mempalace_diary_agent_documented():
+    """All key documentation files mention mempalace_diary_agent."""
+    key_files = [
+        PLUGIN_ROOT / "skills" / "brain" / "references" / "mempalace-workflow.md",
+        PLUGIN_ROOT / "skills" / "brain" / "references" / "mempalace-tools.md",
+        PLUGIN_ROOT / "skills" / "brain" / "references" / "brain-lifecycle.md",
+        PLUGIN_ROOT / "skills" / "brain" / "SKILL.md",
+    ]
+    for path in key_files:
+        text = path.read_text(encoding="utf-8")
+        assert "mempalace_diary_agent" in text, f"{path.name} must mention mempalace_diary_agent"
+
+
 def test_wing_constants():
     assert WIKI_WING_PREFIX == "wiki-"
     assert BRAIN_DIARY_PREFIX == "brain-"
@@ -146,9 +159,13 @@ def test_gate_stale_with_dirty_tree(git_repo: Path):
     head = _git(git_repo, "rev-parse", "HEAD").strip()
     _write_report(git_repo, head)
     # Modify a tracked file without committing.
-    import time
-    time.sleep(0.01)
-    (git_repo / "a.txt").write_text("dirty\n", encoding="utf-8")
+    a_file = git_repo / "a.txt"
+    report_path = git_repo / "graphify-out" / "GRAPH_REPORT.md"
+    report_m = report_path.stat().st_mtime
+    # Set report mtime first, then write the file change after
+    os.utime(report_path, (report_m, report_m))
+    a_file.write_text("dirty\n", encoding="utf-8")
+    os.utime(a_file, (report_m + 10, report_m + 10))  # file newer than report
     status, reason = graphify_freshness(git_repo)
     assert status == "stale"
     assert "uncommitted" in reason
@@ -699,7 +716,7 @@ def test_gate_corrupt_manifest_no_exception(git_repo: Path):
     # No crash, returns fresh because manifest failed to load
     assert status == "fresh"
 
-# --- ITEM 1: recall instructions must have guard and wing scope --------------
+# --- recall instructions must have guard and wing scope -----------------------
 
 def test_guard_key_phrase_in_all_files():
     """Each doc file must contain the guard phrase OR a pointer to the recall rule."""
@@ -747,3 +764,241 @@ def test_no_unscoped_mempalace_search():
 
     assert not violations, \
         f"Lines with '(search|query) mempalace' lack wing/diary/recall-rule:\n" + "\n".join(violations)
+
+
+# --- Rename and copy handling in git status parsing -------------------------
+
+def test_gate_stale_with_staged_rename_old_path_in_manifest(git_repo: Path):
+    """Staged git mv with old path in manifest reports stale."""
+    root = git_repo
+    src = root / "old.py"
+    src.write_text("print('hello')")
+    subprocess.run(["git", "add", "old.py"], cwd=root, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=root, check=True, capture_output=True)
+    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True, check=True).stdout.strip()
+    
+    _write_report(root, head)
+    manifest = root / "graphify-out" / "manifest.json"
+    manifest.write_text(json.dumps({"old.py": {"mtime": 1000, "seen": 1}}))
+    
+    subprocess.run(["git", "mv", "old.py", "new.py"], cwd=root, check=True, capture_output=True)
+    
+    status, reason = graphify_freshness(root)
+    assert status == "stale", "Staged rename with old path in manifest must report stale"
+    assert "uncommitted changes" in reason
+
+
+def test_gate_stale_with_unstaged_rename_old_path_in_manifest(git_repo: Path):
+    """Unstaged rename (D old + ?? new) with old path in manifest reports stale."""
+    root = git_repo
+    src = root / "old.py"
+    src.write_text("print('hello')")
+    subprocess.run(["git", "add", "old.py"], cwd=root, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=root, check=True, capture_output=True)
+    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True, check=True).stdout.strip()
+    
+    _write_report(root, head)
+    manifest = root / "graphify-out" / "manifest.json"
+    manifest.write_text(json.dumps({"old.py": {"mtime": 1000, "seen": 1}}))
+    
+    (root / "old.py").rename(root / "new.py")
+    
+    status, reason = graphify_freshness(root)
+    assert status == "stale", "Unstaged rename with old path in manifest must report stale"
+
+
+def test_parse_status_z_staged_rename():
+    """Parse staged rename: R  new\\0old\\0"""
+    from doctor import _parse_status_z
+    output = "R  new.py\0old.py\0"
+    current, origin = _parse_status_z(output)
+    assert current == ["new.py"], f"Expected ['new.py'], got {current}"
+    assert origin == ["old.py"], f"Expected ['old.py'], got {origin}"
+
+
+def test_parse_status_z_worktree_rename():
+    """Parse worktree rename:  R new\\0old\\0"""
+    from doctor import _parse_status_z
+    output = " R new.py\0old.py\0"
+    current, origin = _parse_status_z(output)
+    assert current == ["new.py"]
+    assert origin == ["old.py"]
+
+
+def test_parse_status_z_copy():
+    """Parse copy: C  new\\0old\\0"""
+    from doctor import _parse_status_z
+    output = "C  new.py\0old.py\0"
+    current, origin = _parse_status_z(output)
+    assert current == ["new.py"]
+    assert origin == ["old.py"]
+
+
+def test_parse_status_z_mixed():
+    """Parse mixed status with rename, modify, untracked."""
+    from doctor import _parse_status_z
+    output = "R  new.py\0old.py\0M  a.py\0?? b.py\0"
+    current, origin = _parse_status_z(output)
+    assert current == ["new.py", "a.py", "b.py"]
+    assert origin == ["old.py"]
+
+
+def test_parse_status_z_path_with_space():
+    """Parse path with space."""
+    from doctor import _parse_status_z
+    output = "M  my file.py\0"
+    current, origin = _parse_status_z(output)
+    assert current == ["my file.py"]
+    assert origin == []
+
+
+def test_gate_deletion_in_manifest_reports_stale(git_repo: Path):
+    """Deleted file present in manifest reports stale."""
+    src = git_repo / "src.py"
+    src.write_text("print('hello')")
+    _git(git_repo, "add", "src.py")
+    _git(git_repo, "commit", "-m", "init")
+    head = _git(git_repo, "rev-parse", "HEAD").strip()
+
+    graphify_out = git_repo / "graphify-out"
+    graphify_out.mkdir()
+    report = graphify_out / "GRAPH_REPORT.md"
+    report.write_text(f"Built from commit: `{head[:12]}`\n")
+
+    manifest = graphify_out / "manifest.json"
+    manifest.write_text(json.dumps({"src.py": {"mtime": 1000, "seen": 1}}))
+
+    src.unlink()
+
+    status, reason = graphify_freshness(git_repo)
+    assert status == "stale"
+    assert "uncommitted changes" in reason
+
+
+def test_gate_deletion_not_in_manifest_reports_fresh(git_repo: Path):
+    """Deleted file not in manifest reports fresh."""
+    src = git_repo / "src.py"
+    src.write_text("print('hello')")
+    _git(git_repo, "add", "src.py")
+    _git(git_repo, "commit", "-m", "init")
+    head = _git(git_repo, "rev-parse", "HEAD").strip()
+
+    graphify_out = git_repo / "graphify-out"
+    graphify_out.mkdir()
+    report = graphify_out / "GRAPH_REPORT.md"
+    report.write_text(f"Built from commit: `{head[:12]}`\n")
+
+    manifest = graphify_out / "manifest.json"
+    manifest.write_text(json.dumps({"other.py": {"mtime": 1000, "seen": 1}}))
+
+    src.unlink()
+
+    status, reason = graphify_freshness(git_repo)
+    assert status == "fresh"
+
+
+def test_gate_deletion_absolute_key_reports_stale(git_repo: Path):
+    """Deleted file with absolute path key in manifest reports stale."""
+    src = git_repo / "src.py"
+    src.write_text("print('hello')")
+    _git(git_repo, "add", "src.py")
+    _git(git_repo, "commit", "-m", "init")
+    head = _git(git_repo, "rev-parse", "HEAD").strip()
+
+    graphify_out = git_repo / "graphify-out"
+    graphify_out.mkdir()
+    report = graphify_out / "GRAPH_REPORT.md"
+    report.write_text(f"Built from commit: `{head[:12]}`\n")
+
+    manifest = graphify_out / "manifest.json"
+    manifest.write_text(json.dumps({str(src.resolve()): {"mtime": 1000, "seen": 1}}))
+
+    src.unlink()
+
+    status, reason = graphify_freshness(git_repo)
+    assert status == "stale"
+
+
+def test_gate_missing_manifest_no_exception(git_repo: Path):
+    """Missing manifest does not raise exception."""
+    src = git_repo / "src.py"
+    src.write_text("print('hello')")
+    _git(git_repo, "add", "src.py")
+    _git(git_repo, "commit", "-m", "init")
+    head = _git(git_repo, "rev-parse", "HEAD").strip()
+
+    graphify_out = git_repo / "graphify-out"
+    graphify_out.mkdir()
+    report = graphify_out / "GRAPH_REPORT.md"
+    report.write_text(f"Built from commit: `{head[:12]}`\n")
+
+    src.unlink()
+
+    status, reason = graphify_freshness(git_repo)
+    assert status == "fresh"
+
+
+def test_gate_corrupt_manifest_no_exception(git_repo: Path):
+    """Corrupt manifest does not raise exception."""
+    src = git_repo / "src.py"
+    src.write_text("print('hello')")
+    _git(git_repo, "add", "src.py")
+    _git(git_repo, "commit", "-m", "init")
+    head = _git(git_repo, "rev-parse", "HEAD").strip()
+
+    graphify_out = git_repo / "graphify-out"
+    graphify_out.mkdir()
+    report = graphify_out / "GRAPH_REPORT.md"
+    report.write_text(f"Built from commit: `{head[:12]}`\n")
+
+    manifest = graphify_out / "manifest.json"
+    manifest.write_text("not json at all")
+
+    src.unlink()
+
+    status, reason = graphify_freshness(git_repo)
+    assert status == "fresh"
+
+
+def test_gate_list_manifest_no_exception(git_repo: Path):
+    """Manifest that is a JSON list does not raise exception."""
+    src = git_repo / "src.py"
+    src.write_text("print('hello')")
+    _git(git_repo, "add", "src.py")
+    _git(git_repo, "commit", "-m", "init")
+    head = _git(git_repo, "rev-parse", "HEAD").strip()
+
+    graphify_out = git_repo / "graphify-out"
+    graphify_out.mkdir()
+    report = graphify_out / "GRAPH_REPORT.md"
+    report.write_text(f"Built from commit: `{head[:12]}`\n")
+
+    manifest = graphify_out / "manifest.json"
+    manifest.write_text(json.dumps(["src.py"]))
+
+    src.unlink()
+
+    status, reason = graphify_freshness(git_repo)
+    assert status == "fresh"
+
+
+def test_gate_renamed_file_old_path_in_manifest_reports_stale(git_repo: Path):
+    """Renamed file whose old path is in manifest reports stale."""
+    old = git_repo / "old.py"
+    old.write_text("print('hello')")
+    _git(git_repo, "add", "old.py")
+    _git(git_repo, "commit", "-m", "init")
+    head = _git(git_repo, "rev-parse", "HEAD").strip()
+
+    graphify_out = git_repo / "graphify-out"
+    graphify_out.mkdir()
+    report = graphify_out / "GRAPH_REPORT.md"
+    report.write_text(f"Built from commit: `{head[:12]}`\n")
+
+    manifest = graphify_out / "manifest.json"
+    manifest.write_text(json.dumps({"old.py": {"mtime": 1000, "seen": 1}}))
+
+    old.rename(git_repo / "new.py")
+
+    status, reason = graphify_freshness(git_repo)
+    assert status == "stale"

@@ -129,6 +129,39 @@ def _load_manifest_keys(root: Path) -> set[str]:
         return set()
 
 
+def _parse_status_z(output: str) -> tuple[list[str], list[str]]:
+    """Parse git status --porcelain -z output into current and origin paths.
+
+    Returns (current_paths, origin_paths). For renames/copies (R or C in either
+    status column), the next record is the origin path; for all others, the path
+    after "XY " is a current path. Renames/copies appear in origin_paths AND
+    current_paths (the destination).
+    """
+    records = [r for r in output.split(STATUS_RECORD_SEP) if r]
+    current_paths: list[str] = []
+    origin_paths: list[str] = []
+    i = 0
+    while i < len(records):
+        rec = records[i]
+        if len(rec) < 2:
+            i += 1
+            continue
+        # R or C in either index (rec[0]) or worktree (rec[1]) column
+        if rec[0] in "RC" or rec[1] in "RC":
+            # Rename/copy: rec[3:] is the new path, next record is the origin
+            current_paths.append(rec[3:] if len(rec) > 3 else "")
+            if i + 1 < len(records):
+                origin_paths.append(records[i + 1])
+                i += 2  # Skip the origin record
+            else:
+                i += 1
+        else:
+            # Normal entry: "XY path"
+            current_paths.append(rec[3:] if len(rec) > 3 else "")
+            i += 1
+    return current_paths, origin_paths
+
+
 def graphify_freshness(root: Path) -> tuple[str, str]:
     """Return ("fresh"|"stale", reason) for the graphify graph in `root`.
 
@@ -162,36 +195,23 @@ def graphify_freshness(root: Path) -> tuple[str, str]:
     if not head.startswith(recorded):
         return "stale", f"graph built at {recorded}, HEAD is {head[:len(recorded)]}"
     if dirty:
-        # Parse NUL-separated records. Each record is "XY path" or "XY path" for
-        # renames (R), where old path follows in the next record.
-        records = [r for r in dirty.split(STATUS_RECORD_SEP) if r]
-        # For renames/copies (XY starts with R or C), git gives: "RXY new_path\0old_path\0"
-        # We want the new path for mtime checking, so skip old-path records.
-        # ponytail: tracks which records are old paths by checking if previous was R/C.
-        paths_to_check = []
-        skip_next = False
-        for i, rec in enumerate(records):
-            if skip_next:
-                skip_next = False
-                continue
-            if len(rec) >= 2 and rec[0] in "RC":
-                # This is a rename/copy; path is rec[3:], next record is old path
-                paths_to_check.append(rec[3:])
-                skip_next = True
-            else:
-                # Normal entry: XY path
-                paths_to_check.append(rec[3:] if len(rec) > 3 else "")
+        # Parse NUL-separated records. Git emits "XY path\0" for each modification,
+        # plus "XY new_path\0old_path\0" for renames/copies (R or C in either index
+        # or worktree status column). Collect current paths and origin paths separately.
+        current_paths, origin_paths = _parse_status_z(dirty)
 
-        visible_paths = paths_to_check[:MAX_DIRTY_LINES]
-        omitted_count = len(paths_to_check) - len(visible_paths)
+        visible_paths = current_paths[:MAX_DIRTY_LINES]
+        omitted_count = len(current_paths) - len(visible_paths)
 
-        # ponytail: compares mtime for existing files; for deletions consults
-        # manifest lazily (only when first deleted path found). Upgrade path:
-        # Graphify's own change detection.
+        # ponytail: compares mtime for existing files; for deletions (including
+        # rename origins) consults manifest lazily (only when first deleted path
+        # found). Upgrade path: Graphify's own change detection.
         report_mtime = report.stat().st_mtime
         any_newer_than_report = False
         manifest_keys: set[str] | None = None  # Lazy load
-        for path_str in paths_to_check:
+
+        # Check current paths (new files, edits, rename/copy destinations)
+        for path_str in current_paths:
             if not path_str:
                 continue
             path = root / path_str
@@ -209,6 +229,29 @@ def graphify_freshness(root: Path) -> tuple[str, str]:
                     if path_posix in manifest_keys or path_abs in manifest_keys:
                         any_newer_than_report = True
                         break
+
+        # Check origin paths (renames and copies): if the origin no longer exists
+        # and was in the manifest, the graph is stale; if it still exists (copy),
+        # compare by mtime.
+        if not any_newer_than_report:
+            for path_str in origin_paths:
+                if not path_str:
+                    continue
+                path = root / path_str
+                if path.exists():
+                    if path.stat().st_mtime > report_mtime:
+                        any_newer_than_report = True
+                        break
+                else:
+                    # Origin no longer exists (rename): check manifest
+                    if manifest_keys is None:
+                        manifest_keys = _load_manifest_keys(root)
+                    if manifest_keys:
+                        path_posix = path.relative_to(root).as_posix()
+                        path_abs = str(path.resolve())
+                        if path_posix in manifest_keys or path_abs in manifest_keys:
+                            any_newer_than_report = True
+                            break
 
         if not any_newer_than_report:
             # All dirty files predate the report - graph was rebuilt after edits

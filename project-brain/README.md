@@ -59,7 +59,9 @@ Wrappers in `bin/` call the Python scripts in `scripts/`. All are stdlib-only, P
 If `bin/` is not on `PATH`:
 
 ```bash
-PLUGIN_ROOT="$(ls -d ~/.openclaude/plugins/cache/ai-brain-marketplace/project-brain/*/ 2>/dev/null | sort -V | tail -1)"
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-}"
+: "${PLUGIN_ROOT:=$(ls -d ~/.openclaude/plugins/cache/ai-brain-marketplace/project-brain/*/ 2>/dev/null | sort -V | tail -1)}"
+: "${PLUGIN_ROOT:=$HOME/.openclaude/plugins/marketplaces/ai-brain-marketplace/project-brain}"
 "$PLUGIN_ROOT/bin/project-brain-init" /path/to/project "My Project"
 ```
 
@@ -74,13 +76,19 @@ PLUGIN_ROOT="$(ls -d ~/.openclaude/plugins/cache/ai-brain-marketplace/project-br
 
 It never touches project source code, and it **never deletes MemPalace drawers**. A shell subprocess cannot call in-session MCP tools, and the `mempalace` CLI has no drawer-delete command. Drawer deletion is the `/project-brain:reset` skill's job:
 
-1. Read `mempalace_wing` from `.brain/CLAUDE.md` before anything is deleted.
-2. `mempalace_list_rooms` → `mempalace_list_drawers` → `mempalace_delete_drawer` for every drawer.
-3. Only then run `project-brain-reset <project-root> --confirm`.
+1. Read `mempalace_wing` and `mempalace_diary_agent` from `.brain/CLAUDE.md` before anything is deleted.
+2. Resolve the real wings with `mempalace_list_wings` and MemPalace's normalize rule (lowercase, `-` and space → `_`): the recorded wing, the directory-derived wing, and the diary wing (`wing_<diary-agent>` and its normalized form). An empty `mempalace_list_rooms` result is never proof a wing is empty — cross-check `mempalace_list_wings` first.
+3. Show every candidate wing with its drawer count and let the user choose.
+4. `mempalace_list_rooms` → `mempalace_list_drawers` → `mempalace_delete_drawer` for every confirmed wing (wiki wing and diary wing).
+5. Then run `project-brain-reset <project-root> --dry-run`, show the output, get explicit user confirmation, and only then run `project-brain-reset <project-root> --confirm`.
 
 ### Wing names
 
-`scaffold_brain.py` derives the wing from the project title via `sanitize_wing_name`: lowercase, replace runs outside `[a-z0-9._-]` with a single hyphen, collapse repeated hyphens, strip leading/trailing `-._`. **Underscores are preserved.** If `.brain/CLAUDE.md` is gone, use that same rule, then cross-check with `mempalace_list_wings` before concluding the wing is empty.
+`scaffold_brain.py` derives the wing in **MemPalace's own convention** (its `normalize_wing_name`): lowercase, `-` and space → `_`, runs collapsed, edge separators stripped — so a project titled `Ambient Studio` gets `wiki_ambient_studio`. Hyphenated wing names (`wiki-<slug>`) from plugin versions before 0.9.3 create twin wings next to MemPalace's underscore names; existing brains keep their recorded value, and `project-brain-doctor` flags legacy hyphenated names with a migration hint. If `.brain/CLAUDE.md` is gone, use that same normalize rule, then cross-check with `mempalace_list_wings` before concluding the wing is empty.
+
+### Re-creation hazard after reset
+
+MemPalace's own session stop hook re-mines the `MEMPAL_DIR` directory without `--wing` when that variable is set (verified in MemPalace 3.11.0 `hooks_cli.py`), so a wing named after the project's normalized directory name can reappear after a clean reset, containing mined project files. That wing belongs to MemPalace's project mining, not to the brain; the plugin cannot suppress MemPalace's hooks safely, so this is documented instead. `project-brain-doctor` prints the same note and warns when `MEMPAL_DIR` points at the project root.
 
 ### What reset never deletes
 

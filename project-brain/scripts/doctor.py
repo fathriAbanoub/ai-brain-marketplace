@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import sys
@@ -12,6 +13,12 @@ from pathlib import Path
 
 FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 WIKILINK_RE = re.compile(r"\[\[([^\]|#]+)(?:[|#][^\]]*)?\]\]")
+
+# Sub-scores at or above this are healthy; below it the doctor flags them so a
+# caller cannot summarize a failing sub-score as success. Skill text quotes the
+# same number — keep skills/brain/SKILL.md and references/brain-lifecycle.md
+# consistent when changing this value.
+HEALTH_REPAIR_THRESHOLD = 70
 
 
 def read(path: Path) -> str:
@@ -413,12 +420,16 @@ def mempalace_wing_check(root: Path) -> tuple[str, str]:
     """Check the MemPalace wing name stored in .brain/CLAUDE.md.
 
     Does not require MCP — reads the recorded wing name and validates that it
-    follows the canonical wiki-<slug> convention introduced in 0.8.0.
+    follows the canonical wiki_<slug> convention (MemPalace's own underscore
+    normalization) introduced in 0.9.3. Hyphenated wiki-<slug> names from older
+    versions are recognized as legacy and get a migration hint.
     """
     # ponytail: file-based only; MCP drawer count requires the agent session
     try:
         from scaffold_brain import (  # type: ignore
+            LEGACY_WIKI_WING_PREFIX,
             WIKI_WING_PREFIX,
+            normalize_wing_slug,
             resolve_wing_name,
         )
     except Exception as exc:
@@ -439,17 +450,30 @@ def mempalace_wing_check(root: Path) -> tuple[str, str]:
         if re.search(r"mempalace_wing:\s*\S+", text):
             other_declares = True
 
-    if not wing.startswith(WIKI_WING_PREFIX):
+    if wing.startswith(WIKI_WING_PREFIX):
+        return "ok", f"wing={wing} ({source})"
+    if wing.startswith(LEGACY_WIKI_WING_PREFIX):
         msg = (
-            f"wing={wing} ({source}) does not start with '{WIKI_WING_PREFIX}'; "
-            f"to migrate: use mempalace_update_drawer to move drawers to the new wing name, "
+            f"wing={wing} ({source}) uses the legacy hyphenated convention; "
+            f"MemPalace normalizes '-' to '_', so directory-derived and diary "
+            f"wings use '{WIKI_WING_PREFIX}'-style underscore names instead. "
+            f"To migrate: use mempalace_update_drawer to move drawers to "
+            f"'{WIKI_WING_PREFIX}{normalize_wing_slug(wing[len(LEGACY_WIKI_WING_PREFIX):])}', "
             f"then update mempalace_wing in {source}"
         )
         if other_declares:
             msg += f" and change {other_source} to match"
         msg += " — re-scaffolding alone preserves the old wing name"
         return "warning", msg
-    return "ok", f"wing={wing} ({source})"
+    msg = (
+        f"wing={wing} ({source}) does not start with '{WIKI_WING_PREFIX}'; "
+        f"to migrate: use mempalace_update_drawer to move drawers to the new wing name, "
+        f"then update mempalace_wing in {source}"
+    )
+    if other_declares:
+        msg += f" and change {other_source} to match"
+    msg += " — re-scaffolding alone preserves the old wing name"
+    return "warning", msg
 
 
 def print_health(root: Path) -> None:
@@ -460,10 +484,23 @@ def print_health(root: Path) -> None:
     total = round((c + f + cov + mem) / 4)
     print()
     print(f"Project Brain Health: {total}/100")
-    print(f"  Completeness: {c:4}/100  ({c_note})")
-    print(f"  Freshness:    {f:4}/100  ({f_note})")
-    print(f"  Coverage:     {cov:4}/100  ({cov_note})")
-    print(f"  Memory sync:  {mem:4}/100  ({mem_note}) [estimated from logs]")
+    for label, score, note, estimated in (
+        ("Completeness", c, c_note, False),
+        ("Freshness", f, f_note, False),
+        ("Coverage", cov, cov_note, False),
+        ("Memory sync", mem, mem_note, True),
+    ):
+        flag = (
+            "  ⚠ BELOW REPAIR THRESHOLD — report or repair, do not summarize as success"
+            if score < HEALTH_REPAIR_THRESHOLD
+            else ""
+        )
+        est = " [estimated from logs]" if estimated else ""
+        print(f"  {label:13}{score:4}/100  ({note}){est}{flag}")
+    print(
+        f"  (scores below {HEALTH_REPAIR_THRESHOLD} require repair or an explicit explanation; "
+        "see Self-correction scan in the brain skill)"
+    )
 
 
 def main(argv: list[str]) -> int:
@@ -471,6 +508,10 @@ def main(argv: list[str]) -> int:
     brain = root / ".brain"
     plugins = read_enabled_plugins()
 
+    from scaffold_brain import plugin_identity  # type: ignore
+
+    version, plugin_root_resolved = plugin_identity()
+    print(f"Project Brain plugin {version} (plugin root: {plugin_root_resolved})")
     print(f"Project root: {root}")
     print(f"Brain directory: {brain}")
     print()
@@ -521,6 +562,24 @@ def main(argv: list[str]) -> int:
         severity, wing_note = mempalace_wing_check(root)
         glyph = {"ok": "✓", "warning": "⚠", "info": "ℹ"}.get(severity, "-")
         print(f"{glyph} MemPalace wing: {wing_note}")
+        print(
+            "ℹ MemPalace note: its session stop hook re-mines MEMPAL_DIR without --wing "
+            "(mining the project root into the directory-derived wing), so a wing with the "
+            "project's normalized directory name can reappear after a reset. This is "
+            "MemPalace's own hook behavior; never point the wiki wing at that name and "
+            "never mine the project root into the wiki wing."
+        )
+        mempal_dir = os.environ.get("MEMPAL_DIR", "")
+        if mempal_dir:
+            try:
+                same_project = Path(mempal_dir).expanduser().resolve() == root
+            except OSError:
+                same_project = False
+            if same_project:
+                print(
+                    f"⚠ MEMPAL_DIR is this project root — MemPalace's stop hook will mine it "
+                    "into the directory-derived wing (normalized project name) on every session stop."
+                )
 
     return 0
 

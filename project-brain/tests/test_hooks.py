@@ -607,7 +607,7 @@ def test_workflow_doc_has_diary_lock_rule_and_wiki_wing_scope():
     assert "applies to wiki mining and wiki search only" in wf
     assert "Existing brains: older diary entries" in wf
     tools = (SKILLS_REFS / "mempalace-tools.md").read_text(encoding="utf-8")
-    assert 'wing: "wiki-<project-slug>"' in tools
+    assert 'wing: "wiki_<project-slug>"' in tools
     assert "Diary writes and the palace lock" in wf  # cross-referenced from tools
 
 
@@ -627,6 +627,6 @@ def test_scaffold_generated_mempalace_namespace(tmp_path: Path):
                        capture_output=True, text=True, timeout=60)
     assert r.returncode == 0, r.stderr
     text = (proj / ".brain" / "CLAUDE.md").read_text(encoding="utf-8")
-    assert 'wing: "wiki-scaffold-proj"' in text
+    assert 'wing: "wiki_scaffold_proj"' in text
     assert "mempalace_diary_read" in text
     assert "older" in text and "diary entries" in text

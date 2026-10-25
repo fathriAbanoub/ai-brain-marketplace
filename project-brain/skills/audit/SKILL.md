@@ -15,12 +15,10 @@ project-brain-audit-open <project-root>
 If not on PATH (exit 127):
 
 ```bash
-# Option 1: OpenClaude plugin cache
-PLUGIN_ROOT="$(ls -d ~/.openclaude/plugins/cache/ai-brain-marketplace/project-brain/*/ 2>/dev/null | sort -V | tail -1)"
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-}"
+: "${PLUGIN_ROOT:=$(ls -d ~/.openclaude/plugins/cache/ai-brain-marketplace/project-brain/*/ 2>/dev/null | sort -V | tail -1)}"
+: "${PLUGIN_ROOT:=$HOME/.openclaude/plugins/marketplaces/ai-brain-marketplace/project-brain}"
 "$PLUGIN_ROOT/bin/project-brain-audit-open" <project-root>
-
-# Option 2: marketplace repo directly
-~/.openclaude/plugins/marketplaces/ai-brain-marketplace/project-brain/bin/project-brain-audit-open <project-root>
 ```
 
 ## What it shows

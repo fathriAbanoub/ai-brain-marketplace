@@ -31,18 +31,18 @@ At the start of any serious project-brain session:
 project-brain-init <project-root> "<Project Name>"
 ```
 
-If `project-brain-init` is not on PATH (exit code 127), find the plugin root and run the script directly. Prefer the harness-provided plugin root when available (`${CLAUDE_PLUGIN_ROOT}` — substituted by OpenClaude/Claude Code in skill and command text); otherwise use the concrete fallbacks:
+If `project-brain-init` is not on PATH (exit code 127), find the plugin root and run the script directly. Prefer the harness-provided plugin root when available (`${CLAUDE_PLUGIN_ROOT}` — substituted by OpenClaude/Claude Code in skill and command text). Resolve the fallback with standalone statements that cannot short-circuit (no `A && B` chains — a false `[ -z ]` in a chain silently exits 1 and wastes a turn):
 
 ```bash
-# Option 1: use the OpenClaude plugin cache path
-PLUGIN_ROOT="$(ls -d ~/.openclaude/plugins/cache/ai-brain-marketplace/project-brain/*/  2>/dev/null | sort -V | tail -1)"
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-}"
+: "${PLUGIN_ROOT:=$(ls -d ~/.openclaude/plugins/cache/ai-brain-marketplace/project-brain/*/ 2>/dev/null | sort -V | tail -1)}"
+: "${PLUGIN_ROOT:=$HOME/.openclaude/plugins/marketplaces/ai-brain-marketplace/project-brain}"
 "$PLUGIN_ROOT/bin/project-brain-init" <project-root> "<Project Name>"
-
-# Option 2: use the marketplace repo directly
-~/.openclaude/plugins/marketplaces/ai-brain-marketplace/project-brain/bin/project-brain-init <project-root> "<Project Name>"
 ```
 
 The same fallback applies to all `project-brain-*` commands: replace the bare command with `$PLUGIN_ROOT/bin/<command>` or the full marketplace path.
+
+Version skew warning: the installed `skills/` text can be older than the installed `scripts/` (the plugin-cache resolver prefers `cache/` over `marketplaces/`). `project-brain-init` and `project-brain-doctor` print the resolved plugin root and version from `plugin.json` — check that line matches the plugin version you expect before trusting mixed output.
 
 4. Read `.brain/state/session-brief.md` if present.
 5. Read `.brain/wiki/index.md` if present.
@@ -50,6 +50,7 @@ The same fallback applies to all `project-brain-*` commands: replace the bare co
 7. Check MemPalace before making claims about previous decisions, user preferences, or past work. Before any MemPalace call, read `references/mempalace-tools.md` for the 47-tool reference, policy table, and call recipes. Call `mempalace_status` when the tool is available (preflight). If `.brain/CLAUDE.md` is missing or does not define a non-empty `mempalace_wing`, skip the MemPalace search and diary read, tell the user the brain is not initialized or configured and to run project-brain-init (or fix the file), and never infer a wing or search without one. For claims about wiki knowledge (decisions, architecture, project facts), use `mempalace_search` with the wiki wing from `.brain/CLAUDE.md`; for claims about what happened in earlier sessions (continuity, what was done last time, open threads), use `mempalace_diary_read` with the agent from `mempalace_diary_agent` in `.brain/CLAUDE.md` (for an older brain without that field, from the agent named in the diary sentence of that file; if neither exists, skip the diary and tell the user) — see the recipe in mempalace-tools.md, "Read Diary at Wake-up"; the wiki search does not read the diary and the diary read does not search wiki pages, so use the one that fits the claim, or both. **Never call `mempalace_sync` against the wiki wing** — sync prunes drawers whose source files are gitignored or deleted, and may be used on other wings only with a dry run first and explicit user confirmation. Use Recipe 3 (`mine .brain/wiki`) for normal wiki updates.
 8. If Obsidian MCP tools are available, note that the brain wiki can be mirrored to the vault (vault mirror). Do not mirror automatically — wait for the user to request it.
 9. If a tool is not available in the current session, say exactly which layer is unavailable and continue from the remaining layers.
+10. When a wing seems missing or empty, never conclude from one tool result: MemPalace normalizes wing names (lowercase, `-` and space → `_`), so call `mempalace_list_wings` and compare normalized names before acting. An empty `mempalace_list_rooms` result is not proof the wing is empty.
 
 ## Behavioral Contracts
 
@@ -115,15 +116,18 @@ Do **not** reset the entire brain when a smaller repair is enough:
 
 Brain reset is irreversible. `.brain/`, `graphify-out/`, and MemPalace drawer deletions cannot be undone. The project source code must never be deleted or modified by a reset.
 
-Correct sequence when a user requests brain deletion:
+Correct sequence when a user requests brain deletion (full procedure in the `/project-brain:reset` skill):
 
-1. Read the wing name from `.brain/CLAUDE.md` (`mempalace_wing`), before any file deletion.
-2. Delete every drawer in that wing using the MCP tools: `mempalace_list_rooms` → `mempalace_list_drawers` → `mempalace_delete_drawer`. Report how many were deleted.
-3. Run `project-brain-reset <project-root> --dry-run` and show the output.
-4. Only after explicit user confirmation, run `project-brain-reset <project-root> --confirm`.
-5. After reset completes, offer to immediately run `project-brain-init <project-root> "<Project Name>"` to start fresh.
+1. Read the wing name and diary agent from `.brain/CLAUDE.md` (`mempalace_wing`, `mempalace_diary_agent`), before any file deletion.
+2. Resolve the real wings: call `mempalace_list_wings` and match, using MemPalace's normalize rule (lowercase, `-` and space → `_`), the recorded wing, the directory-derived wing (`normalize(<project-root dirname>)`), and the diary wing (`wing_<diary-agent>` and its normalized form). Show every candidate with its drawer count and ask the user which wings to delete. An empty `mempalace_list_rooms` result is never proof a wing is empty.
+3. For each user-confirmed wing: `mempalace_list_rooms` → `mempalace_list_drawers` → `mempalace_delete_drawer`. Report how many were deleted per wing. The diary wing must be included — no other flow ever clears it.
+4. Run `project-brain-reset <project-root> --dry-run` and show the output.
+5. Only after explicit user confirmation, run `project-brain-reset <project-root> --confirm`.
+6. After reset completes, offer to immediately run `project-brain-init <project-root> "<Project Name>"` to start fresh.
 
-The reset script handles local files only (`.brain/`, `graphify-out/`, the injected `CLAUDE.md` block, and the snippet). It has no MemPalace access — MCP tools exist in the agent session, not in a subprocess. If the MCP tools are missing, stop and say so; never report drawers as deleted when they were not.
+The reset script handles local files only (`.brain/`, `graphify-out/`, the injected `CLAUDE.md` block, and the snippet). It has no MemPalace access — MCP tools exist in the agent session, not in a subprocess. If the MCP tools are missing, stop and say so; never report drawers as deleted when they were not. Never run local deletion while a candidate wing is unresolved or unconfirmed, and preserve `.brain/CLAUDE.md` until the MemPalace side is settled.
+
+Re-creation hazard: MemPalace's own session stop hook re-mines `MEMPAL_DIR` without `--wing` when that variable is set (verified in MemPalace 3.11.0 `hooks_cli.py`), so the directory-derived wing can reappear after a reset with mined project files inside. That wing belongs to MemPalace's project mining, not to the brain — do not treat its reappearance as a failed reset and do not delete it as part of a brain reset.
 
 See the `/project-brain:reset` skill for the full procedure.
 
@@ -131,16 +135,23 @@ See the `/project-brain:reset` skill for the full procedure.
 
 ### Initialize
 
-Use when the project has no brain yet or the user asks to create/install/set up the brain.
+Use when the project has no brain yet or the user asks to create/install/set up the brain. Initialize is autonomous: it continues through the lifecycle on its own and ends with a final report of what was done and what could not be done and why — never with a to-do list for the user. The agent may pause to ask the user only when a decision (e.g. which wing to delete, whether to run a destructive operation) or an access (missing tool, missing file permission) is genuinely missing.
 
 Steps:
 
 1. Run `project-brain-init <project-root> "<Project Name>"`.
-2. Read the files it created.
-3. Run `project-brain-doctor <project-root>`.
-4. Report the current availability of MemPalace MCP, graphify CLI, and Obsidian MCP. Do not give install instructions unless the user asks.
-5. Recommend keeping the generated Project Brain block in root `CLAUDE.md`.
-6. Ask for first sources only if the user has not already supplied a clear next step.
+2. Read the files it created (`.brain/CLAUDE.md`, `.brain/state/session-brief.md`, `.brain/wiki/index.md`).
+3. **Read `references/mempalace-tools.md` now** — the full 47-tool reference, policy table, and call recipes. This must happen before the first MemPalace call of this mode; do not call `mempalace_status` or any other MemPalace tool before reading it.
+4. Run `project-brain-doctor <project-root>` and read all four sub-scores, not just the total. The doctor flags any sub-score below the repair threshold (70) with `BELOW REPAIR THRESHOLD`. For each flagged sub-score, either run the matching repair from `references/brain-lifecycle.md` → Self-correction scan now (e.g. the diary entry in step 11 raises Memory sync), or state explicitly in the final report why it was not repaired. Never summarize a flagged sub-score as success.
+5. Report the current availability of MemPalace MCP, graphify CLI, and Obsidian MCP. Do not give install instructions unless the user asks.
+6. **Leftover-wing check (new brains only — skip on re-init of an existing brain):** after `mempalace_status`, call `mempalace_list_wings`. If any existing wing normalizes (MemPalace rule: lowercase, `-` and space → `_`) to this project's slug, its directory-derived wing, or the diary wing, and the brain was just created, tell the user these wings predate the new brain and offer cleanup via the `/project-brain:reset` flow. Do not delete anything unasked.
+7. Ingest the project's own primary sources into the brain: read the project README, manifests (`package.json`, `pyproject.toml`, `Cargo.toml`, equivalents), and main entry points; store curated material or pointer files under `.brain/raw/` (per `references/evidence-lifecycle.md`).
+8. Compile wiki pages from those primary sources under Contracts 7 and 8: read the actual files; no speculative language; update `.brain/wiki/architecture/System Overview.md`, add source summaries under `.brain/wiki/sources/` with `reliability:` frontmatter, update `.brain/wiki/index.md`, and record contradictions (e.g. a README claim that contradicts the code) in the source page and `open-questions.md`.
+9. Mine `.brain/wiki` into the wiki wing with an explicit `--wing` from `mempalace_wing` in `.brain/CLAUDE.md` (Recipe 3 in mempalace-tools.md; dry run first). Never mine the project root into the wiki wing.
+10. Run graphify only if the doctor says stale (step 9 of the post-wiki loop decides the command from the doctor's reason). Skip graphify if the CLI is unavailable; say so in the final report.
+11. Write the diary entry (`mempalace_diary_write` with the agent from `mempalace_diary_agent`, diary format in `references/mempalace-workflow.md`).
+12. Update `.brain/state/session-brief.md` (under 400 words), append the log entry, and run `project-brain-lint <project-root>`; clear error-level issues.
+13. Final report: state what was done, what could not be done and why (e.g. graphify missing), and the doctor's sub-score status. It must not contain a to-do list for the user to execute.
 
 MemPalace is already installed as a plugin. graphify is already installed as a CLI tool and skill. Do not reinstall either.
 
@@ -276,12 +287,12 @@ Steps:
 
 ### Self-correction scan
 
-Use when `project-brain-doctor` shows health below 70/100, when the session brief is more than 7 days old, or when the user asks whether the brain is healthy or up to date.
+Use when `project-brain-doctor` shows health below the repair threshold (70/100) or any single sub-score below the repair threshold, when the session brief is more than 7 days old, or when the user asks whether the brain is healthy or up to date.
 
 Steps:
 
-1. Run `project-brain-doctor <project-root>` and read all four scores.
-2. For each score below 70, run the matching repair from `references/brain-lifecycle.md` → Self-correction scan.
+1. Run `project-brain-doctor <project-root>` and read all four sub-scores, not just the total. The doctor marks every sub-score below 70 with `BELOW REPAIR THRESHOLD`.
+2. For each sub-score below 70, run the matching repair from `references/brain-lifecycle.md` → Self-correction scan. Never summarize a flagged sub-score as success; if a repair is impossible, say which score, why, and what is needed.
 3. Run `project-brain-lint <project-root>` and clear all error-level issues.
 4. Log the scan result.
 5. Update session brief.

@@ -14,12 +14,18 @@ sys.path.insert(0, str(PLUGIN_ROOT / "scripts"))
 
 from scaffold_brain import (  # noqa: E402
     BRAIN_DIARY_PREFIX,
+    LEGACY_WIKI_WING_PREFIX,
     WIKI_WING_PREFIX,
+    WING_SEPARATOR,
+    diary_wing_for_agent,
     ensure_graphifyignore,
+    normalize_wing_for_compare,
+    normalize_wing_slug,
     sanitize_wing_name,
+    scaffold,
     wiki_wing_name,
 )
-from doctor import graphify_freshness  # noqa: E402
+from doctor import graphify_freshness, HEALTH_REPAIR_THRESHOLD  # noqa: E402
 
 TOOLS_DOC = PLUGIN_ROOT / "skills" / "brain" / "references" / "mempalace-tools.md"
 
@@ -60,18 +66,133 @@ def test_mempalace_diary_agent_documented():
 
 
 def test_wing_constants():
-    assert WIKI_WING_PREFIX == "wiki-"
-    assert BRAIN_DIARY_PREFIX == "brain-"
+    assert WING_SEPARATOR == "_"
+    assert WIKI_WING_PREFIX == "wiki_"
+    assert BRAIN_DIARY_PREFIX == "brain_"
+    assert LEGACY_WIKI_WING_PREFIX == "wiki-"
 
 
 def test_wiki_wing_name_uses_prefix_and_slug():
-    assert wiki_wing_name("Test Project") == "wiki-test-project"
-    assert wiki_wing_name("Ambient Studio") == "wiki-ambient-studio"
+    assert wiki_wing_name("Test Project") == "wiki_test_project"
+    assert wiki_wing_name("Ambient Studio") == "wiki_ambient_studio"
+
+
+def test_sanitize_matches_mempalace_normalize():
+    """Plugin slugs must match mempalace.config.normalize_wing_name (3.11.0):
+    lowercase, '-' and ' ' to '_', edge separators stripped. Expected values
+    below are copied from that function's actual behavior."""
+    assert normalize_wing_slug("demo-app_brain-test") == "demo_app_brain_test"
+    assert normalize_wing_slug("Ambient Studio") == "ambient_studio"
+    assert normalize_wing_slug("-leading-hyphens-") == "leading_hyphens"
+    assert normalize_wing_slug("multiple   spaces") == "multiple_spaces"
+
+
+def test_diary_wing_matches_mempalace_diary_write():
+    """mempalace mcp_server/tools_diary.py: wing = wing_<agent.replace(' ','_')>
+    after sanitize+lower — only spaces are replaced, hyphens would survive."""
+    assert diary_wing_for_agent("brain_demo_app") == "wing_brain_demo_app"
+    assert diary_wing_for_agent("My Agent") == "wing_my_agent"
+
+
+def test_normalize_wing_for_compare_matches_mempalace():
+    """Comparison form must be mempalace's exact normalize_wing_name (no run
+    collapsing): used to match recorded wings against real wing lists."""
+    assert normalize_wing_for_compare("Wiki_Demo-App") == "wiki_demo_app"
+    assert normalize_wing_for_compare("wing_brain-demo_app") == "wing_brain_demo_app"
+    assert normalize_wing_for_compare("_edge_") == "edge"
 
 
 def test_wiki_wing_name_matches_sanitize():
     for raw in ("My Cool Project", "Projet Émoji 🚀", "  Weird -- Name  "):
         assert wiki_wing_name(raw) == WIKI_WING_PREFIX + sanitize_wing_name(raw)
+
+
+# --- item: health repair threshold constant ---------------------------------
+
+
+def test_health_repair_threshold_constant():
+    """Doctor's repair cutoff is one named constant, quoted verbatim by skill text."""
+    assert HEALTH_REPAIR_THRESHOLD == 70
+
+
+# --- item: doctor flags sub-scores below the threshold -----------------------
+
+
+def test_doctor_output_flags_below_threshold(run_script, scaffolded_project: Path):
+    """A fresh brain has memory_sync 0; doctor must flag it so an agent cannot
+    summarize the total as success (the D5 failure mode)."""
+    project_dir = scaffolded_project.parent
+    result = run_script("doctor.py", [str(project_dir)])
+    assert result.returncode == 0
+    assert "BELOW REPAIR THRESHOLD" in result.stdout
+    assert "Memory sync" in result.stdout
+
+
+def test_doctor_prints_plugin_identity(run_script, scaffolded_project: Path):
+    """D7: init/doctor print resolved plugin root + version from plugin.json
+    so skill-text/script version skew is visible."""
+    project_dir = scaffolded_project.parent
+    result = run_script("doctor.py", [str(project_dir)])
+    assert result.returncode == 0
+    assert "plugin root:" in result.stdout
+    import json as _json
+    manifest = PLUGIN_ROOT / ".claude-plugin" / "plugin.json"
+    version = _json.loads(manifest.read_text(encoding="utf-8"))["version"]
+    assert version in result.stdout
+
+
+def test_scaffold_prints_plugin_identity_and_wing(run_script, tmp_project: Path):
+    project_dir = tmp_project / "test-project"
+    project_dir.mkdir(parents=True, exist_ok=True)
+    result = run_script("scaffold_brain.py", [str(project_dir), "Test Project"])
+    assert result.returncode == 0
+    assert "plugin root:" in result.stdout
+    assert "Wing:" in result.stdout
+
+
+# --- item: scaffold wing naming (D2) -----------------------------------------
+
+
+def test_scaffold_new_brain_uses_underscore_wing(run_script, tmp_project: Path):
+    """New brains get wiki_<slug> with MemPalace's underscore convention."""
+    project_dir = tmp_project / "demo-app_brain-test"
+    project_dir.mkdir(parents=True, exist_ok=True)
+    result = run_script("scaffold_brain.py", [str(project_dir), "Demo App Brain Test"])
+    assert result.returncode == 0
+    content = (project_dir / ".brain" / "CLAUDE.md").read_text(encoding="utf-8")
+    assert "mempalace_wing: wiki_demo_app_brain_test" in content
+    assert "mempalace_diary_agent: brain_demo_app_brain_test" in content
+
+
+def test_scaffold_reuses_legacy_hyphenated_wing(tmp_path: Path):
+    """Existing brains keep their recorded (hyphenated) wing on re-scaffold."""
+    root = tmp_path / "project"
+    root.mkdir()
+    brain = root / ".brain"
+    brain.mkdir()
+    (brain / "CLAUDE.md").write_text(
+        "---\nmempalace_wing: wiki-legacy-brain\n---\n\n# Legacy\n", encoding="utf-8"
+    )
+    scaffold(root, "New Title", force=True)
+    content = (brain / "CLAUDE.md").read_text(encoding="utf-8")
+    assert "mempalace_wing: wiki-legacy-brain" in content
+
+
+def test_doctor_flags_legacy_hyphenated_wing(run_script, tmp_project: Path):
+    """Doctor warns on legacy wiki- wings with an underscore migration hint."""
+    project_dir = tmp_project / "legacy-proj"
+    project_dir.mkdir(parents=True, exist_ok=True)
+    scaffold_result = run_script("scaffold_brain.py", [str(project_dir), "Legacy Proj"])
+    assert scaffold_result.returncode == 0
+    brain_claude = project_dir / ".brain" / "CLAUDE.md"
+    brain_claude.write_text(
+        "---\nmempalace_wing: wiki-legacy-proj\nmempalace_diary_agent: brain_legacy_proj\n---\n\n# Legacy\n",
+        encoding="utf-8",
+    )
+    result = run_script("doctor.py", [str(project_dir)])
+    assert result.returncode == 0
+    assert "legacy hyphenated convention" in result.stdout
+    assert "wiki_legacy_proj" in result.stdout
 
 
 # --- item 5: ensure_graphifyignore ------------------------------------------

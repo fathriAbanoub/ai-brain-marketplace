@@ -21,12 +21,10 @@ project-brain-lint <project-root> --json
 If not on PATH (exit 127):
 
 ```bash
-# Option 1: OpenClaude plugin cache
-PLUGIN_ROOT="$(ls -d ~/.openclaude/plugins/cache/ai-brain-marketplace/project-brain/*/ 2>/dev/null | sort -V | tail -1)"
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-}"
+: "${PLUGIN_ROOT:=$(ls -d ~/.openclaude/plugins/cache/ai-brain-marketplace/project-brain/*/ 2>/dev/null | sort -V | tail -1)}"
+: "${PLUGIN_ROOT:=$HOME/.openclaude/plugins/marketplaces/ai-brain-marketplace/project-brain}"
 "$PLUGIN_ROOT/bin/project-brain-lint" <project-root>
-
-# Option 2: marketplace repo directly
-~/.openclaude/plugins/marketplaces/ai-brain-marketplace/project-brain/bin/project-brain-lint <project-root>
 ```
 
 ## What it checks

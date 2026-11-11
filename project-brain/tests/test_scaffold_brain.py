@@ -244,8 +244,8 @@ def test_scaffold_configured_agent_vs_stale_sentence(tmp_path: Path):
     scaffold(root, "New Title", force=True)
 
     new_content = claude_md.read_text(encoding="utf-8")
-    assert "mempalace_diary_agent: brain-new-title" in new_content
-    assert "agent `brain-new-title`" in new_content
+    assert "mempalace_diary_agent: brain_new_title" in new_content
+    assert "agent `brain_new_title`" in new_content
 
 
 def test_scaffold_custom_agent_without_prefix_survives(tmp_path: Path):
@@ -261,7 +261,7 @@ def test_scaffold_custom_agent_without_prefix_survives(tmp_path: Path):
     # Set custom agent without prefix
     content = claude_md.read_text(encoding="utf-8")
     content = content.replace(
-        "mempalace_diary_agent: brain-test",
+        "mempalace_diary_agent: brain_test",
         "mempalace_diary_agent: my-custom-agent"
     )
     claude_md.write_text(content, encoding="utf-8")
@@ -285,7 +285,7 @@ def test_scaffold_new_brain_gets_diary_agent(tmp_path: Path):
     scaffold(root, "Test Project")
     claude_md = root / ".brain" / "CLAUDE.md"
     content = claude_md.read_text(encoding="utf-8")
-    assert "mempalace_diary_agent: brain-test-project" in content, \
+    assert "mempalace_diary_agent: brain_test_project" in content, \
         "New brain must have mempalace_diary_agent frontmatter"
 
 
@@ -298,13 +298,13 @@ def test_scaffold_refresh_keeps_original_agent(tmp_path: Path):
     scaffold(root, "Original Title")
     claude_md = root / ".brain" / "CLAUDE.md"
     first_content = claude_md.read_text(encoding="utf-8")
-    assert "mempalace_diary_agent: brain-original-title" in first_content
+    assert "mempalace_diary_agent: brain_original_title" in first_content
 
     scaffold(root, "New Title", force=True)
     second_content = claude_md.read_text(encoding="utf-8")
-    assert "mempalace_diary_agent: brain-original-title" in second_content, \
+    assert "mempalace_diary_agent: brain_original_title" in second_content, \
         "Refresh must keep original diary agent"
-    assert "brain-new-title" not in second_content
+    assert "brain_new_title" not in second_content
 
 
 def test_scaffold_old_brain_recovers_slug_from_sentence(tmp_path: Path):
@@ -352,5 +352,5 @@ mempalace_diary_agent:
 
     scaffold(root, "Fallback Title", force=True)
     new_content = broken_claude.read_text(encoding="utf-8")
-    assert "mempalace_diary_agent: brain-fallback-title" in new_content, \
+    assert "mempalace_diary_agent: brain_fallback_title" in new_content, \
         "Empty diary agent must fall back to title-derived slug"

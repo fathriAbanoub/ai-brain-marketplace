@@ -8,26 +8,74 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 import re
 from datetime import date, datetime
 from pathlib import Path
 
 
-# Wing name prefixes — change these constants if the convention changes.
-WIKI_WING_PREFIX = "wiki-"
-BRAIN_DIARY_PREFIX = "brain-"
+# Wing naming convention — MemPalace's own. mempalace.config.normalize_wing_name
+# lowercases and maps '-' and ' ' to '_' for directory-derived wings, and its
+# hooks derive diary wings as wing_<slug> with the same underscore rule. A
+# hyphenated plugin wing therefore creates a twin wing per project (the
+# data-loss trigger behind the reset-skill empty-wing bug), so this plugin
+# generates underscore slugs in MemPalace's own convention.
+WING_SEPARATOR = "_"
+WIKI_WING_PREFIX = "wiki" + WING_SEPARATOR
+# ponytail: pre-0.9.3 brains carry hyphenated wings; kept so doctor/reset can
+# recognize and migrate them. Upgrade path: drop once no hyphenated wings exist.
+LEGACY_WIKI_WING_PREFIX = "wiki-"
+BRAIN_DIARY_PREFIX = "brain" + WING_SEPARATOR
+FALLBACK_WING_NAME = "project" + WING_SEPARATOR + "brain"
+
+
+def normalize_wing_slug(raw: str) -> str:
+    """Normalize a name the same way mempalace.config.normalize_wing_name does:
+    lowercase; '-' and ' ' (and any other separator) become '_', runs collapse,
+    leading/trailing separators stripped."""
+    normalized = raw.strip().lower()
+    normalized = re.sub(r"[^a-z0-9._]+", WING_SEPARATOR, normalized)
+    normalized = re.sub(rf"{re.escape(WING_SEPARATOR)}+", WING_SEPARATOR, normalized)
+    return normalized.strip("._")
 
 
 def sanitize_wing_name(raw: str) -> str:
-    normalized = raw.strip().lower()
-    normalized = re.sub(r"[^a-z0-9._-]+", "-", normalized)
-    normalized = re.sub(r"-+", "-", normalized).strip("-._")
-    return normalized or "project-brain"
+    normalized = normalize_wing_slug(raw)
+    return normalized or FALLBACK_WING_NAME
+
+
+def diary_wing_for_agent(agent: str) -> str:
+    """The wing mempalace_diary_write uses for `agent` when no wing is passed.
+
+    Verified against MemPalace 3.11.0 mcp_server/tools_diary.py: the agent name
+    is sanitized + lowercased and only ' ' is replaced with '_', so hyphens in
+    the agent name survive into the wing. Underscore-based agent names (this
+    plugin's convention) keep write and read symmetric with no surprises.
+    """
+    return "wing_" + agent.strip().lower().replace(" ", "_")
+
+
+def plugin_identity() -> tuple[str, str]:
+    """Return (version, plugin_root) from the plugin manifest.
+
+    Lets init/doctor print their own version so skill text and scripts from
+    different installed plugin versions are visibly distinguishable.
+    """
+    plugin_root = Path(__file__).resolve().parent.parent
+    manifest = plugin_root / ".claude-plugin" / "plugin.json"
+    version = "unknown"
+    try:
+        data = json.loads(manifest.read_text(encoding="utf-8"))
+        version = str(data.get("version", version))
+    except (OSError, ValueError):
+        pass
+    return version, str(plugin_root)
 
 
 def wiki_wing_name(title: str) -> str:
-    """Return the canonical wiki wing name: wiki-<sanitized-title>."""
+    """Return the canonical wiki wing name: wiki_<sanitized-title> (MemPalace's
+    underscore convention)."""
     return WIKI_WING_PREFIX + sanitize_wing_name(title)
 
 
@@ -55,6 +103,12 @@ def ensure_graphifyignore(project_root: Path) -> None:
             f.write("\n")
         for line in missing:
             f.write(line + "\n")
+
+
+def normalize_wing_for_compare(name: str) -> str:
+    """MemPalace's wing comparison form (config.normalize_wing_name):
+    lowercase, '-' and ' ' to '_', edge separators stripped."""
+    return name.strip().lower().replace(" ", "_").replace("-", "_").strip("_")
 
 
 def resolve_wing_name(root: Path) -> tuple[str, str]:
@@ -190,7 +244,7 @@ def scaffold(project_root: Path, title: str, force: bool = False) -> None:
 
     installed_line = "MemPalace is already installed as a plugin. graphify is already installed as a CLI tool and skill. Do not reinstall either."
 
-    # New brains use the canonical wiki-<slug> prefix.
+    # New brains use MemPalace's own underscore convention: wiki_<slug>.
     slug = sanitize_wing_name(title)
     wing_name = wiki_wing_name(title)
     diary_agent = f"{BRAIN_DIARY_PREFIX}{slug}"  # Default for new brains
@@ -695,9 +749,12 @@ MemPalace is already installed as a plugin. graphify is already installed as a C
     ])
 
     print("\nProject brain ready.")
-    print(f"  Root:  {project_root}")
-    print(f"  Brain: {brain}")
-    print("  Next:  project-brain-doctor <project-root>")
+    version, plugin_root_resolved = plugin_identity()
+    print(f"  Plugin: project-brain {version} (plugin root: {plugin_root_resolved})")
+    print(f"  Root:   {project_root}")
+    print(f"  Brain:  {brain}")
+    print(f"  Wing:   {wing_name}")
+    print("  Next:   project-brain-doctor <project-root>")
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:

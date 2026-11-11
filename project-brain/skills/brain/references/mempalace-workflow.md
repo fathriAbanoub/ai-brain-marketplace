@@ -43,7 +43,7 @@ hooks (stop, session-end, precompact), which write at session end. Rules:
 `mempalace_diary_write` stores to wing `wing_<agent_name>` unless an explicit
 `wing` is passed (MemPalace's diary tool default). With the brain's agent
 name from `mempalace_diary_agent` in `.brain/CLAUDE.md` and no wing override,
-diary entries land in `wing_<that-agent>` — NOT in the `wiki-<project-slug>`
+diary entries land in `wing_<that-agent>` — NOT in the `wiki_<project-slug>`
 wiki wing. That is the intended layout: the wiki wing holds mined wiki pages;
 the diary wing holds session continuity. The `mempalace_wing:` frontmatter in
 `.brain/CLAUDE.md` names the WIKI wing for mining and search; diary recipes
@@ -58,12 +58,19 @@ of the diary wing. If `mempalace_diary_read` with the agent from
 `mempalace_diary_agent` in `.brain/CLAUDE.md` (or for older brains without that
 field, the agent named in the diary sentence of that file) looks empty:
 
-1. Read the old entries ONCE, read-only: `mempalace_list_drawers` with
+1. Verify the diary wing actually does not exist before concluding it is
+   empty: `mempalace_list_wings`, comparing normalized names (lowercase,
+   `-` and space → `_`). An empty read is not proof by itself.
+2. Read the old entries ONCE, read-only: `mempalace_list_drawers` with
    `wing` = the old wing named in `.brain/CLAUDE.md` and `room: "diary"`.
-2. Moving them to the new diary wing is possible with
+3. Moving them to the new diary wing is possible with
    `mempalace_update_drawer` (it accepts a `wing` argument) — ONLY after
    asking the user. UNVERIFIED: this move has never been tested.
-3. There is no automatic migration, and none should be written.
+4. There is no automatic migration, and none should be written.
+
+During a **reset**, the diary wing (`wing_<diary_agent>` and its normalized
+form) must be cleared together with the wiki wing — see the
+`/project-brain:reset` skill, Step 3.
 
 ## Wing namespacing (critical)
 
@@ -72,10 +79,10 @@ Every project has a dedicated MemPalace wiki wing. The wing name is recorded in 
 ```bash
 # Read the wing name for the current project:
 grep "mempalace_wing" .brain/CLAUDE.md
-# Output: mempalace_wing: wiki-ambient-mixer
+# Output: mempalace_wing: wiki_ambient_mixer
 ```
 
-Wing names follow the `wiki-<slug>` convention (e.g. `wiki-ambient-mixer`, `wiki-my-project`). The scaffold writes this automatically. If `.brain/CLAUDE.md` is missing or does not define a non-empty `mempalace_wing`, follow the recall guard: skip MemPalace operations, tell the user to run project-brain-init or fix the file, and never derive or guess a wing. The derivation rules live in `mempalace-tools.md` ("Wing Naming Constants"); project-brain-init derives the wing name and writes it into `.brain/CLAUDE.md`.
+Wing names follow **MemPalace's own `wiki_<slug>` underscore convention** (e.g. `wiki_ambient_mixer`, `wiki_my_project`), matching the normalization MemPalace itself applies to directory-derived wings (`normalize_wing_name`: lowercase, `-` and space → `_`). The scaffold writes this automatically for new brains. Brains scaffolded before 0.9.3 may carry a legacy hyphenated `wiki-<slug>` value; re-scaffolding keeps it, and `project-brain-doctor` flags it with a migration hint. If `.brain/CLAUDE.md` is missing or does not define a non-empty `mempalace_wing`, follow the recall guard: skip MemPalace operations, tell the user to run project-brain-init or fix the file, and never derive or guess a wing. The derivation rules live in `mempalace-tools.md` ("Wing Naming Constants"); project-brain-init derives the wing name and writes it into `.brain/CLAUDE.md`.
 
 **Why this matters:** MemPalace is a global store shared across all projects in a session. Without namespacing, the model writes project A's context into project B's wing, or pollutes a shared wing with mixed content from every project it touches. The wing is the namespace — stay inside it.
 

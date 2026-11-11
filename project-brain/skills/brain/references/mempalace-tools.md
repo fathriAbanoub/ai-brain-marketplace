@@ -151,7 +151,7 @@ whole palace — other projects' transcript wings included. If `.brain/CLAUDE.md
 ```
 mempalace_search({
   query: "<project-name> decisions preferences",
-  wing: "wiki-<project-slug>",
+  wing: "wiki_<project-slug>",
   limit: 10
 })
 ```
@@ -164,16 +164,16 @@ the WIKI wing — wiki mining and wiki search only).
 Mine the wiki directory directly — gitignore does not apply when you name the path explicitly:
 
 ```
-mempalace mine .brain/wiki --wing wiki-<project-slug>
+mempalace mine .brain/wiki --wing wiki_<project-slug>
 ```
 
 Always do a dry run first and confirm with the user:
 
 ```
-mempalace mine .brain/wiki --wing wiki-<project-slug> --dry-run
+mempalace mine .brain/wiki --wing wiki_<project-slug> --dry-run
 ```
 
-**IMPORTANT**: Mine only `.brain/wiki/` directory, not `.brain/raw/`, `.brain/state/`, `.brain/log/`, or the repo itself. Never mine the project root into the wiki wing.
+**IMPORTANT**: Mine only `.brain/wiki/` directory, not `.brain/raw/`, `.brain/state/`, `.brain/log/`, or the repo itself. Never mine the project root into the wiki wing. Never mine without an explicit `--wing`: a wingless mine derives the wing from the directory name (MemPalace's `normalize_wing_name`), which puts wiki pages in the directory-derived wing instead of the project's wiki wing.
 
 ### 4. Write Session Diary (at handoff)
 
@@ -232,19 +232,37 @@ mempalace status
 
 ## Wing Naming Constants
 
-- Wiki wing: `wiki-<project-slug>` (recorded in `mempalace_wing` in `.brain/CLAUDE.md`)
-- Diary agent: `<mempalace_diary_agent>` (recorded in `mempalace_diary_agent` in `.brain/CLAUDE.md`)
+- Wiki wing: `wiki_<project-slug>` (recorded in `mempalace_wing` in `.brain/CLAUDE.md`)
+- Diary agent: `<mempalace_diary_agent>` (recorded in `mempalace_diary_agent` in `.brain/CLAUDE.md`); its diary wing is `wing_<agent>`
 
 Read both values from `.brain/CLAUDE.md` frontmatter. For an older brain without
 the `mempalace_diary_agent` field, extract it from the diary sentence in that file;
 if neither exists, skip the diary and tell the user.
 
-`<project-slug>` is derived from `sanitize_wing_name(title)` in `scaffold_brain.py`:
-- Lowercase
-- Replace runs of `[^a-z0-9._-]` with `-`
-- Collapse repeated hyphens
-- Strip leading/trailing `-._`
-- Underscores are preserved
+`<project-slug>` follows **MemPalace's own wing convention** (its
+`normalize_wing_name`): lowercase, `-` and space map to `_`, runs collapse,
+edge separators stripped. Underscore-based names are generated for new brains
+in 0.9.3+ so they match the wings MemPalace derives itself from directory
+names; hyphenated `wiki-<slug>` values from older brains are kept (idempotent
+re-scaffold) and flagged by `project-brain-doctor` with a migration hint.
+
+### Empty-wing lookups (reset / wing cleanup)
+
+An empty or missing result from `mempalace_list_rooms` is **not** proof a wing
+is empty. MemPalace normalizes wing names — lowercase, `-` and space → `_` —
+so the recorded name and the actual wing can differ. Before concluding a wing
+is empty or missing:
+
+1. Call `mempalace_list_wings` (or `mempalace_get_taxonomy` for drawer counts).
+2. Compare candidates against actual wings using the same normalize rule, not
+   raw equality. Candidates for a project: the `mempalace_wing` value, the
+   directory-derived wing (`normalize(<project-root dirname>)`), and the diary
+   wing (`wing_<diary_agent>` and its normalized form).
+3. Show every candidate with its drawer count and ask the user before deleting.
+
+Also note: MemPalace's session stop hook re-mines `MEMPAL_DIR` without
+`--wing`, so the directory-derived wing is re-created automatically when that
+variable is set. See the reset skill's "re-creation hazard" section.
 
 ## Uninstalled Tools (NOT available)
 

@@ -36,7 +36,7 @@ After creating or updating wiki pages, do not stop. Run this post-wiki checklist
      - Reason starts with `"uncommitted changes to source files:"` → check what changed. If the reason says more paths follow (marker contains "more paths omitted"), run `git status` first to see the full list. Then decide: code-only changes use `graphify update .` (AST-only, no API cost); docs/images/comments changes use `/graphify .`
      - Any other stale reason → `/graphify .`
    - Wiki edits alone do NOT change the repo — skip graphify for wiki-only changes.
-   - After any full build, reconnect the graphify MCP server before querying it (it reads the graph at startup). The CLI is the fallback: set `GRAPHIFY_BACKEND=none` on BOTH `extract` and `cluster-only` when no API access (see `references/graphify-workflow.md`).
+   - After ANY change to graph.json (full build or incremental `graphify update .`), reconnect the graphify MCP server before querying it (it reads the graph at startup). The CLI is the fallback: set `GRAPHIFY_BACKEND=none` on BOTH `extract` and `cluster-only` when no API access (see `references/graphify-workflow.md`).
    - Read `graphify-out/GRAPH_REPORT.md`.
    - Promote stable graph findings into `.brain/wiki/architecture/` or `.brain/wiki/concepts/`.
    - Mark graph-only inferences as leads until confirmed from files or sources.
@@ -154,7 +154,7 @@ Actions:
    - Reason starts with `"graphify-out/GRAPH_REPORT.md missing"` OR `"graph built at"` → `/graphify .` (full build, API cost)
    - Reason starts with `"uncommitted changes to source files:"` → check what changed. If the reason says more paths follow (marker contains "more paths omitted"), run `git status` first to see the full list. Then decide: code-only changes use `graphify update .` (AST-only, no API cost); docs/images/comments changes use `/graphify .`
    - Any other stale reason → `/graphify .`
-   After graphify runs, the doctor reports fresh until a source file changes again. Reconnect the graphify MCP server after a full build (it reads the graph at startup); the CLI is the fallback, with `GRAPHIFY_BACKEND=none` on BOTH `extract` and `cluster-only` when no API access.
+   After graphify runs, the doctor reports fresh until a source file changes again. Reconnect the graphify MCP server after ANY change to graph.json (full build or incremental `graphify update .`; it reads the graph at startup); the CLI is the fallback, with `GRAPHIFY_BACKEND=none` on BOTH `extract` and `cluster-only` when no API access.
 3. Read `graphify-out/GRAPH_REPORT.md`.
 4. Identify god nodes, communities, surprising connections, and suggested questions.
 5. Update `.brain/wiki/architecture/System Overview.md` and related pages.
@@ -221,8 +221,14 @@ Actions:
    - Identify wiki pages with `updated:` older than 30 days and cross-check against recent log entries to see if they changed but frontmatter was not updated.
 
    **Coverage below 70:**
-   - List raw source files that have no wiki/sources/ summary page.
-   - Create stub source summary pages for the top unreferenced raw files. A stub with title, type, status, and a one-line summary is better than nothing.
+   - Run `project-brain-inventory <project-root> inventory` and use the
+     uncovered core/important units it reports as the work list — coverage is
+     computed from `.brain/inventory.json`, not from raw files lacking a
+     summary page.
+   - For each uncovered unit, write or update a non-draft wiki page that cites
+     the unit with a lint-valid `{{src ...}}` citation and carries enough body
+     text to pass the inventory substance check (>= 120 non-whitespace
+     characters). A one-line stub does not count as coverage.
 
    **Memory consolidation below 70 (estimated):**
    - Write a MemPalace diary entry covering current project state, recent decisions, and active workstream.

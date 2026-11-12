@@ -17,14 +17,17 @@ from scaffold_brain import (  # noqa: E402
     LEGACY_WIKI_WING_PREFIX,
     WIKI_WING_PREFIX,
     WING_SEPARATOR,
+    WING_TS_FORMAT,
     diary_wing_for_agent,
     ensure_graphifyignore,
-    normalize_wing_for_compare,
+    generate_wiki_wing_name,
     normalize_wing_slug,
     sanitize_wing_name,
     scaffold,
     wiki_wing_name,
 )
+from mempalace_reset import normalize_wing_for_compare  # noqa: E402
+from datetime import datetime, timezone  # noqa: E402
 from doctor import graphify_freshness, HEALTH_REPAIR_THRESHOLD  # noqa: E402
 
 TOOLS_DOC = PLUGIN_ROOT / "skills" / "brain" / "references" / "mempalace-tools.md"
@@ -42,6 +45,8 @@ NON_TOOL_IDENTIFIERS = {
     "preferences_get",
     "preferences_set",
     "diary_agent",  # frontmatter field name, not a tool
+    "reset",        # scripts/mempalace_reset.py module name, not a tool
+    "config",       # mempalace.config module reference
 }
 
 
@@ -89,7 +94,8 @@ def test_sanitize_matches_mempalace_normalize():
 
 def test_diary_wing_matches_mempalace_diary_write():
     """mempalace mcp_server/tools_diary.py: wing = wing_<agent.replace(' ','_')>
-    after sanitize+lower — only spaces are replaced, hyphens would survive."""
+    after sanitize+lower — only spaces are replaced, hyphens would survive.
+    Used by the scaffold template and the reset candidate list."""
     assert diary_wing_for_agent("brain_demo_app") == "wing_brain_demo_app"
     assert diary_wing_for_agent("My Agent") == "wing_my_agent"
 
@@ -100,6 +106,61 @@ def test_normalize_wing_for_compare_matches_mempalace():
     assert normalize_wing_for_compare("Wiki_Demo-App") == "wiki_demo_app"
     assert normalize_wing_for_compare("wing_brain-demo_app") == "wing_brain_demo_app"
     assert normalize_wing_for_compare("_edge_") == "edge"
+    # Runs are NOT collapsed: demo--app and demo_app stay distinct keys.
+    assert normalize_wing_for_compare("demo--app") == "demo__app"
+    assert normalize_wing_for_compare("demo_app") == "demo_app"
+
+
+# --- item: timestamped wing generation (0.9.4) --------------------------------
+
+
+def test_generate_wiki_wing_name_format():
+    now = datetime(2026, 10, 26, 16, 46, 0, tzinfo=timezone.utc)
+    name = generate_wiki_wing_name("ambient_studio_brain_test", now=now)
+    assert name == "wiki_ambient_studio_brain_test_20261026T164600Z"
+
+
+def test_generate_wiki_wing_name_is_utc():
+    """A naive or offset datetime is normalized to UTC before formatting."""
+    from datetime import timedelta
+    now_utc = datetime(2026, 10, 26, 16, 46, 0, tzinfo=timezone.utc)
+    name_utc = generate_wiki_wing_name("p", now=now_utc)
+    name_shifted = generate_wiki_wing_name("p", now=now_utc.astimezone(timezone(timedelta(hours=2))))
+    assert name_utc == name_shifted
+    assert name_utc.endswith("Z")
+
+
+def test_generate_wiki_wing_name_avoids_taken_names():
+    """Never silently reuses an existing identity (wings or stale graph
+    records): collisions resolve deterministically, first by microsecond
+    precision, then by a numeric suffix."""
+    now = datetime(2026, 10, 26, 16, 46, 0, tzinfo=timezone.utc)
+    base = "wiki_p_20261026T164600Z"
+    taken = {base, "wiki_p_20261026T164600000000Z"}
+    first = generate_wiki_wing_name("p", taken=taken, now=now)
+    assert first == base + "_2"
+    # Same inputs -> same output (deterministic).
+    assert generate_wiki_wing_name("p", taken=taken, now=now) == first
+    # Adding the suffix to taken yields the next suffix.
+    second = generate_wiki_wing_name("p", taken=taken | {first}, now=now)
+    assert second == base + "_3"
+
+
+def test_generate_wiki_wing_name_avoids_directory_derived_wing():
+    """CodeRabbit #13: the generated name must differ from the directory-
+    derived wing, whatever the title slug is."""
+    now = datetime(2026, 10, 26, 16, 46, 0, tzinfo=timezone.utc)
+    # Pathological case: the slug matches a directory-derived name exactly.
+    name = generate_wiki_wing_name("wiki_foo_20261026t164600z", now=now)
+    assert name != sanitize_wing_name("wiki_foo_20261026t164600z")
+
+
+def test_generate_wiki_wing_name_avoids_diary_wing():
+    now = datetime(2026, 10, 26, 16, 46, 0, tzinfo=timezone.utc)
+    diary = diary_wing_for_agent("brain_p")
+    for _ in range(5):
+        name = generate_wiki_wing_name("p", taken={diary}, now=now)
+        assert name != diary
 
 
 def test_wiki_wing_name_matches_sanitize():
@@ -153,15 +214,30 @@ def test_scaffold_prints_plugin_identity_and_wing(run_script, tmp_project: Path)
 # --- item: scaffold wing naming (D2) -----------------------------------------
 
 
-def test_scaffold_new_brain_uses_underscore_wing(run_script, tmp_project: Path):
-    """New brains get wiki_<slug> with MemPalace's underscore convention."""
+def test_scaffold_new_brain_uses_timestamped_wing(run_script, tmp_project: Path):
+    """New brains get wiki_<slug>_<UTC-timestamp> (unique per creation)."""
     project_dir = tmp_project / "demo-app_brain-test"
     project_dir.mkdir(parents=True, exist_ok=True)
     result = run_script("scaffold_brain.py", [str(project_dir), "Demo App Brain Test"])
     assert result.returncode == 0
     content = (project_dir / ".brain" / "CLAUDE.md").read_text(encoding="utf-8")
-    assert "mempalace_wing: wiki_demo_app_brain_test" in content
+    match = re.search(r"mempalace_wing: (wiki_demo_app_brain_test_\d{8}T\d{6}Z)", content)
+    assert match, f"timestamped wing missing in: {content[:300]}"
     assert "mempalace_diary_agent: brain_demo_app_brain_test" in content
+    # The recorded name must never equal the directory-derived wing.
+    assert match.group(1) != "demo_app_brain_test"
+
+
+def test_scaffold_new_brain_distinct_from_directory_wing(run_script, tmp_project: Path):
+    """CodeRabbit #13: a project dir named wiki_<x> must not share the wing."""
+    project_dir = tmp_project / "wiki_foo"
+    project_dir.mkdir(parents=True, exist_ok=True)
+    result = run_script("scaffold_brain.py", [str(project_dir), "wiki_foo"])
+    assert result.returncode == 0
+    content = (project_dir / ".brain" / "CLAUDE.md").read_text(encoding="utf-8")
+    wing = re.search(r"mempalace_wing: (\S+)", content).group(1)
+    assert wing != "wiki_foo", "wiki wing must differ from the directory-derived wing"
+    assert re.fullmatch(r"wiki_wiki_foo_\d{8}T\d{6}Z", wing), wing  # timestamped derivative
 
 
 def test_scaffold_reuses_legacy_hyphenated_wing(tmp_path: Path):
@@ -217,10 +293,18 @@ def test_graphifyignore_idempotent_and_slash_insensitive(tmp_path: Path):
     p = tmp_path / ".graphifyignore"
     p.write_text(".brain/\ngraphify-out\n", encoding="utf-8")
     ensure_graphifyignore(tmp_path)
-    assert p.read_text(encoding="utf-8") == ".brain/\ngraphify-out\n"
+    text = p.read_text(encoding="utf-8")
+    # brain entries are not duplicated (slash-insensitive comparison)
+    assert text.count(".brain/") == 1
+    assert text.count("graphify-out") == 1
+    # WP7 (KD-15): the default sensitive-path set is enforced on existing
+    # files too, appended after the user's own entries.
+    lines = text.splitlines()
+    for entry in (".env", ".env.*", "*.pem", "*.key", "id_rsa*", "secrets/", "credentials*.json"):
+        assert entry in lines, entry
     # Second call must also be a no-op.
     ensure_graphifyignore(tmp_path)
-    assert p.read_text(encoding="utf-8") == ".brain/\ngraphify-out\n"
+    assert p.read_text(encoding="utf-8") == text
 
 
 # --- item 6: graphify gate ---------------------------------------------------

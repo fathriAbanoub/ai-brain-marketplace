@@ -34,20 +34,13 @@ class TestScaffoldBrain:
             "wiki",
             "wiki/sources",
             "state",
-            "raw",
             "log",
             "wiki/architecture",
             "wiki/concepts",
             "wiki/decisions",
             "wiki/entities",
             "wiki/syntheses",
-            "outputs/queries",
-            "memory",
-            "graph",
             "tasks",
-            "runbooks",
-            "audit",
-            "audit/resolved",
         ]
         
         for rel_dir in expected_dirs:
@@ -55,20 +48,49 @@ class TestScaffoldBrain:
             assert dir_path.exists(), f"Missing directory: {rel_dir}"
             assert dir_path.is_dir(), f"Not a directory: {rel_dir}"
 
-    def test_scaffold_creates_gitkeep_files(self, scaffolded_project: Path):
-        """Verify .gitkeep in audit, audit/resolved, raw/assets, outputs/queries."""
+    def test_scaffold_creates_no_gitkeep_files(self, scaffolded_project: Path):
+        """KD-10: no .gitkeep markers in lazily-created lifecycle dirs.
+
+        The old test asserted the presence of empty-dir markers; the fix
+        removes the eager dirs entirely (created by the step that fills them).
+        """
         brain = scaffolded_project
-        
-        gitkeep_paths = [
-            "audit/.gitkeep",
-            "audit/resolved/.gitkeep",
-            "raw/assets/.gitkeep",
-            "outputs/queries/.gitkeep",
+
+        lazy_dirs = [
+            "audit",
+            "audit/resolved",
+            "raw/assets",
+            "outputs/queries",
+            "memory",
+            "graph",
+            "runbooks",
         ]
-        
-        for rel_path in gitkeep_paths:
-            keep_path = brain / rel_path
-            assert keep_path.exists(), f"Missing .gitkeep: {rel_path}"
+        for rel_path in lazy_dirs:
+            assert not (brain / rel_path).exists(), f"lifecycle dir created eagerly: {rel_path}"
+
+    def test_init_writes_plugin_root_state_file(self, scaffolded_project: Path):
+        """KD-22: init persists the plugin root so later shells read it
+        instead of re-deriving it (live iter-5: the model never persisted it
+        itself and kept reverting to bare commands until the harness's
+        consecutive-failure breaker aborted the session)."""
+        state_file = scaffolded_project / "state" / "plugin-root.txt"
+        assert state_file.exists(), "init must write .brain/state/plugin-root.txt"
+        recorded = state_file.read_text(encoding="utf-8").strip()
+        assert recorded == str(PLUGIN_ROOT), (
+            f"recorded plugin root {recorded!r} != actual {PLUGIN_ROOT}"
+        )
+        assert (Path(recorded) / "bin").is_dir(), "recorded root must contain bin/"
+
+    def test_scaffold_templates_do_not_teach_slash_graphify(self, scaffolded_project: Path):
+        """KD-20 residual, found during KD-22 review: the next-actions
+        template still taught the slash form `/graphify .` (the exact iter-3
+        failure vector) although lint/doctor/skill text were fixed."""
+        next_actions = scaffolded_project / "tasks" / "next-actions.md"
+        assert next_actions.exists()
+        text = next_actions.read_text(encoding="utf-8")
+        assert "/graphify" not in text, (
+            "scaffold output must teach the CLI form `graphify .`, never the slash form"
+        )
 
     def test_scaffold_creates_index_md_with_project_name(self, scaffolded_project: Path):
         """index.md contains the project title."""
@@ -183,25 +205,35 @@ class TestScaffoldBrain:
         assert tasks_path.exists()
 
     def test_scaffold_creates_wiki_pages(self, scaffolded_project: Path):
-        """Verify wiki pages that scaffold_brain.py actually writes."""
+        """KD-11: only project-facing seed pages exist after scaffold.
+
+        The old expected list asserted the plugin-explaining seed pages; those
+        are removed (operating instructions live in .brain/CLAUDE.md).
+        """
         brain = scaffolded_project
-        
-        # These are the pages created by scaffold_brain.py based on source inspection
+
         expected_pages = [
             "wiki/index.md",
-            "wiki/architecture/AI Brain Architecture.md",
             "wiki/architecture/System Overview.md",
-            "wiki/decisions/Use Layered Brain Architecture.md",
-            "wiki/concepts/LLM Wiki.md",
-            "wiki/entities/MemPalace.md",
-            "wiki/entities/graphify.md",
-            "wiki/entities/Obsidian.md",
             "wiki/open-questions.md",
         ]
-        
+
         for rel_path in expected_pages:
             page_path = brain / rel_path
             assert page_path.exists(), f"Missing wiki page: {rel_path}"
+
+        forbidden = [
+            "wiki/architecture/AI Brain Architecture.md",
+            "wiki/decisions/Use Layered Brain Architecture.md",
+            "wiki/concepts/LLM Wiki.md",
+            "wiki/concepts/Post-Wiki Synchronization.md",
+            "wiki/entities/MemPalace.md",
+            "wiki/entities/graphify.md",
+            "wiki/entities/Obsidian.md",
+        ]
+        for rel_path in forbidden:
+            assert not (brain / rel_path).exists(), f"plugin-explaining seed page present: {rel_path}"
+
 
     def test_scaffold_unicode_project_name(self, run_script, tmp_project: Path):
         """Use a name with emoji or accent and verify no error."""

@@ -138,10 +138,10 @@ After deleting a wing's drawers:
 6. **Script-verify the recorded transcript for this wing** (the wing counts as reset-verified only when this exits 0):
 
 ```bash
-project-brain-reset <project-root> --verify-reset-transcript <wing-name>
+"$PLUGIN_ROOT/bin/project-brain-reset" <project-root> --verify-reset-transcript <wing-name>
 ```
 
-   Exit 0 = the transcript satisfies every hard contract (no single-drawer deletes, batches ≤ 500, pages ≤ 100, every enumerated ID deleted, wing cleared after the last delete). Nonzero = a contract violation or missing evidence — read the printed violations, fix what they name, and re-run. If the command is unavailable on PATH (exit 127), use the same `PLUGIN_ROOT` re-resolution fallback shown in Step 5.
+   Exit 0 = the transcript satisfies every hard contract (no single-drawer deletes, batches ≤ 500, pages ≤ 100, every enumerated ID deleted, wing cleared after the last delete). Nonzero = a contract violation or missing evidence — read the printed violations, fix what they name, and re-run. Resolve `PLUGIN_ROOT` first exactly as Step 5 shows (persisted value with staleness check, then the fallback chain); never run this with an empty `PLUGIN_ROOT`.
 
 Report total drawers deleted per wing before moving on.
 
@@ -184,11 +184,14 @@ PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-}"
 # the marketplace paths below do not exist). Do NOT count dirname levels by
 # hand — a wrong depth guess cascades into a filesystem hunt that can end on
 # a foreign copy of the plugin. Set BASE_DIR to that path and take the first
-# candidate that actually contains the plugin's bin/:
-BASE_DIR='<path-from-that-line>'
-for _c in "$BASE_DIR" "$(dirname "$BASE_DIR")" "$(dirname "$(dirname "$BASE_DIR")")"; do
-  if [ -d "$_c/bin" ]; then PLUGIN_ROOT="$_c"; break; fi
-done
+# candidate that actually contains the plugin's bin/. The candidate loop
+# runs only when PLUGIN_ROOT is still empty — never overwrite a resolved root.
+if [ -z "$PLUGIN_ROOT" ]; then
+  BASE_DIR='<path-from-that-line>'
+  for _c in "$BASE_DIR" "$(dirname "$BASE_DIR")" "$(dirname "$(dirname "$BASE_DIR")")"; do
+    if [ -d "$_c/bin" ]; then PLUGIN_ROOT="$_c"; break; fi
+  done
+fi
 # Verify before use: ls "$PLUGIN_ROOT/bin" must list the project-brain-* wrappers.
 : "${PLUGIN_ROOT:=$(ls -d ~/.openclaude/plugins/cache/ai-brain-marketplace/project-brain/*/ 2>/dev/null | sort -V | tail -1)}"
 : "${PLUGIN_ROOT:=$HOME/.openclaude/plugins/marketplaces/ai-brain-marketplace/project-brain}"
@@ -205,11 +208,14 @@ After any shell resolves PLUGIN_ROOT successfully, persist it — the variable d
 printf '%s' "$PLUGIN_ROOT" > .brain/state/plugin-root.txt
 ```
 
-In every LATER shell — Step 2's classifier run, Step 3c's transcript verification, and the confirmed run below — try the persisted value first (with a staleness check — a moved plugin must fall back to re-resolution, never be used blindly), then run the confirmed deletion in that same invocation:
+In every LATER shell — Step 2's classifier run, Step 3c's transcript verification, and the confirmed run below — try the persisted value first (with a staleness check — a moved plugin must fall back to re-resolution, never be used blindly), then run the confirmed deletion in that same invocation. When the persisted value is missing or fails the staleness check, re-run the FULL Step 5 resolution chain (CLAUDE_PLUGIN_ROOT → base-directory candidates → marketplace paths) in that same invocation — and if it still resolves to nothing, STOP with a clear message naming the paths you tried: the confirmed deletion must never run with an empty `PLUGIN_ROOT`:
 
 ```bash
 PLUGIN_ROOT="$(cat .brain/state/plugin-root.txt 2>/dev/null || true)"
-[ -n "$PLUGIN_ROOT" ] && [ -d "$PLUGIN_ROOT/bin" ] || PLUGIN_ROOT=""
+if [ -z "$PLUGIN_ROOT" ] || [ ! -d "$PLUGIN_ROOT/bin" ]; then
+  echo "error: PLUGIN_ROOT missing or invalid — re-run the Step 5 resolution chain; never run the confirmed deletion with an empty PLUGIN_ROOT" >&2
+  exit 127
+fi
 "$PLUGIN_ROOT/bin/project-brain-reset" <project-root> --confirm
 ```
 
@@ -242,7 +248,7 @@ If the MCP route cannot complete safely — the bulk tool fails persistently, a 
 2. Show the diagnostic evidence: remaining drawer counts, unresolved tunnel/hallway records, or the enumeration inconsistency.
 3. Explain the failure class: MCP availability, enumeration problem, partial deletion, or unresolved ownership question.
 4. If the problem is ownership (which wing belongs to this project), resolving ownership is the fix — do NOT recommend a database reset for it.
-5. Otherwise, recommend `/project-brain:hard-reset` — the separate, database-level destructive operation with its own dry run, backup, and explicit authorization. It is NOT launched automatically and is never a routine substitute for bulk deletion.
+5. Otherwise, recommend `/project-brain:hard-reset` — the separate, database-level destructive operation with its own dry run, backup, and explicit authorization. It is NOT launched automatically and is never a routine substitute for bulk deletion. Note its backend limit: the hard reset supports wing-tagged SQLite palaces only and refuses a default ChromaDB palace (its data can only be removed safely through the Chroma API), so for the default backend the normal MCP-based reset remains the only supported path.
 
 ---
 

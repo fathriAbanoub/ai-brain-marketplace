@@ -151,6 +151,13 @@ class TestDoctorCounter:
     def test_passing_strict_run_resets_strict_gate(self, run_script, tmp_project: Path):
         proj = green_project(run_script, tmp_project)
         failing_page(proj / ".brain")
+        # Seed doctor-strict with a FAILING strict run first: the lint runs
+        # below increment lint, not doctor-strict, so the reset assertion is
+        # only meaningful when the counter was actually nonzero.
+        seeded = run_script("doctor.py", [str(proj), "--strict", "--json"])
+        assert seeded.returncode != 0
+        content = (proj / COUNTER_REL).read_text(encoding="utf-8")
+        assert "doctor-strict=1" in content, content
         assert run_script("lint_brain.py", [str(proj)]).returncode != 0
         assert run_script("lint_brain.py", [str(proj)]).returncode != 0
         failing_page(proj / ".brain").unlink()

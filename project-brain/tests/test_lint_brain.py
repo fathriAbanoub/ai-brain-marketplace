@@ -217,3 +217,100 @@ class TestLintBrain:
         
         # Should pass without errors (warnings may exist but exit 0)
         assert result.returncode == 0
+
+
+class TestSourcePathResolution:
+    """CodeRabbit #23B: `sources:` entries resolve root-relative (raw
+    evidence), page-relative, or wiki-relative (source-summary pages).
+    Missing paths stay errors — never silently converted to wikilinks."""
+
+    def _page_with_sources(self, brain: Path, rel: str, sources: str) -> Path:
+        page = brain / rel
+        page.parent.mkdir(parents=True, exist_ok=True)
+        page.write_text(
+            "---\ntitle: S\ntype: architecture\ncreated: 2024-01-01\nupdated: 2024-01-01\n"
+            f"status: active\nsources: [{sources}]\ntags: [t]\n---\n\n# S\n\nBody.\n",
+            encoding="utf-8",
+        )
+        return page
+
+    def test_wiki_relative_source_summary_resolves(self, run_script, scaffolded_project: Path):
+        """sources/package-json-primary-source.md resolves against .brain/wiki/."""
+        brain = scaffolded_project
+        summary = brain / "wiki" / "sources" / "package-json-primary-source.md"
+        summary.parent.mkdir(parents=True, exist_ok=True)
+        summary.write_text(
+            "---\ntitle: package.json primary\ntype: source\ncreated: 2024-01-01\n"
+            "updated: 2024-01-01\nstatus: active\nsources: []\nreliability: primary\ntags: []\n---\n\n# package.json primary\n",
+            encoding="utf-8",
+        )
+        page = self._page_with_sources(
+            brain, "wiki/architecture/System Overview.md", "sources/package-json-primary-source.md"
+        )
+        result = run_script("lint_brain.py", [str(brain.parent)])
+        issues = (result.stdout + result.stderr).lower()
+        assert "sources/package-json-primary-source.md" not in issues or result.returncode == 0
+
+    def test_missing_source_path_still_errors(self, run_script, scaffolded_project: Path):
+        """A sources entry pointing nowhere is an error in every resolution mode."""
+        brain = scaffolded_project
+        self._page_with_sources(
+            brain, "wiki/architecture/System Overview.md", "sources/does-not-exist.md"
+        )
+        result = run_script("lint_brain.py", [str(brain.parent)])
+        assert result.returncode != 0
+        assert "source path not found" in (result.stdout + result.stderr)
+
+    def test_root_relative_raw_evidence_resolves(self, run_script, scaffolded_project: Path):
+        brain = scaffolded_project
+        raw = brain / "raw" / "notes" / "evidence.md"
+        raw.parent.mkdir(parents=True, exist_ok=True)
+        raw.write_text("evidence\n", encoding="utf-8")
+        self._page_with_sources(brain, "wiki/concepts/Evidence.md", ".brain/raw/notes/evidence.md")
+        result = run_script("lint_brain.py", [str(brain.parent)])
+        assert result.returncode == 0
+
+    def test_page_relative_source_resolves(self, run_script, scaffolded_project: Path):
+        brain = scaffolded_project
+        sibling = brain / "wiki" / "architecture" / "sibling-src.md"
+        sibling.write_text("sibling\n", encoding="utf-8")
+        self._page_with_sources(brain, "wiki/architecture/System Overview.md", "sibling-src.md")
+        result = run_script("lint_brain.py", [str(brain.parent)])
+        assert result.returncode == 0
+
+
+class TestWikilinkCodeSkipping:
+    """0.10.1 D4: wikilink-shaped checks skip fenced code blocks and inline
+    code spans — the wiki documents code, so `` `[[ghost]]` `` is text, not a
+    broken link. Applies to the plain and hybrid detectors alike."""
+
+    FRONTMATTER = ("---\ntitle: Code Docs\ntype: concept\ncreated: 2024-01-01\n"
+                   "updated: 2024-01-01\nstatus: draft\nsources: []\ntags: [test]\n---\n")
+
+    def _lint_broken_wikilinks(self, run_script, project_dir: Path) -> list[dict]:
+        result = run_script("lint_brain.py", [str(project_dir), "--json"])
+        assert result.returncode in (0, 1)
+        issues = json.loads(result.stdout)["issues"]
+        return [i for i in issues if i["category"] == "broken_wikilink"]
+
+    def test_ghost_links_in_code_are_not_flagged(self, run_script, scaffolded_project: Path):
+        brain = scaffolded_project
+        page = brain / "wiki" / "concepts" / "CodeDocs.md"
+        page.write_text(self.FRONTMATTER + (
+            "\nInline `[[Ghost]]` and `arr[[1](2)]` spans are documentation.\n\n"
+            "```python\n# [[Ghost]] inside a fence\nx = arr[[1](2)]\n[[Ghost]]\n```\n\n"
+            "~~~\n[[Ghost]] and hybrid [[Ghost](somewhere.md)] inside tildes\n~~~\n"),
+            encoding="utf-8")
+        assert self._lint_broken_wikilinks(run_script, brain.parent) == []
+
+    def test_broken_link_outside_code_still_flagged_with_exact_line(self, run_script, scaffolded_project: Path):
+        brain = scaffolded_project
+        page = brain / "wiki" / "concepts" / "CodeDocs.md"
+        body = ("\nA fence first:\n\n```\n[[Ghost]] in code\n```\n\n"
+                "then a real [[Ghost]] in prose.\n")
+        page.write_text(self.FRONTMATTER + body, encoding="utf-8")
+        broken = self._lint_broken_wikilinks(run_script, brain.parent)
+        assert len(broken) == 1, broken
+        expected_line = (self.FRONTMATTER + body).count("\n", 0,
+                         (self.FRONTMATTER + body).index("real [[Ghost]]")) + 1
+        assert broken[0]["line"] == expected_line, broken[0]

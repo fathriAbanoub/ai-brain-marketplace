@@ -2,9 +2,11 @@
 
 Storage is a separate bare git dir at .brain/state/wiki.git with work tree
 .brain/wiki (never a .git inside the wiki — it would clash with the project's
-repo). These tests drive the real CLI (scripts/wiki_ledger.py via the bin
-shim path used by the skill) and the real scaffold/reset scripts as
-subprocesses, so every claim is exercised against the installed git.
+repo). These tests drive the real CLI as subprocesses: scripts/wiki_ledger.py
+directly via run_cli (which also lets tests that remove git from PATH control
+the environment precisely), the documented bin/project-brain-wiki shim in a
+smoke test, and the real scaffold/reset scripts — so every claim is exercised
+against the installed git.
 """
 
 import json
@@ -73,6 +75,18 @@ def write_page(root: Path, rel: str, text: str) -> Path:
     page.parent.mkdir(parents=True, exist_ok=True)
     page.write_text(text, encoding="utf-8")
     return page
+
+
+def test_bin_shim_smoke(proj: Path):
+    """The documented executable bin/project-brain-wiki works end to end.
+    run_cli invokes the script directly, so a broken shim would leave the
+    documented command unusable while every other test passes."""
+    shim = PLUGIN_ROOT / "bin" / "project-brain-wiki"
+    assert shim.exists(), "the documented project-brain-wiki executable is missing"
+    result = subprocess.run(["bash", str(shim), str(proj), "status"],
+                            capture_output=True, text=True, timeout=CLI_TIMEOUT_SECS)
+    assert result.returncode == 0, result.stderr
+    assert "no ledger yet" in result.stdout
 
 
 # --- lifecycle -----------------------------------------------------------------
@@ -156,6 +170,66 @@ class TestLedgerLifecycle:
         lines = r.stdout.splitlines()
         assert len(lines) <= wiki_ledger.MAX_DIFF_LINES + 1
         assert "truncated" in lines[-1]
+
+
+# --- literal page names ----------------------------------------------------------
+
+class TestLiteralPageNames:
+    """*, ? and [] are legal in page names. Git pathspecs would read them as
+    wildcards and match a DIFFERENT page, so every page-path git call must
+    pass the (literal) magic prefix — here via the CLI end to end."""
+
+    def _seed_star_and_neighbor(self, proj: Path) -> None:
+        write_page(proj, "s*.md", "# star v1\n")
+        write_page(proj, "sa.md", "# sa v1\n")
+        run_cli(proj, "snapshot", "-m", "baseline: both")
+        write_page(proj, "sa.md", "# sa v2\n")
+        run_cli(proj, "snapshot", "-m", "work: sa edit only")
+
+    def test_history_wildcard_name_lists_only_that_page(self, proj: Path):
+        self._seed_star_and_neighbor(proj)
+        r = run_cli(proj, "history", "s*.md")
+        assert r.returncode == 0, r.stderr
+        assert "baseline: both" in r.stdout
+        assert "work: sa edit only" not in r.stdout
+        # The literal-named neighbor is unaffected.
+        r = run_cli(proj, "history", "sa.md")
+        assert "work: sa edit only" in r.stdout
+        assert "baseline: both" in r.stdout
+
+    def test_diff_wildcard_name_diffs_only_that_page(self, proj: Path):
+        self._seed_star_and_neighbor(proj)
+        r = run_cli(proj, "diff", "s*.md")
+        assert r.returncode == 0, r.stderr
+        # s*.md has exactly one version and sa.md's change must not leak in.
+        assert "page has one version" in r.stdout
+        assert "# sa" not in r.stdout
+        r = run_cli(proj, "diff", "sa.md")
+        assert "-# sa v1" in r.stdout and "+# sa v2" in r.stdout
+
+    def test_diff_wildcard_name_with_explicit_revs_is_literal(self, proj: Path):
+        self._seed_star_and_neighbor(proj)
+        write_page(proj, "s*.md", "# star v2\n")
+        run_cli(proj, "snapshot", "-m", "work: star edit")
+        # HEAD~2 = baseline: the wildcard pattern s*.md would also match
+        # sa.md, whose v1 -> v2 change sits between those revs.
+        r = run_cli(proj, "diff", "s*.md", "--from", "HEAD~2", "--to", "HEAD")
+        assert r.returncode == 0, r.stderr
+        assert "s*.md" in r.stdout
+        assert "-# star v1" in r.stdout and "+# star v2" in r.stdout
+        assert "sa.md" not in r.stdout
+
+    def test_follow_tracks_rename_with_literal_spec(self, proj: Path):
+        write_page(proj, "notes/Orig.md", "# orig\n")
+        run_cli(proj, "snapshot", "-m", "work: create orig")
+        (proj / ".brain" / "wiki" / "notes" / "Orig.md").rename(
+            proj / ".brain" / "wiki" / "notes" / "Renamed.md")
+        run_cli(proj, "snapshot", "-m", "work: rename to Renamed")
+        r = run_cli(proj, "history", "notes/Renamed.md")
+        assert r.returncode == 0, r.stderr
+        # --follow reaches the pre-rename snapshot through the literal spec.
+        assert "rename to Renamed" in r.stdout
+        assert "create orig" in r.stdout
 
 
 # --- restore -------------------------------------------------------------------

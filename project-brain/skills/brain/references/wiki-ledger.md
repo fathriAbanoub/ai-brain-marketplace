@@ -6,10 +6,13 @@ the project's own git, and `.brain/wiki/` never contains a `.git` (that would
 clash with the project's repo). Read this when you need to see what changed,
 verify an edit, or undo a bad page edit.
 
-The PostToolUse hook auto-snapshots every wiki edit (`auto: <tool> <page>`),
-so the working tree is clean a moment after each edit. That is why the
-defaults below answer from snapshot history — uncommitted-only output would
-always be empty under the hook.
+The PostToolUse hook auto-snapshots wiki edits made through Write, Edit, and
+MultiEdit (`auto: <tool> <page>`), so the working tree is usually clean a
+moment after each of those edits. The hook may silently ignore failures, and
+edits made by other means (shell commands, scripts) are never snapshotted:
+after such edits, run `status` and, if anything is uncommitted, `snapshot`
+by hand. That is why the defaults below answer from snapshot history —
+uncommitted-only output would always be empty under the hook.
 
 ## Commands
 
@@ -64,8 +67,11 @@ Every subcommand takes `<project-root>` first, run by full path:
 
 ## Failure paths
 
-- `git` missing → init prints `Ledger: not created` and every command errors
-  with exit 127. The wiki still works; only history is unavailable.
+- `git` missing → init prints `Ledger: not created`; `status`, `log`, and
+  `history` then print `no ledger yet` and exit 0 (they never invoke git),
+  while `snapshot` tries to invoke git and exits 127. Other commands that
+  need the ledger (diff, restore) report the missing ledger as an error. The
+  wiki still works; only history is unavailable.
 - `error: ... holds the ledger lock` (exit 75) → another git operation is
   mid-flight; let it finish, then retry. A refused command changes nothing.
 - A corrupt ledger → commands report the git error and exit 1; the wiki
@@ -78,8 +84,12 @@ Every subcommand takes `<project-root>` first, run by full path:
   checked-out file ever diverges from the target snapshot — inspect the page
   and the ledger before retrying; nothing was reported as restored.
 - `restore <page>` with no earlier version ("only one snapshot version") →
-  the page was created by its only touching snapshot; pick an explicit
-  `--rev` from `history <page>`.
+  the page was created by its only touching snapshot, so nothing earlier
+  exists and an explicit `--rev` cannot undo the creation. To undo the
+  creation, delete the page and snapshot the deletion. (A page that also has
+  uncommitted edits can revert them with `--rev <creation rev> --apply
+  --force` — that restores the created state without deleting the page.)
 - Page arguments are validated at the wiki boundary: absolute paths, `..`,
-  and symlinks escaping the wiki are rejected (exit 2). Spaces and non-ASCII
-  page names work in every subcommand.
+  and any symlink in the page path are rejected (exit 2) — an in-wiki
+  symlink alias would silently operate on its target instead of the named
+  page. Spaces and non-ASCII page names work in every subcommand.

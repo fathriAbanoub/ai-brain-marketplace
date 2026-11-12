@@ -29,7 +29,8 @@ Subcommands (stdlib only, no MCP server):
                           a full hash before any snapshot can move HEAD
 
 Trust boundary: page arguments are resolved against the wiki root; `..`,
-absolute paths, and symlinks that escape the wiki are rejected. Every git call
+absolute paths, and any symlink in the page path are rejected (an in-wiki
+symlink alias would operate on its target, not the named page). Every git call
 goes through one argv builder (--git-dir/--work-tree, fixed identity, hooks
 disabled, no autocrlf/quotepath surprises) and a sandboxed environment that
 strips GIT_* redirector variables and never reads user/global/system git
@@ -211,7 +212,8 @@ def git_argv(git_dir: Path, work_tree: Path, *args: str) -> list[str]:
 
 def resolve_page_path(wiki: Path, page_arg: str) -> Path:
     """Resolve a page argument against the wiki root; reject anything that
-    escapes it (absolute paths, `..`, symlinks pointing outside). Returns the
+    escapes it (absolute paths, `..`) and any symlink in the path (an in-wiki
+    alias would operate on its target instead of the named page). Returns the
     absolute path; git arguments use the wiki-relative form separately."""
     if not page_arg or not page_arg.strip():
         raise ArgumentError("empty page argument")
@@ -225,12 +227,27 @@ def resolve_page_path(wiki: Path, page_arg: str) -> Path:
     wiki_resolved = wiki.resolve()
     if resolved != wiki_resolved and wiki_resolved not in resolved.parents:
         raise ArgumentError(f"page argument escapes the wiki: {page_arg!r}")
+    # Reject symlink aliases: an in-wiki symlink (page or directory) would
+    # resolve to its target, so history/diff/restore would operate on the
+    # target through the alias instead of the named page.
+    probe = wiki
+    for part in candidate.parts:
+        probe = probe / part
+        if probe.is_symlink():
+            raise ArgumentError(f"page argument crosses a symlink: {page_arg!r}")
     return resolved
 
 
 def page_rel_for_git(wiki: Path, resolved: Path) -> str:
     """Wiki-relative path with forward slashes (git's separator)."""
     return resolved.relative_to(wiki.resolve()).as_posix()
+
+
+def literal_spec(rel: str) -> str:
+    """Pathspec for one page: the (literal) magic prefix stops git from
+    reading *, ? and [] in a page name as wildcards (which would match a
+    DIFFERENT page's history, diff or restore)."""
+    return f":(literal){rel}"
 
 
 # --- ledger core ----------------------------------------------------------------
@@ -295,7 +312,7 @@ class WikiLedger:
             subprocess.run(
                 [exe, "-c", "init.defaultbranch=main", "init", "--bare", "-q",
                  str(self.git_dir)],
-                capture_output=True, text=True, timeout=GIT_TIMEOUT_SECS,
+                capture_output=True, text=True, timeout=self._remaining(),
                 env=build_git_env(), check=True,
             )
         except subprocess.SubprocessError as exc:
@@ -324,7 +341,9 @@ class WikiLedger:
                 i += 2
             else:
                 i += 1
-            path = path.strip().strip('"')
+            # -z output is raw: git never quotes or pads paths here, so strip
+            # nothing — a root-level filename may legitimately start with a
+            # space or contain quotes.
             if path:
                 pages.append(path)
         return sorted(set(pages))
@@ -342,9 +361,11 @@ class WikiLedger:
 
     def touching_commits(self, rel: str, count: int) -> list[str]:
         """Full hashes of the `count` most recent snapshots that touched rel
-        (rename-aware, like history)."""
+        (rename-aware, like history). The path is a literal pathspec: page
+        names containing *, ? or [] must never be read as wildcards, or the
+        revision selection could pick commits of a DIFFERENT page."""
         proc = self._run("log", "--follow", f"--max-count={count}", "--format=%H",
-                         "--", rel)
+                         "--", literal_spec(rel))
         return [h for h in proc.stdout.split() if h]
 
     def recent_snapshot_pages(self) -> list[str]:
@@ -366,6 +387,25 @@ class WikiLedger:
     def _page_in_rev(self, page_rel: str, rev: str) -> bool:
         proc = self._run("cat-file", "-e", f"{rev}:{page_rel}", check=False)
         return proc.returncode == 0
+
+    def _pre_rename_source(self, rel: str, rev: str) -> str:
+        """The filename under which rev carries rel's content.
+
+        A revision can predate a rename: `cat-file rev:rel` fails even though
+        the page's history (--follow) reaches it under an earlier name. The
+        follow-log lists every name the page has had; the most recent one
+        that exists in rev is the restore source. Empty when none resolves."""
+        proc = self._run("log", "--follow", "--format=", "--name-only",
+                         "--", literal_spec(rel))
+        names: dict[str, None] = {}
+        for line in proc.stdout.splitlines():
+            name = line.strip()
+            if name:
+                names.setdefault(name, None)
+        for name in names:
+            if name != rel and self._page_in_rev(name, rev):
+                return name
+        return ""
 
     def has_snapshots(self) -> bool:
         return self._run("rev-parse", "--verify", "--quiet", "HEAD",
@@ -417,7 +457,7 @@ class WikiLedger:
         if not self.exists() or not self.has_snapshots():
             return []
         proc = self._run("log", "--follow", f"--max-count={count}",
-                         f"--format={LOG_FORMAT}", "--", rel)
+                         f"--format={LOG_FORMAT}", "--", literal_spec(rel))
         entries = []
         for record in proc.stdout.split(RECORD_SEP):
             record = record.lstrip("\n")
@@ -478,7 +518,7 @@ class WikiLedger:
             args.append("HEAD")
         args.append("--")
         if page_rel:
-            args.append(page_rel)
+            args.append(literal_spec(page_rel))
         return self._diff_lines(*args)
 
     def _diff_page_recent(self, page_rel: str) -> list[str]:
@@ -488,16 +528,17 @@ class WikiLedger:
         version says so — an empty result would print "no differences",
         indistinguishable from "unchanged vs an explicit rev"."""
         untracked = self._run("ls-files", "-o", "--exclude-standard", "-z",
-                              "--", page_rel).stdout
+                              "--", literal_spec(page_rel)).stdout
         if any(p for p in untracked.split(NUL) if p):
             return self._new_file_diff(page_rel)
         lines: list[str] = []
         commits = self.touching_commits(page_rel, PAGE_RECENT_VERSION_COUNT)
         if len(commits) == PAGE_RECENT_VERSION_COUNT:
             lines += self._diff_lines("diff", "--no-color", "--no-ext-diff",
-                                      commits[1], commits[0], "--", page_rel)
+                                      commits[1], commits[0], "--",
+                                      literal_spec(page_rel))
         lines += self._diff_lines("diff", "--no-color", "--no-ext-diff",
-                                  "HEAD", "--", page_rel)
+                                  "HEAD", "--", literal_spec(page_rel))
         if not lines and commits:
             return [f"page has one version, created in "
                     f"{self._short_rev(commits[0])} — nothing earlier to compare"]
@@ -556,8 +597,9 @@ class WikiLedger:
                               "restore; snapshot it first")
         if len(commits) < PAGE_RECENT_VERSION_COUNT:
             raise LedgerError(f"{rel} has only one snapshot version and no "
-                              "earlier version to restore — pass --rev REV "
-                              "from `project-brain-wiki history`")
+                              "earlier version to restore — an explicit --rev "
+                              "cannot undo the page's creation; delete the "
+                              "page and snapshot the deletion instead")
         return f"{commits[0]}^"
 
     def restore(self, page_arg: str, rev: str | None, apply: bool = False,
@@ -571,6 +613,10 @@ class WikiLedger:
         content to the target; --force is required only to --apply over
         uncommitted changes (an automatic snapshot commits them first, so
         the current state is never lost). Never writes outside the wiki.
+        The page path is passed to git as a literal pathspec, so a name
+        containing *, ? or [] targets exactly that page. When the selected
+        revision predates a rename, the content is retrieved under the
+        page's pre-rename name and written to the current name.
         Returns (dry-run lines, post-restore snapshot id, shown rev)."""
         if not self.exists():
             raise LedgerError("no ledger yet — run `project-brain-wiki snapshot` first")
@@ -582,10 +628,21 @@ class WikiLedger:
             rev = self._default_restore_rev(rel)
         full = self._resolve_rev(rev)
         short = self._short_rev(full)
+        spec = literal_spec(rel)
+        pre_rename = ""
         if not self._page_in_rev(rel, full):
-            raise LedgerError(f"{rel} does not exist in {rev} — "
-                              "pick a revision from `project-brain-wiki history <page>`")
-        dirty = self._run("status", "--porcelain=v1", "-z", "--", rel).stdout.strip() != ""
+            pre_rename = self._pre_rename_source(rel, full)
+            if not pre_rename:
+                raise LedgerError(f"{rel} does not exist in {rev} — "
+                                  "pick a revision from `project-brain-wiki history <page>`")
+            if (self.wiki / pre_rename).exists():
+                raise LedgerError(
+                    f"{rev} carries {rel} under its pre-rename name {pre_rename!r}, but a file "
+                    f"with that name exists in the wiki now; restore {pre_rename!r} manually "
+                    "(snapshot, copy its content from `history`) and retry")
+            spec = literal_spec(pre_rename)
+        dirty = self._run("status", "--porcelain=v1", "-z", "--",
+                          literal_spec(rel)).stdout.strip() != ""
         if dirty and apply and not force:
             raise LedgerError(
                 f"{rel} has uncommitted changes — snapshot them first "
@@ -594,10 +651,13 @@ class WikiLedger:
         # Dry run shows worktree -> target (-R swaps the sides of the rev-vs-
         # worktree diff), i.e. exactly what --apply would write.
         proc = self._run("diff", "--no-color", "--no-ext-diff", "-R", full,
-                         "--", rel, check=False)
+                         "--", spec, check=False)
         lines = proc.stdout.splitlines()
         if len(lines) > MAX_DIFF_LINES:
             lines = lines[:MAX_DIFF_LINES] + [TRUNCATION_NOTE.format(bound=MAX_DIFF_LINES)]
+        if pre_rename:
+            lines.append(f"note: {rev} predates the rename of {pre_rename} to {rel} — "
+                         "--apply writes that earlier content to the current page name")
         if not apply:
             return lines, "", short
         # Data-loss guard: commit the current state before overwriting it.
@@ -605,8 +665,19 @@ class WikiLedger:
         if dirty and not committed:
             raise LedgerError("could not snapshot the current state before "
                               f"restoring ({detail}); nothing was changed")
-        self._run("checkout", full, "--", rel)
-        if self._run("diff", "--quiet", full, "--", rel, check=False).returncode != 0:
+        self._run("checkout", full, "--", spec)
+        if pre_rename:
+            # The checked-out content landed on the pre-rename path; move it
+            # onto the current page name and verify by blob hash (rev:rel
+            # does not exist for a pre-rename revision).
+            os.replace(self.wiki / pre_rename, self.wiki / rel)
+            target = self._run("rev-parse", f"{full}:{pre_rename}").stdout.strip()
+            actual = self._run("hash-object", str(self.wiki / rel)).stdout.strip()
+            if not target or actual != target:
+                raise LedgerError(f"restore verification failed: {rel} does not "
+                                  f"match {short} after checkout; inspect the page "
+                                  "and the ledger before retrying")
+        elif self._run("diff", "--quiet", full, "--", spec, check=False).returncode != 0:
             raise LedgerError(f"restore verification failed: {rel} does not "
                               f"match {short} after checkout; inspect the page "
                               "and the ledger before retrying")

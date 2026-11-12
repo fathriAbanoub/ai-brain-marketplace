@@ -51,6 +51,12 @@ DB_EXTENSIONS = (".db", ".sqlite", ".sqlite3")
 # Any of these column names makes a table wing-tagged. Tunnels carry
 # source_wing/target_wing endpoints; hallways carry wing; drawers carry wing.
 WING_COLUMN_NAMES = ("wing", "wing_name", "source_wing", "target_wing", "wing_a", "wing_b")
+# Default ChromaDB persistent-store tables. ChromaDB keeps document metadata as
+# rows in embedding_metadata (not as wing columns) and vectors in HNSW segment
+# files, so deleting SQLite rows directly would leave the vector index stale:
+# such palaces are refused unless removal can happen safely through the Chroma
+# API, which this offline SQLite-only tool cannot establish.
+CHROMA_TABLE_NAMES = ("embeddings", "embedding_metadata", "segments", "collections")
 SIDECAR_SUFFIXES = (".revisions.jsonl", ".jsonl")
 SQLITE_HEADER = b"SQLite format 3\x00"
 
@@ -184,6 +190,17 @@ def classify_schema(conn: sqlite3.Connection, db_path: Path) -> list[TablePlan]:
     ]
     if not tables:
         raise HardResetRefused(f"no user tables found in {db_path}; unsupported layout")
+    tables_lower = {t.lower() for t in tables}
+    if "embeddings" in tables_lower and "embedding_metadata" in tables_lower:
+        raise HardResetRefused(
+            f"{db_path} has the default ChromaDB persistent-store layout "
+            f"({', '.join(t for t in CHROMA_TABLE_NAMES if t in tables_lower)}); "
+            "its records can only be removed safely through the Chroma API — "
+            "deleting embedding_metadata or other rows directly in SQLite would "
+            "leave vectors in the HNSW segment files. This tool supports "
+            "wing-tagged SQLite palaces only, so the default backend is "
+            "unsupported; use the normal MCP-based reset for ChromaDB palaces"
+        )
     plans: list[TablePlan] = []
     wing_tagged = 0
     for table in tables:
@@ -316,8 +333,12 @@ def detect_live_server(db_path: Path) -> list[str]:
     return live
 
 
-def wing_registry_table(conn: sqlite3.Connection) -> str:
-    """A dedicated wings table (wing primary key), if the schema has one."""
+def wing_registry_table(conn: sqlite3.Connection) -> tuple[str, str]:
+    """(table, key column) of a dedicated wings table, if the schema has one.
+
+    The key column is whatever the table actually uses ('wing', 'wing_name',
+    or 'name') so the registry DELETE never assumes a wing column that a
+    name- or wing_name-keyed table does not have."""
     for r in conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
     ):
@@ -325,9 +346,10 @@ def wing_registry_table(conn: sqlite3.Connection) -> str:
         if name.lower() not in ("wings", "wing"):
             continue
         cols = {row[1].lower() for row in conn.execute(f"PRAGMA table_info({_quote_ident(name)})")}
-        if "wing" in cols or "name" in cols or "wing_name" in cols:
-            return name
-    return ""
+        for candidate in ("wing", "wing_name", "name"):
+            if candidate in cols:
+                return name, candidate
+    return "", ""
 
 
 # ---------------------------------------------------------------------------
@@ -360,7 +382,7 @@ def build_plan(db_path: Path, wings: list[str], backup_root: Path | None = None)
             tables=plans,
             unrelated_wing_counts=unrelated,
         )
-        registry = wing_registry_table(conn)
+        registry, _registry_key = wing_registry_table(conn)
         if registry:
             plan.notes.append(
                 f"wing registry table {registry!r} detected; its row for the "
@@ -435,7 +457,8 @@ def make_backup(plan: ResetPlan) -> Path:
     return backup_dir
 
 
-def execute_deletions(conn: sqlite3.Connection, plan: ResetPlan, registry: str) -> list[str]:
+def execute_deletions(conn: sqlite3.Connection, plan: ResetPlan,
+                      registry: str, registry_key: str) -> list[str]:
     """Run all deletions inside one transaction; caller commits or rolls back."""
     executed: list[str] = []
     wings = plan.wings
@@ -464,9 +487,10 @@ def execute_deletions(conn: sqlite3.Connection, plan: ResetPlan, registry: str) 
             wings * len(table_plan.wing_columns),
         )
         executed.append(f"DELETE {table_plan.name}: {cur.rowcount} row(s)")
-    if registry:
+    if registry and registry_key:
         cur = conn.execute(
-            f"DELETE FROM {_quote_ident(registry)} WHERE wing IN ({placeholders})",
+            f"DELETE FROM {_quote_ident(registry)} "
+            f"WHERE {_quote_ident(registry_key)} IN ({placeholders})",
             wings,
         )
         if cur.rowcount:
@@ -579,9 +603,8 @@ def run(args: argparse.Namespace) -> int:
         conn = sqlite3.connect(str(db_path))
         try:
             conn.execute("BEGIN IMMEDIATE")
-            registry = wing_registry_table(conn)
-            executed = execute_deletions(conn, plan, registry)
-            rewrite_sidecars(plan)
+            registry, registry_key = wing_registry_table(conn)
+            executed = execute_deletions(conn, plan, registry, registry_key)
             integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
             if integrity != "ok":
                 raise sqlite3.DatabaseError(f"integrity_check failed inside transaction: {integrity}")
@@ -593,6 +616,15 @@ def run(args: argparse.Namespace) -> int:
             return 1
         finally:
             conn.close()
+        # Sidecars are plain files, not part of the SQLite transaction: rewrite
+        # them only after the commit succeeded, so a rollback leaves the
+        # sidecar files unchanged and the "rolled back" message stays true.
+        try:
+            executed.extend(rewrite_sidecars(plan))
+        except Exception as exc:
+            print(f"✗ Database committed, but sidecar rewrite failed: {exc}", file=sys.stderr)
+            print(f"  Backup preserved at: {backup_dir}", file=sys.stderr)
+            return 1
         for line in executed:
             print(f"✓ {line}")
         ok, problems = verify_result(plan, backup_dir)

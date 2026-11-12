@@ -22,7 +22,7 @@ If the actual problem is an unresolved ownership question (which wing belongs to
 
 1. **Discovers the database, fail-closed**: explicit `--db-path`, else `MEMPAL_DIR` (a file directly, or a directory containing exactly one database file). When neither resolves the location, it refuses and tells you to find the real path — via the installed MemPalace CLI's own output (e.g. `mempalace status`, if that command exists in this installation), the MemPalace package's storage configuration, or the user — and pass `--db-path`. It never guesses a home-directory path and never treats a cache directory as the palace.
 2. **Verifies the backend**: reads the file header; only local SQLite is supported. Anything else refuses.
-3. **Introspects the actual schema**: classifies tables by real column evidence (wing-tagged columns `wing`, `wing_name`, `source_wing`, `target_wing`, `wing_a`, `wing_b`; drawer-child tables via `drawer_id` columns). A layout without a wing-tagged table is refused — no invented table names.
+3. **Introspects the actual schema**: classifies tables by real column evidence (wing-tagged columns `wing`, `wing_name`, `source_wing`, `target_wing`, `wing_a`, `wing_b`; drawer-child tables via `drawer_id` columns). A layout without a wing-tagged table is refused — no invented table names. A default ChromaDB palace (embeddings/embedding_metadata tables) is also refused: its records can only be removed safely through the Chroma API, and deleting its SQLite rows directly would leave vectors in the HNSW segment files — so **the default ChromaDB backend is unsupported by the hard reset**; use the normal MCP-based reset for it.
 4. **Plans and prints a dry run by default**: backend, resolved database path, exact target wings, affected row counts per table (drawers, chunks/children, tunnels, hallways), revision sidecar lines, the backup location, unrelated wings that will be preserved, and a **plan hash**.
 5. **Requires bound confirmation**: `--confirm --plan-hash <hash>` where the hash must match the exact displayed plan. A materially changed plan invalidates the old confirmation — re-run the dry run and confirm the new hash.
 6. **Backs up** the database (plus WAL/SHM and revision sidecars) to a timestamped backup directory next to it.
@@ -52,11 +52,14 @@ PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-}"
 # the marketplace paths below do not exist). Do NOT count dirname levels by
 # hand — a wrong depth guess cascades into a filesystem hunt that can end on
 # a foreign copy of the plugin. Set BASE_DIR to that path and take the first
-# candidate that actually contains the plugin's bin/:
-BASE_DIR='<path-from-that-line>'
-for _c in "$BASE_DIR" "$(dirname "$BASE_DIR")" "$(dirname "$(dirname "$BASE_DIR")")"; do
-  if [ -d "$_c/bin" ]; then PLUGIN_ROOT="$_c"; break; fi
-done
+# candidate that actually contains the plugin's bin/. The candidate loop
+# runs only when PLUGIN_ROOT is still empty — never overwrite a resolved root.
+if [ -z "$PLUGIN_ROOT" ]; then
+  BASE_DIR='<path-from-that-line>'
+  for _c in "$BASE_DIR" "$(dirname "$BASE_DIR")" "$(dirname "$(dirname "$BASE_DIR")")"; do
+    if [ -d "$_c/bin" ]; then PLUGIN_ROOT="$_c"; break; fi
+  done
+fi
 # Verify before use: ls "$PLUGIN_ROOT/bin" must list the project-brain-* wrappers.
 : "${PLUGIN_ROOT:=$(ls -d ~/.openclaude/plugins/cache/ai-brain-marketplace/project-brain/*/ 2>/dev/null | sort -V | tail -1)}"
 : "${PLUGIN_ROOT:=$HOME/.openclaude/plugins/marketplaces/ai-brain-marketplace/project-brain}"

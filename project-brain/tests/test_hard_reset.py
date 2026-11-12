@@ -233,6 +233,51 @@ def test_unsupported_schema_refused(tmp_path):
         hr.build_plan(db, ["w"])
 
 
+def test_chromadb_layout_refused(tmp_path):
+    """Default ChromaDB palaces are refused fail-closed: metadata rows must
+    never be deleted directly in SQLite (vectors live in HNSW segment files)."""
+    db = tmp_path / "palace.db"
+    conn = sqlite3.connect(db)
+    conn.executescript(
+        """
+        CREATE TABLE collections (id TEXT PRIMARY KEY, name TEXT);
+        CREATE TABLE embeddings (id TEXT PRIMARY KEY, segment_id TEXT);
+        CREATE TABLE embedding_metadata (id TEXT, key TEXT, value TEXT);
+        CREATE TABLE segments (id TEXT PRIMARY KEY, type TEXT);
+        """
+    )
+    conn.execute("INSERT INTO embedding_metadata VALUES ('e1', 'wing', 'wiki_target')")
+    conn.commit()
+    conn.close()
+    with pytest.raises(hr.HardResetRefused, match="ChromaDB"):
+        hr.build_plan(db, ["wiki_target"])
+    # Nothing was deleted.
+    conn = sqlite3.connect(db)
+    n = conn.execute("SELECT COUNT(*) FROM embedding_metadata").fetchone()[0]
+    conn.close()
+    assert n == 1
+
+
+def test_name_keyed_registry_table_reset(tmp_path):
+    """A wings registry keyed by 'name' resets without a missing-column error."""
+    db = make_palace(tmp_path / "palace.db", {"wiki_target": 3, "wiki_other": 2})
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE wings (name TEXT PRIMARY KEY)")
+    conn.execute("INSERT INTO wings (name) VALUES ('wiki_target'), ('wiki_other')")
+    conn.commit()
+    conn.close()
+    plan = hr.build_plan(db, ["wiki_target"])
+    rc = run_cmd(
+        "--wing", "wiki_target", "--db-path", str(db),
+        "--confirm", "--plan-hash", hr.plan_hash(plan),
+    )
+    assert rc == 0
+    conn = sqlite3.connect(db)
+    names = [r[0] for r in conn.execute("SELECT name FROM wings").fetchall()]
+    conn.close()
+    assert names == ["wiki_other"]
+
+
 def test_non_sqlite_explicit_path_refused(tmp_path):
     notadb = tmp_path / "whatever.bin"
     notadb.write_bytes(b"\x00\x01\x02\x03")
@@ -244,11 +289,23 @@ def test_non_sqlite_explicit_path_refused(tmp_path):
 
 def test_rollback_on_failure(palace, monkeypatch, capsys):
     plan = hr.build_plan(palace, ["wiki_target"])
-    # Break the second DELETE so the transaction fails after partial work.
-    original = hr.execute_deletions
 
-    def failing_execute(conn, plan_, registry):
-        conn.execute("DELETE FROM chunks WHERE 1=0")  # harmless warm-up
+    def chunks_count(db: Path, wing: str) -> int:
+        conn = sqlite3.connect(db)
+        n = conn.execute(
+            "SELECT COUNT(*) FROM chunks WHERE drawer_id IN "
+            "(SELECT id FROM drawers WHERE wing=?)", (wing,)
+        ).fetchone()[0]
+        conn.close()
+        return n
+
+    assert chunks_count(palace, "wiki_target") == 40
+    # Do REAL partial work first: delete the target wing's chunks, then fail.
+    def failing_execute(conn, plan_, registry, registry_key):
+        conn.execute(
+            "DELETE FROM chunks WHERE drawer_id IN "
+            "(SELECT id FROM drawers WHERE wing=?)", ("wiki_target",)
+        )
         raise sqlite3.DatabaseError("simulated mid-transaction failure")
 
     monkeypatch.setattr(hr, "execute_deletions", failing_execute)
@@ -257,7 +314,8 @@ def test_rollback_on_failure(palace, monkeypatch, capsys):
         "--confirm", "--plan-hash", hr.plan_hash(plan),
     )
     assert rc == 1
-    # Rollback: everything is exactly as before.
+    # Rollback: the deleted chunks are restored and everything is as before.
+    assert chunks_count(palace, "wiki_target") == 40
     assert drawer_count(palace, "wiki_target") == 40
     out = capsys.readouterr()
     assert "rolled back" in out.err
@@ -266,9 +324,8 @@ def test_rollback_on_failure(palace, monkeypatch, capsys):
 
 def test_integrity_failure_inside_transaction_rolls_back(palace, monkeypatch):
     plan = hr.build_plan(palace, ["wiki_target"])
-    monkeypatch.setattr(
-        hr, "execute_deletions", lambda conn, plan_, registry: None
-    )
+    # Keep the real execute_deletions: the transaction performs actual
+    # deletions; only the integrity check result is faked to fail.
     # Corrupt integrity_check result by faking the connection check.
     real_connect = sqlite3.connect
 

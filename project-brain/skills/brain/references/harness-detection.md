@@ -32,6 +32,26 @@ ls ~/.openclaude/plugins/ 2>/dev/null && echo "OpenClaude plugins dir exists" ||
 ls ~/.claude/settings.json 2>/dev/null && echo "Claude Code settings exist" || echo "no Claude Code settings"
 ```
 
+## Locating the plugin root in `--plugin-dir` sessions (verified)
+
+In OpenClaude `--plugin-dir` sessions (plugin NOT installed from a
+marketplace), live verification found:
+
+- the plugin's `bin/` is NOT added to the session PATH — bare
+  `project-brain-*` commands exit 127;
+- `${CLAUDE_PLUGIN_ROOT}` appears literally (unsubstituted) in skill text
+  and is not exported to the Bash tool environment;
+- the marketplace cache/marketplace fallback paths do not exist.
+
+What DOES work: the harness prints
+`Base directory for this skill: <path>` directly above the delivered skill
+text. Do not count dirname levels by hand — take the first candidate among
+that path itself, its parent, and its grandparent that actually contains
+the plugin's `bin/` (validated, not assumed; a wrong depth guess cascades
+into a filesystem hunt that can end on a foreign copy of the plugin).
+Verify with `ls "$PLUGIN_ROOT/bin"`. If that line is absent too, stop and
+report — never hand-write `.brain/` files instead.
+
 ## Updating mempalace
 
 ### OpenClaude (plugin-managed)

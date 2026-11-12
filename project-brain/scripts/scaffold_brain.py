@@ -119,12 +119,15 @@ def generate_wiki_wing_name(
         WIKI_WING_PREFIX + base_slug + WING_SEPARATOR + moment.strftime("%Y%m%dT%H%M%S%fZ")  # higher precision
     )
     suffix = 2
+    # Materialize once, before the candidate loop: `taken` may be a one-shot
+    # iterator, and rebuilding the set inside the loop would silently see an
+    # exhausted iterator (empty taken set) from the second pass on.
+    taken_set = {t for t in taken if t}
     while True:
         candidates.append(
             WIKI_WING_PREFIX + base_slug + WING_SEPARATOR
             + moment.strftime(WING_TS_FORMAT) + WING_SEPARATOR + str(suffix)
         )
-        taken_set = {t for t in taken if t}
         for candidate in candidates:
             if candidate not in taken_set:
                 return candidate

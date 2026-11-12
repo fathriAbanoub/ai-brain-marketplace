@@ -3,13 +3,16 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import re
 import subprocess
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
+
+import lint_brain as lb
 
 FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 WIKILINK_RE = re.compile(r"\[\[([^\]|#]+)(?:[|#][^\]]*)?\]\]")
@@ -30,6 +33,34 @@ def rel(path: Path, root: Path) -> str:
         return str(path.relative_to(root))
     except ValueError:
         return str(path)
+
+
+def now_iso() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def inventory_state(root: Path) -> dict | None:
+    """Load .brain/inventory.json; None when absent, {"error": ...} when unusable."""
+    path = root / ".brain" / "inventory.json"
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except ValueError as exc:
+        return {"error": f"corrupt JSON: {exc}"}
+    if not isinstance(data, dict) or "completion" not in data or "summary" not in data:
+        return {"error": "missing completion/summary keys — rerun inventory"}
+    return data
+
+
+def page_sourced(fm: dict, text: str) -> bool:
+    """>=1 frontmatter source entry or >=1 inline citation."""
+    sources = fm.get("sources")
+    if isinstance(sources, list) and any(str(s).strip() for s in sources):
+        return True
+    if isinstance(sources, str) and sources.strip():
+        return True
+    return bool(lb.CITATION_RE.search(text))
 
 
 def extract_frontmatter(text: str) -> dict[str, object]:
@@ -323,17 +354,24 @@ def completeness(root: Path) -> tuple[int, str]:
         total_points += page_points
         max_points += sum(weights)
     score = round(total_points / max_points * 100) if max_points else 0
-    full = sum(
-        1 for p in pages
-        if (lambda t, fm: all([
-            bool(fm.get("title") or re.search(r"^#\s+", t, re.M)),
+    full = 0
+    for p in pages:
+        text = read(p)
+        fm = extract_frontmatter(text)
+        if not all([
+            bool(fm.get("title") or re.search(r"^#\s+", text, re.M)),
             bool(fm.get("type")),
-            bool(WIKILINK_RE.search(t)),
+            bool(WIKILINK_RE.search(text)),
             page_in_index(p, root, idx),
             bool(fm.get("status")),
-        ]))(read(p), extract_frontmatter(read(p)))
-    )
-    return score, f"{full}/{len(pages)} pages fully formed (weighted score)"
+        ]):
+            continue
+        # KD-12: brain-health-metrics requires >=1 source for active pages;
+        # draft pages are exempt.
+        if str(fm.get("status", "")).lower() != "draft" and not page_sourced(fm, text):
+            continue
+        full += 1
+    return score, f"{full}/{len(pages)} pages fully formed (weighted score; active pages need a source or citation)"
 
 
 def freshness(root: Path) -> tuple[int, str]:
@@ -383,19 +421,17 @@ def freshness(root: Path) -> tuple[int, str]:
 
 
 def coverage(root: Path) -> tuple[int, str]:
-    raw = root / ".brain" / "raw"
-    summaries = root / ".brain" / "wiki" / "sources"
-    if not raw.exists():
-        return 100, "no raw source directory"
-    raw_files = [p for p in raw.rglob("*") if p.is_file() and p.name != ".gitkeep"]
-    if not raw_files:
-        return 100, "0/0 raw sources require summaries"
-    summary_text = "\n".join(read(p) for p in summaries.rglob("*.md")) if summaries.exists() else ""
-    covered = 0
-    for p in raw_files:
-        if rel(p, root) in summary_text or p.name in summary_text or p.stem in summary_text:
-            covered += 1
-    return round(covered / len(raw_files) * 100), f"{covered}/{len(raw_files)} raw sources have wiki summaries"
+    """KD-12: coverage comes from the script-derived inventory — never 100 on
+    absent data. No inventory → 0 with the command that produces it."""
+    inv = inventory_state(root)
+    if inv is None:
+        return 0, "no inventory — run `project-brain-inventory <root> inventory`"
+    if inv.get("error"):
+        return 0, f"inventory unreadable ({inv['error']})"
+    c, s = inv["completion"], inv["summary"]
+    pct = round(c["weighted_coverage"] * 100)
+    return pct, (f"{s['covered']}/{s['units']} units covered, weighted {pct}% "
+                 f"(core uncovered: {len(c['core_uncovered'])})")
 
 
 def memory_sync(root: Path) -> tuple[int, str]:
@@ -439,6 +475,8 @@ def mempalace_wing_check(root: Path) -> tuple[str, str]:
     if source == "derived":
         return "warning", f"wing={wing} (derived — .brain/CLAUDE.md missing mempalace_wing)"
 
+    if wing.startswith(WIKI_WING_PREFIX):
+        return "ok", f"wing={wing} ({source})"
     # Check if both files declare mempalace_wing
     root_claude = root / "CLAUDE.md"
     brain_claude = root / ".brain" / "CLAUDE.md"
@@ -449,25 +487,20 @@ def mempalace_wing_check(root: Path) -> tuple[str, str]:
         text = other_file.read_text(encoding="utf-8")
         if re.search(r"mempalace_wing:\s*\S+", text):
             other_declares = True
-
-    if wing.startswith(WIKI_WING_PREFIX):
-        return "ok", f"wing={wing} ({source})"
     if wing.startswith(LEGACY_WIKI_WING_PREFIX):
-        msg = (
-            f"wing={wing} ({source}) uses the legacy hyphenated convention; "
-            f"MemPalace normalizes '-' to '_', so directory-derived and diary "
-            f"wings use '{WIKI_WING_PREFIX}'-style underscore names instead. "
-            f"To migrate: use mempalace_update_drawer to move drawers to "
-            f"'{WIKI_WING_PREFIX}{normalize_wing_slug(wing[len(LEGACY_WIKI_WING_PREFIX):])}', "
-            f"then update mempalace_wing in {source}"
+        slug_part = normalize_wing_slug(wing[len(LEGACY_WIKI_WING_PREFIX):])
+        prefix_note = (
+            f"uses the legacy hyphenated convention; MemPalace normalizes '-' to '_', "
+            f"so directory-derived and diary wings use '{WIKI_WING_PREFIX}'-style "
+            "underscore names instead"
         )
-        if other_declares:
-            msg += f" and change {other_source} to match"
-        msg += " — re-scaffolding alone preserves the old wing name"
-        return "warning", msg
+        target = f"{WIKI_WING_PREFIX}{slug_part}"
+    else:
+        prefix_note = f"does not start with '{WIKI_WING_PREFIX}'"
+        target = f"a '{WIKI_WING_PREFIX}'-prefixed name"
     msg = (
-        f"wing={wing} ({source}) does not start with '{WIKI_WING_PREFIX}'; "
-        f"to migrate: use mempalace_update_drawer to move drawers to the new wing name, "
+        f"wing={wing} ({source}) {prefix_note}. "
+        f"To migrate: use mempalace_update_drawer to move drawers to {target}, "
         f"then update mempalace_wing in {source}"
     )
     if other_declares:
@@ -476,36 +509,147 @@ def mempalace_wing_check(root: Path) -> tuple[str, str]:
     return "warning", msg
 
 
-def print_health(root: Path) -> None:
+def health_data(root: Path) -> dict:
     c, c_note = completeness(root)
     f, f_note = freshness(root)
     cov, cov_note = coverage(root)
     mem, mem_note = memory_sync(root)
-    total = round((c + f + cov + mem) / 4)
+    return {
+        "Completeness": {"score": c, "note": c_note},
+        "Freshness": {"score": f, "note": f_note},
+        "Coverage": {"score": cov, "note": cov_note},
+        "Memory sync": {"score": mem, "note": mem_note, "estimated": True},
+    }
+
+
+def print_health(root: Path) -> dict:
+    data = health_data(root)
+    total = round(sum(item["score"] for item in data.values()) / len(data))
     print()
     print(f"Project Brain Health: {total}/100")
-    for label, score, note, estimated in (
-        ("Completeness", c, c_note, False),
-        ("Freshness", f, f_note, False),
-        ("Coverage", cov, cov_note, False),
-        ("Memory sync", mem, mem_note, True),
-    ):
+    for label, item in data.items():
         flag = (
             "  ⚠ BELOW REPAIR THRESHOLD — report or repair, do not summarize as success"
-            if score < HEALTH_REPAIR_THRESHOLD
+            if item["score"] < HEALTH_REPAIR_THRESHOLD
             else ""
         )
-        est = " [estimated from logs]" if estimated else ""
-        print(f"  {label:13}{score:4}/100  ({note}){est}{flag}")
+        est = " [estimated from logs]" if item.get("estimated") else ""
+        print(f"  {label:13}{item['score']:4}/100  ({item['note']}){est}{flag}")
     print(
         f"  (scores below {HEALTH_REPAIR_THRESHOLD} require repair or an explicit explanation; "
         "see Self-correction scan in the brain skill)"
     )
+    return data
+
+
+def parse_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Print project-brain status, availability checks, and health metrics.")
+    parser.add_argument("project_root", nargs="?", default=None)
+    parser.add_argument("--strict", action="store_true",
+                        help="hard gate: exit nonzero unless every gate passes (lint errors 0, "
+                             "inventory complete); writes one receipt per run to .brain/audit/runs/")
+    parser.add_argument("--json", action="store_true", dest="as_json",
+                        help="print machine-readable JSON instead of human text")
+    return parser.parse_args(argv[1:])
+
+
+def strict_status(gates: dict) -> str:
+    if any(g["status"] == "could-not-run" for g in gates.values()):
+        return "partial"
+    if any(g["status"] == "failed" for g in gates.values()):
+        return "completed-with-findings"
+    return "passed-for-scope"
+
+
+def strict_gates(root: Path) -> dict:
+    """KD-13: the hard gate. A gate is passed/failed/could-not-run; --strict
+    exits 0 only when every gate passed. Lint errors cover citation drift,
+    staleness, forbidden all-clears, secrets, and index dupes in one gate."""
+    gates: dict[str, dict] = {}
+    try:
+        code, report = lb.build_report(root)
+        error_categories = sorted({i["category"] for i in report["issues"] if i["severity"] == "error"})
+        gates["lint_errors"] = {
+            "status": "passed" if code == 0 else "failed",
+            "detail": report["summary"],
+            "error_categories": error_categories,
+        }
+    except lb.VerificationCorruptError as exc:
+        gates["lint_errors"] = {"status": "failed",
+                                "detail": f"verification.json corrupt: {exc}",
+                                "error_categories": ["verification_corrupt"]}
+    inv = inventory_state(root)
+    if inv is None:
+        gates["coverage"] = {"status": "could-not-run",
+                             "detail": "inventory.json missing — run `project-brain-inventory <root> inventory`"}
+    elif inv.get("error"):
+        gates["coverage"] = {"status": "could-not-run", "detail": inv["error"]}
+    else:
+        gates["coverage"] = {"status": "passed" if inv["completion"]["complete"] else "failed",
+                             "detail": inv["completion"]}
+    return gates
+
+
+def write_receipt(root: Path, brain: Path, gates: dict, health: dict) -> Path:
+    """KD-13: one receipt per --strict run at .brain/audit/runs/<UTC-ts>/run.json."""
+    inv = inventory_state(root)
+    from scaffold_brain import plugin_identity  # type: ignore
+    version, _plugin_root = plugin_identity()
+    receipt = {
+        "timestamp": now_iso(),
+        "strict": True,
+        "status": strict_status(gates),
+        "target_commit": lb.git_head(root),
+        "plugin": {"name": "project-brain", "version": version},
+        "inventory_policy": inv.get("policy") if isinstance(inv, dict) else None,
+        "unit_counts": inv.get("summary") if isinstance(inv, dict) else None,
+        "health": health,
+        "lint": gates.get("lint_errors", {}).get("detail"),
+        "gates": gates,
+    }
+    run_dir = brain / "audit" / "runs" / datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    run_dir.mkdir(parents=True, exist_ok=True)
+    path = run_dir / "run.json"
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
+    return path
+
+
+def run_json_mode(root: Path, brain: Path, strict: bool) -> int:
+    payload = {
+        "project_root": str(root),
+        "brain_exists": brain.exists(),
+        "health": health_data(root) if brain.exists() else None,
+        "inventory": inventory_state(root),
+    }
+    if strict:
+        if not brain.exists():
+            payload["gates"] = {
+                "lint_errors": {"status": "could-not-run", "detail": "no .brain directory"},
+                "coverage": {"status": "could-not-run", "detail": "no .brain directory"},
+            }
+        else:
+            payload["gates"] = strict_gates(root)
+            write_receipt(root, brain, payload["gates"], payload["health"] or {})
+            note = lb.record_repair_round(root, strict_status(payload["gates"]) == "passed-for-scope",
+                                          gate=lb.GATE_DOCTOR_STRICT)
+            if note:
+                print(note, file=sys.stderr)
+        payload["status"] = strict_status(payload["gates"])
+    print(json.dumps(payload, indent=2))
+    if strict:
+        return 0 if payload["status"] == "passed-for-scope" else 1
+    return 0
 
 
 def main(argv: list[str]) -> int:
-    root = Path(argv[1]).expanduser().resolve() if len(argv) > 1 else Path.cwd()
+    args = parse_args(argv)
+    root = Path(args.project_root).expanduser().resolve() if args.project_root else Path.cwd()
     brain = root / ".brain"
+    if args.as_json:
+        return run_json_mode(root, brain, args.strict)
     plugins = read_enabled_plugins()
 
     from scaffold_brain import plugin_identity  # type: ignore
@@ -537,7 +681,8 @@ def main(argv: list[str]) -> int:
     if ok:
         print(f"✓ graphify CLI available ({ver})")
     else:
-        print("✗ graphify not on PATH — run: uv tool install graphify && graphify install")
+        print("✗ graphify CLI not on PATH (only the fallback builder — primary is the /graphify skill)")
+        print('  CLI install: uv tool install graphifyy')
 
     if any("obsidian" in p.lower() for p in plugins):
         print("✓ Obsidian plugin enabled in settings.json")
@@ -555,31 +700,64 @@ def main(argv: list[str]) -> int:
     if freshness == "fresh":
         print(f"✓ graphify freshness: {freshness_note}")
     else:
-        print(f"⚠ graphify stale: {freshness_note} — run `/graphify .`")
+        print(f"⚠ graphify stale: {freshness_note} — rebuild via the /graphify skill (primary); "
+              "CLI fallback: `graphify .` (set GRAPHIFY_BACKEND=none when no API access)")
 
     if brain.exists():
         print_health(root)
         severity, wing_note = mempalace_wing_check(root)
         glyph = {"ok": "✓", "warning": "⚠", "info": "ℹ"}.get(severity, "-")
         print(f"{glyph} MemPalace wing: {wing_note}")
-        print(
-            "ℹ MemPalace note: its session stop hook re-mines MEMPAL_DIR without --wing "
-            "(mining the project root into the directory-derived wing), so a wing with the "
-            "project's normalized directory name can reappear after a reset. This is "
-            "MemPalace's own hook behavior; never point the wiki wing at that name and "
-            "never mine the project root into the wiki wing."
-        )
         mempal_dir = os.environ.get("MEMPAL_DIR", "")
+        mempal_points_here = False
         if mempal_dir:
             try:
-                same_project = Path(mempal_dir).expanduser().resolve() == root
+                mempal_points_here = Path(mempal_dir).expanduser().resolve() == root
             except OSError:
-                same_project = False
-            if same_project:
+                mempal_points_here = False
+        # The stop-hook note is printed when it is actually relevant (MEMPAL_DIR
+        # set, or the wing check just flagged something) rather than on every run.
+        if mempal_dir or severity != "ok":
+            print(
+                "ℹ MemPalace note: its session stop hook re-mines MEMPAL_DIR without --wing "
+                "(mining the project root into the directory-derived wing), so a wing with the "
+                "project's normalized directory name can reappear after a reset. This is "
+                "MemPalace's own hook behavior; never point the wiki wing at that name and "
+                "never mine the project root into the wiki wing."
+            )
+            if mempal_points_here:
                 print(
-                    f"⚠ MEMPAL_DIR is this project root — MemPalace's stop hook will mine it "
+                    "⚠ MEMPAL_DIR is this project root — MemPalace's stop hook will mine it "
                     "into the directory-derived wing (normalized project name) on every session stop."
                 )
+
+        # KD-04: doctor prints the coverage work list from the inventory
+        inv = inventory_state(root)
+        if inv and not inv.get("error"):
+            uncovered = [u for u in inv.get("units", [])
+                         if u.get("status") == "uncovered" and u.get("tier") in ("core", "important")]
+            if uncovered:
+                print()
+                print("Coverage work list (uncovered core/important units):")
+                for u in uncovered:
+                    print(f"  [{u['tier']}] {u['path']}")
+
+    if args.strict:
+        if not brain.exists():
+            print("strict: no .brain directory — gates could not run", file=sys.stderr)
+            return 1
+        gates = strict_gates(root)
+        path = write_receipt(root, brain, gates, health_data(root))
+        print()
+        for name, g in gates.items():
+            print(f"strict gate {name}: {g['status']}")
+        print(f"strict status: {strict_status(gates)}")
+        print(f"receipt: {rel(path, root)}")
+        passed = all(g["status"] == "passed" for g in gates.values())
+        note = lb.record_repair_round(root, passed, gate=lb.GATE_DOCTOR_STRICT)
+        if note:
+            print(note, file=sys.stderr)
+        return 0 if passed else 1
 
     return 0
 

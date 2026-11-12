@@ -8,7 +8,72 @@ from pathlib import Path
 PLUGIN_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PLUGIN_ROOT / "scripts"))
 
-from doctor import graphify_freshness  # noqa: E402
+from doctor import graphify_freshness, print_health  # noqa: E402
+
+
+class TestDoctorBoundary:
+    """CodeRabbit #14: a sub-score of exactly 70 must pass (the doctor flags
+    strictly-below-70 only, and skill text says 'at or above 70' is done)."""
+
+    def test_score_70_is_not_flagged(self, capsys):
+        # completeness: 7/10 pages fully formed -> exactly 70.
+        import tempfile
+        root = Path(tempfile.mkdtemp())
+        brain = root / ".brain"
+        (brain / "wiki").mkdir(parents=True)
+        (brain / "wiki" / "index.md").write_text("# index\n", encoding="utf-8")
+        for i in range(10):
+            good = i < 7
+            page = brain / "wiki" / f"p{i}.md"
+            if good:
+                page.write_text(
+                    "---\ntitle: t\ntype: concept\nstatus: active\n---\n"
+                    f"# p{i}\n[[p0]] link\n",
+                    encoding="utf-8",
+                )
+                (brain / "wiki" / "index.md").open("a", encoding="utf-8").write(f"[[p{i}]]\n")
+            else:
+                page.write_text("", encoding="utf-8")  # 0 points: no heading/frontmatter
+        # Verify the score really is exactly 70 before asserting the boundary.
+        from doctor import completeness
+        score, _ = completeness(root)
+        assert score == 70, f"fixture drift: completeness={score}"
+        print_health(root)
+        out = capsys.readouterr().out
+        completeness_line = next(l for l in out.splitlines() if "Completeness" in l)
+        assert "BELOW REPAIR THRESHOLD" not in completeness_line
+
+    def test_score_below_70_is_flagged(self, capsys):
+        import tempfile
+        root = Path(tempfile.mkdtemp())
+        brain = root / ".brain"
+        (brain / "wiki").mkdir(parents=True)
+        (brain / "wiki" / "index.md").write_text("# index\n", encoding="utf-8")
+        for i in range(10):
+            good = i < 6
+            page = brain / "wiki" / f"p{i}.md"
+            if good:
+                page.write_text(
+                    "---\ntitle: t\ntype: concept\nstatus: active\n---\n"
+                    f"# p{i}\n[[p0]] link\n",
+                    encoding="utf-8",
+                )
+                (brain / "wiki" / "index.md").open("a", encoding="utf-8").write(f"[[p{i}]]\n")
+            else:
+                page.write_text("", encoding="utf-8")
+        from doctor import completeness
+        score, _ = completeness(root)
+        assert score < 70
+        print_health(root)
+        out = capsys.readouterr().out
+        completeness_line = next(l for l in out.splitlines() if "Completeness" in l)
+        assert "BELOW REPAIR THRESHOLD" in completeness_line
+
+    def test_lifecycle_doc_says_at_or_above(self):
+        """Skill text and doctor must agree on the boundary semantics."""
+        text = (PLUGIN_ROOT / "skills" / "brain" / "references" / "brain-lifecycle.md").read_text(encoding="utf-8")
+        assert "at or above 70" in text
+        assert "scores are above 70 or" not in text
 
 
 class TestDoctor:

@@ -13,6 +13,9 @@ Percentage of wiki pages that have all of:
 - at least one wikilink to another page,
 - an entry in `.brain/wiki/index.md`.
 
+Draft pages are exempt from the source requirement; a source means a
+`sources:` frontmatter entry or an inline `{{src ...}}` citation.
+
 This is calculable by `project-brain-lint` and summarized by `project-brain-doctor`.
 
 ## Freshness score (0-100)
@@ -26,9 +29,13 @@ Use frontmatter `updated:` when present. Fall back to file modification time.
 
 ## Coverage score (0-100)
 
-Percentage of project source files in `.brain/raw/` that have a corresponding wiki source summary page.
-
-A raw source is covered when a page in `.brain/wiki/sources/` cites or names the raw file path, pointer file, or source title.
+Weighted percentage of inventory units covered, from `.brain/inventory.json`
+(built by `project-brain-inventory <root> inventory`). A unit is covered when
+at least one non-draft wiki page with a substantive body cites it with a
+lint-valid `{{src ...}}` citation. Tiers are weighted core 5 / important 3 /
+reference 1; the strict gate requires all core units covered and weighted
+coverage ≥ 0.90. No inventory → 0, with the command that produces it — absent
+data is never scored as 100.
 
 ## Memory sync score (0-100)
 
@@ -54,9 +61,9 @@ Example:
 
 ```text
 Project Brain Health: 73/100
-  Completeness:   81/100  (17/21 pages fully formed)
+  Completeness:   81/100  (17/21 pages fully formed (weighted score; active pages need a source or citation))
   Freshness:      65/100  (session brief 9 days old, graphify 22 days old)
-  Coverage:       70/100  (7/10 raw sources have wiki summaries)
+  Coverage:       70/100  (14/20 units covered, weighted 70% (core uncovered: 2))
   Memory sync:    75/100  (MemPalace last written 2 sessions ago) [estimated from logs]
 ```
 

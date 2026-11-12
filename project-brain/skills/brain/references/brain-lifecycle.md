@@ -19,7 +19,7 @@ Use this order for serious work:
 After creating or updating wiki pages, do not stop. Run this post-wiki checklist:
 
 1. **Index**
-   - Update `.brain/wiki/index.md` so every page is listed exactly once.
+   - Regenerate `.brain/wiki/index.md` with `project-brain-lint <project-root> --reindex` so every page is listed exactly once (never by hand).
    - Add one-line summaries that help future agents decide what to read.
 
 2. **Cross-link**
@@ -36,6 +36,7 @@ After creating or updating wiki pages, do not stop. Run this post-wiki checklist
      - Reason starts with `"uncommitted changes to source files:"` → check what changed. If the reason says more paths follow (marker contains "more paths omitted"), run `git status` first to see the full list. Then decide: code-only changes use `graphify update .` (AST-only, no API cost); docs/images/comments changes use `/graphify .`
      - Any other stale reason → `/graphify .`
    - Wiki edits alone do NOT change the repo — skip graphify for wiki-only changes.
+   - After any full build, reconnect the graphify MCP server before querying it (it reads the graph at startup). The CLI is the fallback: set `GRAPHIFY_BACKEND=none` on BOTH `extract` and `cluster-only` when no API access (see `references/graphify-workflow.md`).
    - Read `graphify-out/GRAPH_REPORT.md`.
    - Promote stable graph findings into `.brain/wiki/architecture/` or `.brain/wiki/concepts/`.
    - Mark graph-only inferences as leads until confirmed from files or sources.
@@ -70,15 +71,16 @@ Actions:
 1. Run `project-brain-init <project-root> "<Project Name>"`.
 2. Read the created `.brain/CLAUDE.md` and `.brain/state/session-brief.md`.
 3. Read `references/mempalace-tools.md` before the first MemPalace call of this mode.
-4. Run `project-brain-doctor <project-root>`; read all four sub-scores (the doctor flags each one below the repair threshold, 70) and repair flagged ones per Self-correction scan or explain why not.
+4. Run `project-brain-doctor <project-root>`; read all four sub-scores (the doctor flags each one below the repair threshold, 70; a score of exactly 70 passes) and repair flagged ones per Self-correction scan or explain why not.
 5. Tell the user which optional dependencies are missing: MemPalace and graphify.
-6. Leftover-wing check (new brains only): after `mempalace_status`, call `mempalace_list_wings`; if any wing normalizes to this project's slug, its directory-derived wing, or the diary wing, tell the user and offer cleanup via the reset flow. Do not delete anything unasked.
+6. Leftover-wing check (new brains only): read the recorded `mempalace_wing` from the new `.brain/CLAUDE.md`, then call `mempalace_status` and after it `mempalace_list_wings`; if any wing matches the recorded brain wiki wing (exact name or normalized legacy forms), the brain diary wing, or the directory-derived wing, tell the user — showing each actual wing separately with its exact name and drawer count — and offer cleanup via the reset flow. Do not delete anything unasked. The wing classes and the orphan scan are defined in `wing-ownership.md`.
 7. Ingest the project's own primary sources (README, manifests, entry points) into `.brain/raw/` or pointer files.
-8. Compile wiki pages from those primary sources under Contracts 7 and 8 (read the actual files; no speculative language); update System Overview, source summaries, and the index.
+8. Compile wiki pages from those primary sources under Contracts 7 and 8 (read the actual files; no speculative language); update System Overview and source summaries, and regenerate the index with `project-brain-lint <project-root> --reindex`.
 9. Mine `.brain/wiki` into the wiki wing with an explicit `--wing` (dry run first).
-10. Run graphify only if the doctor says stale.
-11. Write the diary entry, update the session brief, append the log, run lint.
-12. Final report: what was done, what could not be done and why; doctor sub-score status. No user to-do list.
+10. Verify the mining landed before calling the memory layer done: confirm the exact recorded wing now exists with drawers (`mempalace_get_taxonomy`, or `mempalace_list_rooms` for that exact wing). Init records the wing name before mining runs, so a silent mining failure leaves a recorded name for a wing that does not exist — which later confuses reset. If the wing has no drawers, the memory layer is not done: say so in the final report with the failing step and the error, continue with the other layers, and state the next action — re-run the mining recipe, dry run first.
+11. Run graphify only if the doctor says stale.
+12. Write the diary entry, update the session brief, append the log, run lint.
+13. Final report: what was done, what could not be done and why; doctor sub-score status. No user to-do list.
 
 Done when:
 
@@ -115,7 +117,7 @@ Actions:
 2. Extract key claims, decisions, entities, relationships, code references, and uncertainties.
 3. Create a source summary under `.brain/wiki/sources/`.
 4. Update concept, architecture, entity, and decision pages.
-5. Update `.brain/wiki/index.md`.
+5. Regenerate `.brain/wiki/index.md` with `project-brain-lint <project-root> --reindex`.
 6. Run the post-wiki checklist.
 
 Done when:
@@ -152,7 +154,7 @@ Actions:
    - Reason starts with `"graphify-out/GRAPH_REPORT.md missing"` OR `"graph built at"` → `/graphify .` (full build, API cost)
    - Reason starts with `"uncommitted changes to source files:"` → check what changed. If the reason says more paths follow (marker contains "more paths omitted"), run `git status` first to see the full list. Then decide: code-only changes use `graphify update .` (AST-only, no API cost); docs/images/comments changes use `/graphify .`
    - Any other stale reason → `/graphify .`
-   After graphify runs, the doctor reports fresh until a source file changes again.
+   After graphify runs, the doctor reports fresh until a source file changes again. Reconnect the graphify MCP server after a full build (it reads the graph at startup); the CLI is the fallback, with `GRAPHIFY_BACKEND=none` on BOTH `extract` and `cluster-only` when no API access.
 3. Read `graphify-out/GRAPH_REPORT.md`.
 4. Identify god nodes, communities, surprising connections, and suggested questions.
 5. Update `.brain/wiki/architecture/System Overview.md` and related pages.
@@ -202,12 +204,12 @@ Done when:
 
 Goal: detect brain drift before it causes bad answers.
 
-Use when: the user asks "is the brain healthy?", "are things up to date?", or when `project-brain-doctor` shows health below the repair threshold (70/100) or any single sub-score below it. Also run autonomously at the start of any session longer than a few turns if the session brief is more than 7 days old.
+Use when: the user asks "is the brain healthy?", "are things up to date?", or when `project-brain-doctor` shows health below the repair threshold (70/100) or any single sub-score below it (a score of exactly 70 passes). Also run autonomously at the start of any session longer than a few turns if the session brief is more than 7 days old.
 
 Actions:
 
-1. Run `project-brain-doctor <project-root>` and read all four sub-scores, not just the total. The doctor marks every sub-score below 70 with `BELOW REPAIR THRESHOLD`.
-2. For each sub-score below 70, trigger the matching repair action:
+1. Run `project-brain-doctor <project-root>` and read all four sub-scores, not just the total. The doctor marks every sub-score below 70 with `BELOW REPAIR THRESHOLD` (exactly 70 passes).
+2. For each sub-score below 70, trigger the matching repair action (exactly 70 needs no repair):
 
    **Completeness below 70:**
    - Identify pages missing title, type, status, sources, wikilinks, or index entries.
@@ -232,7 +234,7 @@ Actions:
 
 Done when:
 
-- Doctor sub-scores are above 70 or all remaining issues are explicitly logged as open questions with a resolution plan.
+- Doctor sub-scores are at or above 70, or all remaining issues are explicitly logged as open questions with a resolution plan.
 
 ### Handoff
 

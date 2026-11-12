@@ -326,6 +326,8 @@ def test_hooks_json_command_survives_space_in_plugin_path(brain_repo: Path, tmp_
     (spaced_root / "scripts").mkdir()
     shutil.copytree(PLUGIN_ROOT / "hooks", spaced_root / "hooks", dirs_exist_ok=True)
     shutil.copy2(PLUGIN_ROOT / "scripts" / "doctor.py", spaced_root / "scripts" / "doctor.py")
+    # doctor imports lint_brain (single source of truth for citation checks)
+    shutil.copy2(PLUGIN_ROOT / "scripts" / "lint_brain.py", spaced_root / "scripts" / "lint_brain.py")
 
     hooks_json = json.loads((PLUGIN_ROOT / "hooks" / "hooks.json").read_text(encoding="utf-8"))
     cmd = hooks_json["hooks"]["SessionStart"][0]["hooks"][0]["command"]
@@ -627,6 +629,196 @@ def test_scaffold_generated_mempalace_namespace(tmp_path: Path):
                        capture_output=True, text=True, timeout=60)
     assert r.returncode == 0, r.stderr
     text = (proj / ".brain" / "CLAUDE.md").read_text(encoding="utf-8")
-    assert 'wing: "wiki_scaffold_proj"' in text
+    # New brains record a timestamped wing: wiki_<slug>_<UTC-timestamp>.
+    assert re.search(r'wing: "wiki_scaffold_proj_\d{8}T\d{6}Z"', text), text[:400]
     assert "mempalace_diary_read" in text
     assert "older" in text and "diary entries" in text
+
+
+# --- 0.10.0: wiki ledger auto-snapshot (PostToolUse) ---------------------------
+
+def _seed_ledger(root: Path) -> None:
+    """Create the wiki ledger with a baseline snapshot (as scaffold would)."""
+    sys.path.insert(0, str(PLUGIN_ROOT / "scripts"))
+    import wiki_ledger
+    ledger = wiki_ledger.WikiLedger(root)
+    ledger.init_ledger()
+    ledger.snapshot("baseline: test seed")
+
+
+def _ledger_log(root: Path) -> str:
+    sys.path.insert(0, str(PLUGIN_ROOT / "scripts"))
+    import wiki_ledger
+    ledger = wiki_ledger.WikiLedger(root)
+    return "\n".join(subject for _f, _s, _e, subject in ledger.log(10))
+
+
+def test_wiki_edit_takes_silent_auto_snapshot(brain_repo: Path, tmp_path: Path):
+    """A Write inside .brain/wiki/ stays silent toward context but commits
+    `auto: <tool> <page>` to the ledger."""
+    _seed_ledger(brain_repo)
+    _make_stale(brain_repo)
+    page = brain_repo / ".brain" / "wiki" / "x.md"
+    page.write_text("# x\n", encoding="utf-8")
+    env = base_env(state_dir=tmp_path / "state")
+    payload = json.dumps({"cwd": str(brain_repo), "tool_name": "Write",
+                          "tool_input": {"file_path": str(page)}})
+    r = run_hook(["post-tool-use"], payload, env)
+    assert r.returncode == 0
+    assert r.stdout.strip() == ""  # silent toward context (schema + throttle untouched)
+    log = _ledger_log(brain_repo)
+    assert "auto: Write x.md" in log
+    # The outer project repo was never touched by the snapshot.
+    outer = subprocess.run(["git", "-C", str(brain_repo), "status", "--porcelain"],
+                           capture_output=True, text=True, check=True).stdout
+    assert ".brain/state/wiki.git" in outer  # untracked, as expected
+
+
+def test_wiki_edit_creates_ledger_lazily(brain_repo: Path, tmp_path: Path):
+    """No ledger yet (pre-0.10.0 brain): the first wiki edit creates it."""
+    page = brain_repo / ".brain" / "wiki" / "lazy.md"
+    page.write_text("# lazy\n", encoding="utf-8")
+    env = base_env(state_dir=tmp_path / "state")
+    payload = json.dumps({"cwd": str(brain_repo), "tool_name": "Edit",
+                          "tool_input": {"file_path": ".brain/wiki/lazy.md"}})
+    r = run_hook(["post-tool-use"], payload, env)
+    assert r.returncode == 0
+    assert r.stdout.strip() == ""
+    assert "auto: Edit lazy.md" in _ledger_log(brain_repo)
+
+
+def test_notebook_edit_in_wiki_is_silent_without_snapshot(brain_repo: Path, tmp_path: Path):
+    """NotebookEdit is reminder-immune but not a wiki snapshot trigger."""
+    _seed_ledger(brain_repo)
+    env = base_env(state_dir=tmp_path / "state")
+    payload = json.dumps({"cwd": str(brain_repo), "tool_name": "NotebookEdit",
+                          "tool_input": {"notebook_path": str(brain_repo / ".brain" / "wiki" / "n.ipynb")}})
+    r = run_hook(["post-tool-use"], payload, env)
+    assert r.returncode == 0
+    assert r.stdout.strip() == ""
+    assert "auto:" not in _ledger_log(brain_repo)
+
+
+def test_wiki_edit_outside_project_not_snapshotted(brain_repo: Path, tmp_path: Path):
+    """The scoping rule from FIX 3 carries over: a .brain/wiki path OUTSIDE
+    the project root is neither immune nor snapshotted."""
+    _seed_ledger(brain_repo)
+    _make_stale(brain_repo)
+    foreign = tmp_path / "other" / ".brain" / "wiki" / "x.md"
+    foreign.parent.mkdir(parents=True)
+    foreign.write_text("# foreign\n", encoding="utf-8")
+    env = base_env(state_dir=tmp_path / "state")
+    payload = json.dumps({"cwd": str(brain_repo), "tool_name": "Write",
+                          "tool_input": {"file_path": str(foreign)}})
+    r = run_hook(["post-tool-use"], payload, env)
+    assert r.returncode == 0
+    assert "source changed" in json.loads(r.stdout)["hookSpecificOutput"]["additionalContext"]
+    assert "auto:" not in _ledger_log(brain_repo)
+
+
+def test_hooks_disabled_disables_wiki_snapshot(brain_repo: Path, tmp_path: Path):
+    page = brain_repo / ".brain" / "wiki" / "x.md"
+    page.write_text("# x\n", encoding="utf-8")
+    env = base_env(state_dir=tmp_path / "state", PROJECT_BRAIN_HOOKS_DISABLED="1")
+    payload = json.dumps({"cwd": str(brain_repo), "tool_name": "Write",
+                          "tool_input": {"file_path": str(page)}})
+    r = run_hook(["post-tool-use"], payload, env)
+    assert r.returncode == 0 and r.stdout.strip() == ""
+    assert not (brain_repo / ".brain" / "state" / "wiki.git").exists()
+
+
+def test_corrupt_ledger_never_breaks_the_hook(brain_repo: Path, tmp_path: Path):
+    """A corrupt ledger: silent, exit 0, session not blocked."""
+    ledger_dir = brain_repo / ".brain" / "state" / "wiki.git"
+    ledger_dir.mkdir(parents=True)
+    (ledger_dir / "HEAD").write_text("not a repository\n", encoding="utf-8")
+    page = brain_repo / ".brain" / "wiki" / "x.md"
+    page.write_text("# x\n", encoding="utf-8")
+    env = base_env(state_dir=tmp_path / "state")
+    payload = json.dumps({"cwd": str(brain_repo), "tool_name": "Write",
+                          "tool_input": {"file_path": str(page)}})
+    r = run_hook(["post-tool-use"], payload, env)
+    assert r.returncode == 0
+    assert r.stdout.strip() == ""
+
+
+def test_locked_ledger_never_blocks_the_hook(brain_repo: Path, tmp_path: Path):
+    """A held index.lock: the hook fails fast instead of hanging the session."""
+    _seed_ledger(brain_repo)
+    lock = brain_repo / ".brain" / "state" / "wiki.git" / "index.lock"
+    lock.write_text("", encoding="utf-8")
+    page = brain_repo / ".brain" / "wiki" / "x.md"
+    page.write_text("# x\n", encoding="utf-8")
+    env = base_env(state_dir=tmp_path / "state")
+    payload = json.dumps({"cwd": str(brain_repo), "tool_name": "Write",
+                          "tool_input": {"file_path": str(page)}})
+    start = time.monotonic()
+    r = run_hook(["post-tool-use"], payload, env)
+    assert r.returncode == 0
+    assert r.stdout.strip() == ""
+    assert time.monotonic() - start < 15, "a locked ledger must fail fast"
+
+
+def test_hook_snapshot_fits_inside_hook_timeout(brain_repo: Path, tmp_path: Path):
+    """hooks.json bounds the hook at 10 s; the snapshot deadline must sit
+    inside it (constant pin, not a timing race)."""
+    sys.path.insert(0, str(PLUGIN_ROOT / "scripts"))
+    import wiki_ledger
+    assert wiki_ledger.HOOK_LEDGER_DEADLINE_SECS < 10  # hooks.json timeout
+    timeout = json.loads((PLUGIN_ROOT / "hooks" / "hooks.json").read_text(encoding="utf-8"))
+    post = timeout["hooks"]["PostToolUse"][0]["hooks"][0]
+    assert post["timeout"] == 10
+
+
+# --- 0.10.0: SessionStart ledger line + launch-time snapshot clause ------------
+
+def test_session_start_ledger_line_with_uncommitted_pages(brain_repo: Path, tmp_path: Path):
+    _seed_ledger(brain_repo)
+    (brain_repo / ".brain" / "wiki" / "dirty.md").write_text("# dirty\n", encoding="utf-8")
+    env = base_env(state_dir=tmp_path / "state")
+    r = run_hook(["session-start"], json.dumps({"cwd": str(brain_repo)}), env)
+    ctx = json.loads(r.stdout)["hookSpecificOutput"]["additionalContext"]
+    # The pending work and the history pointer are reported separately.
+    assert "wiki ledger: 1 uncommitted" in ctx
+    assert "last snapshot" in ctx
+    assert "'baseline: test seed'" in ctx
+    assert len(ctx) <= brain_hooks_mod.MAX_CONTEXT_CHARS
+
+
+def test_session_start_without_ledger_has_no_ledger_line(brain_repo: Path, tmp_path: Path):
+    env = base_env(state_dir=tmp_path / "state")
+    r = run_hook(["session-start"], json.dumps({"cwd": str(brain_repo)}), env)
+    ctx = json.loads(r.stdout)["hookSpecificOutput"]["additionalContext"]
+    assert "wiki ledger:" not in ctx
+
+
+def test_session_start_states_launch_snapshot_semantics(brain_repo: Path, tmp_path: Path):
+    """The observed failure: the hook claimed a brain existed that had been
+    deleted before the first command. The status must say it is a snapshot."""
+    env = base_env(state_dir=tmp_path / "state")
+    r = run_hook(["session-start"], json.dumps({"cwd": str(brain_repo)}), env)
+    ctx = json.loads(r.stdout)["hookSpecificOutput"]["additionalContext"]
+    assert "launch-time snapshot" in ctx
+    assert "removed after launch" in ctx
+    assert "run init" in ctx
+
+
+def test_session_start_bounded_with_ledger_and_stale_graph(brain_repo: Path, tmp_path: Path):
+    """Worst case for the character bound: stale graph reason at full length
+    plus the ledger line must still fit inside MAX_CONTEXT_CHARS."""
+    _make_stale(brain_repo)
+    _seed_ledger(brain_repo)
+    for i in range(3):
+        (brain_repo / ".brain" / "wiki" / f"d{i}.md").write_text("# d\n", encoding="utf-8")
+    env = base_env(state_dir=tmp_path / "state")
+    r = run_hook(["session-start"], json.dumps({"cwd": str(brain_repo)}), env)
+    ctx = json.loads(r.stdout)["hookSpecificOutput"]["additionalContext"]
+    assert "wiki ledger:" in ctx and "harness:" in ctx
+    assert len(ctx) <= brain_hooks_mod.MAX_CONTEXT_CHARS
+
+
+def test_hooks_json_documents_the_wiki_snapshot():
+    text = (PLUGIN_ROOT / "hooks" / "hooks.json").read_text(encoding="utf-8")
+    assert "wiki ledger" in text
+    assert "auto-snapshot" in text
+    assert "wiki.git" in text

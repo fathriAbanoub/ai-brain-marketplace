@@ -3,29 +3,40 @@
 
 Two events, registered via hooks/hooks.json in this plugin:
 
-  session-start   Inject a SHORT brain status into context: .brain presence,
-                  graphify freshness (doctor's line), pointers to
-                  session-brief.md / index.md, harness label. Also fires on
-                  SessionStart source=compact, i.e. after context compaction.
-  post-tool-use   After Write/Edit/MultiEdit/NotebookEdit, if source files
-                  changed since the graph was built, emit a throttled reminder
-                  to update wiki pages, the graph (doctor decision rule), and
-                  the session diary.
+  session-start   Inject a SHORT brain status into context: .brain presence
+                  (a launch-time snapshot: if reads under .brain/ fail later,
+                  the brain was removed after launch — run init), graphify
+                  freshness (doctor's line), pointers to session-brief.md /
+                  index.md, one wiki-ledger line when a ledger exists, and
+                  the harness label. Also fires on SessionStart source=compact,
+                  i.e. after context compaction.
+  post-tool-use   After Write/Edit/MultiEdit/NotebookEdit: edits inside
+                  .brain/wiki/ take a silent auto-snapshot of the wiki ledger
+                  (message `auto: <tool> <page>`) and stay silent toward
+                  context; edits to source files that changed since the graph
+                  was built emit a throttled reminder to update wiki pages,
+                  the graph (doctor decision rule), and the session diary.
 
 Hard constraints (report Part 7):
   - Read-only toward MemPalace: this script NEVER invokes the mempalace CLI
     or MCP write tools. MemPalace's own hooks already write session
     transcripts into the palace; a second writer fails with exit code 1
-    ("palace ... is held by PID ...").
+    ("palace ... is held by PID ..."). The one thing this hook writes is the
+    wiki ledger inside .brain/state/wiki.git (scripts/wiki_ledger.py), never
+    the project's own git.
+  - A corrupt or locked wiki ledger must never break or block a session: the
+    snapshot is bounded by a deadline inside the hooks.json timeout and every
+    failure is swallowed (no output, exit 0).
   - Throttle state is per project (keyed by the resolved project root), so a
     reminder in project A never suppresses one in project B (0.9.2 fix).
-  - No network, standard library only (plus the plugin's own doctor.py).
+  - No network, standard library only (plus the plugin's own doctor.py and
+    wiki_ledger.py).
   - Bounded output (MAX_CONTEXT_CHARS), throttled + deduplicated reminders.
   - Silent no-op when .brain/ does not exist or anything fails; always exits
     0 so the session is never blocked or broken.
   - No secrets in output (paths, commit hashes, and doctor reason text only).
   - Env opt-out: set PROJECT_BRAIN_HOOKS_DISABLED to any non-empty value
-    other than "0".
+    other than "0" (disables the wiki auto-snapshot too).
 
 Payload/output shapes follow OpenClaude 0.33.0 (report Part 4): stdin JSON
 with session_id/transcript_path/cwd (+tool_name/tool_input for PostToolUse,
@@ -73,9 +84,14 @@ EVENT_POST_TOOL_USE = "post-tool-use"
 EVENTS = (EVENT_SESSION_START, EVENT_POST_TOOL_USE)
 BRAIN_DIR_NAME = ".brain"
 GRAPHIFY_OUT_DIR_NAME = "graphify-out"
+WIKI_DIR_NAME = "wiki"
 # Edits inside these directories ARE the remedy the reminder asks for, so
 # they must never trigger the reminder itself.
 REMINDER_IMMUNE_DIRS = frozenset({BRAIN_DIR_NAME, GRAPHIFY_OUT_DIR_NAME})
+# Wiki edits by these tools take a silent auto-snapshot of the wiki ledger.
+# NotebookEdit is reminder-immune but NOT snapshotted: .ipynb pages are not
+# wiki markdown pages.
+SNAPSHOT_TOOL_NAMES = frozenset({"Write", "Edit", "MultiEdit"})
 # PostToolUse tool_input keys that may carry the edited path. file_path is
 # verified for Edit/Write and notebook_path for NotebookEdit in OpenClaude
 # 0.33.0 (FileEditTool/types.ts:8, FileWriteTool/FileWriteTool.ts:58,
@@ -182,6 +198,55 @@ def edits_reminder_immune_dir(payload: dict, root: Path) -> bool:
     return bool(rel.parts) and rel.parts[0] in REMINDER_IMMUNE_DIRS
 
 
+def wiki_page_edited(payload: dict, root: Path) -> str | None:
+    """Wiki-relative page path when this edit touched <root>/.brain/wiki/,
+    else None. Same scoping rules as edits_reminder_immune_dir: an edited
+    path outside the project root does not count."""
+    edited = _edited_path(payload)
+    if edited is None:
+        return None
+    candidate = edited if edited.is_absolute() else root / edited
+    wiki = root / BRAIN_DIR_NAME / WIKI_DIR_NAME
+    try:
+        rel = candidate.resolve().relative_to(wiki.resolve())
+    except (ValueError, OSError):
+        return None
+    if not rel.parts:
+        return None
+    return rel.as_posix()
+
+
+def auto_snapshot_wiki(root: Path, tool: str, page: str) -> None:
+    """Silent auto-snapshot of the wiki ledger after a page edit.
+
+    Bounded: the ledger gets a total deadline inside the hooks.json timeout
+    (10 s), and every failure — git missing, ledger absent and uncreatable,
+    corrupt, or locked — is swallowed: the session is never blocked, output
+    stays empty, exit stays 0."""
+    try:
+        import wiki_ledger
+
+        ledger = wiki_ledger.WikiLedger(
+            root, deadline=time.monotonic() + wiki_ledger.HOOK_LEDGER_DEADLINE_SECS)
+        ledger.snapshot(f"{wiki_ledger.AUTO_SNAPSHOT_PREFIX}: {tool} {page}")
+    except Exception:
+        # ponytail: swallowed by contract (a hook must never break a
+        # session); ledger health is observable via project-brain-wiki
+        # status. Upgrade path: a debug log beside the hook state file.
+        pass
+
+
+def wiki_ledger_line(root: Path) -> str | None:
+    """One bounded ledger line for the SessionStart context; None without a
+    ledger or on any failure (absent line is the safe degradation)."""
+    try:
+        import wiki_ledger
+
+        return wiki_ledger.ledger_status_line(root)
+    except Exception:
+        return None
+
+
 def _state_path() -> Path:
     base = os.environ.get(PLUGIN_DATA_ENV)
     state_dir = Path(base).expanduser() if base else STATE_DIR_FALLBACK
@@ -218,18 +283,31 @@ def emit(event: str, text: str) -> None:
 
 def session_start_context(root: Path, payload: dict) -> str:
     freshness, reason = graphify_freshness(root)
+    reason = reason[:REASON_MAX_CHARS]
     if freshness == "fresh":
         graph_line = f"graphify: fresh ({reason})"
     else:
-        graph_line = f"graphify: STALE ({reason}) — follow the doctor decision rule: " \
-                     "code-only changes -> `graphify update .`; docs or missing report -> `/graphify .`"
+        # Skill-first policy (0.10.0): the /graphify skill is the primary
+        # builder (the agent runs the semantic pass itself); the CLI fallback
+        # detail lives in the plugin's SKILL.md Contract 2, not here — this
+        # line must leave room for the ledger line inside MAX_CONTEXT_CHARS.
+        graph_line = (f"graphify: STALE ({reason}) — refresh via the /graphify "
+                      "skill (primary); CLI fallback: SKILL.md Contract 2")
     lines = [
-        "project-brain: this project has a persistent brain in .brain/.",
+        # The observed failure mode: this status claimed a brain existed that
+        # had been deleted before the first command. State the snapshot
+        # semantics so a later read failure triggers init, not confusion.
+        "project-brain: brain found in .brain/ at launch. This status is a "
+        "launch-time snapshot: if reads under .brain/ fail, the brain was "
+        "removed after launch — run init.",
         "Read .brain/state/session-brief.md and .brain/wiki/index.md first; "
         "follow the recall rule in the plugin's SKILL.md step 7.",
         graph_line,
-        f"harness: {detect_harness(payload)}",
     ]
+    ledger_line = wiki_ledger_line(root)
+    if ledger_line:
+        lines.append(ledger_line)
+    lines.append(f"harness: {detect_harness(payload)}")
     return "\n".join(lines)
 
 
@@ -293,10 +371,11 @@ def post_tool_use_context(root: Path, payload: dict | None = None) -> str:
     return (
         "project-brain: source changed since the graph was built "
         f"({sig}). Before finishing this turn: update the relevant "
-        ".brain/wiki pages; refresh the graph per the doctor rule "
-        "(`graphify update .` for code-only, `/graphify .` for docs or a "
-        "missing report); write a session diary entry (mempalace_diary_write) "
-        "if session context changed."
+        ".brain/wiki pages; refresh the graph via the /graphify skill "
+        "(primary) or the CLI fallback per the doctor rule (`graphify update .` "
+        "for code-only, `graphify .` for docs or a missing report, with "
+        "GRAPHIFY_BACKEND=none when no API access); write a session diary "
+        "entry (mempalace_diary_write) if session context changed."
     )
 
 
@@ -314,6 +393,14 @@ def main(argv: list[str]) -> int:
         if event == EVENT_SESSION_START:
             emit(HOOK_EVENT_NAME_SESSION_START, session_start_context(root, payload))
         else:
+            # A wiki edit is the remedy, not a trigger: snapshot it silently
+            # (Write/Edit/MultiEdit only) and emit nothing.
+            page = wiki_page_edited(payload, root)
+            if page is not None:
+                tool = str(payload.get("tool_name", ""))
+                if tool in SNAPSHOT_TOOL_NAMES:
+                    auto_snapshot_wiki(root, tool, page)
+                return 0
             # Skip BEFORE any state or git work: an edit inside .brain/ or
             # graphify-out/ is the remedy, not a trigger.
             if edits_reminder_immune_dir(payload, root):

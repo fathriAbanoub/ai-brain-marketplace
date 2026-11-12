@@ -1,5 +1,5 @@
 {
-  "description": "project-brain awareness: inject brain status at session start (incl. after compaction) and throttle reminders to update wiki/graph/diary after source edits. Read-only toward MemPalace; silent no-op without .brain/; opt out with PROJECT_BRAIN_HOOKS_DISABLED=1.",
+  "description": "project-brain awareness: inject brain status at session start (incl. after compaction; a launch-time snapshot) and after source edits, throttled reminders to update wiki/graph/diary. Edits inside .brain/wiki/ take a silent auto-snapshot of the wiki ledger (.brain/state/wiki.git). Read-only toward MemPalace; silent no-op without .brain/; opt out with PROJECT_BRAIN_HOOKS_DISABLED=1.",
   "hooks": {
     "SessionStart": [
       {

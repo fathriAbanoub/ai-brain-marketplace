@@ -80,6 +80,35 @@ class TestCitationDrift:
         report = lint_json(run_script, proj)
         assert "citation_drift" in categories(report)
 
+    def test_empty_anchor_is_drift(self, run_script, tmp_project: Path):
+        """An empty anchor anchors nothing: it must fail like an absent anchor
+        instead of stamping the file as covered."""
+        proj = make_project_with_source(run_script, tmp_project, SOURCE_LINES)
+        write_page(proj / ".brain", "concepts/Empty.md",
+                   '# Empty\n\n{{src src/app.ts:10-12 ""}} claim.\n')
+        report = lint_json(run_script, proj)
+        assert "citation_drift" in categories(report)
+
+    def test_whitespace_only_anchor_is_drift(self, run_script, tmp_project: Path):
+        proj = make_project_with_source(run_script, tmp_project, SOURCE_LINES)
+        write_page(proj / ".brain", "concepts/Blank.md",
+                   '# Blank\n\n{{src src/app.ts:10-12 "   "}} claim.\n')
+        report = lint_json(run_script, proj)
+        assert "citation_drift" in categories(report)
+
+    def test_quoted_path_with_spaces_is_supported(self, run_script, tmp_project: Path):
+        """Core-file paths containing spaces (as produced by
+        brain_inventory.list_units) are citable via the quoted path form."""
+        proj = tmp_project / "cited-project"
+        (proj / "my docs").mkdir(parents=True)
+        (proj / "my docs" / "app.ts").write_text("\n".join(SOURCE_LINES) + "\n", encoding="utf-8")
+        result = run_script("scaffold_brain.py", [str(proj), "Cited Project"])
+        assert result.returncode == 0
+        write_page(proj / ".brain", "concepts/Spaced.md",
+                   '# Spaced\n\n{{src "my docs/app.ts":10-12 "line 10 of the source"}} claim.\n')
+        report = lint_json(run_script, proj)
+        assert "citation_drift" not in categories(report)
+
     def test_anchor_within_window_passes(self, run_script, tmp_project: Path):
         proj = make_project_with_source(run_script, tmp_project, SOURCE_LINES)
         # anchor text on line 13, cited range 10-12 → inside the 5-line window
@@ -279,10 +308,11 @@ class TestCitationParserFuzz:
             range_part = f"{start}" if end is None else f"{start}-{end}"
             text = f"{{{{src {path}:{range_part} \"{anchor}\"}}}}"
             matches = lb.CITATION_RE.findall(text)
-            # the regex either matches cleanly (1 group tuple) or not at all; it must never crash
+            # the regex either matches cleanly (one group tuple: quoted path,
+            # path, start, end, anchor) or not at all; it must never crash
             assert isinstance(matches, list)
             if matches:
-                assert len(matches[0]) == 4
+                assert len(matches[0]) == 5
 
     def test_fuzz_anchor_window_crlf(self, run_script, tmp_project: Path):
         """CRLF sources: anchor matching must be whitespace-normalized."""

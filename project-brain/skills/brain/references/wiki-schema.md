@@ -124,10 +124,14 @@ inline citation right next to it:
   literally appears in the cited range or within 5 lines after it
   (matching is whitespace-insensitive, so folded lines and CRLF sources still
   match; write `\n` for a line break inside an anchor).
+- Paths that contain spaces use a quoted path form — the quote goes around the
+  path only, the anchor keeps its own quotes:
+  `{{src "my docs/page.md":3 "anchorText"}}`. Unquoted paths must not contain
+  spaces or colons.
 - The linter parses citations with exactly one documented regex:
-  `\{\{src\s+([^:\s]+):(\d+)(?:-(\d+))?\s+"([^"]*)"\}\}`
-- `citation_drift` (error): cited file missing, range outside the file, or
-  anchor text not found in the window.
+  `\{\{src\s+(?:"([^"]+)"|([^:\s]+)):(\d+)(?:-(\d+))?\s+"([^"]*)"\}\}`
+- `citation_drift` (error): cited file missing, range outside the file, anchor
+  text not found in the window, or an empty/whitespace-only anchor.
 - Bare `file.ext:123` references without an anchor warn
   (`unanchored_line_ref`) — convert them to the full syntax.
 - The syntax does not collide with `[[wikilinks]]` and is harmless to

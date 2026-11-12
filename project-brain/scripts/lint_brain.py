@@ -76,7 +76,12 @@ INIT_HINT = 'run `project-brain-init <root> "<Project Name>"`'
 # --- WP4: citations, staleness, provenance (KD-01, KD-02, KD-07, KD-14) ---
 # Inline citation syntax (documented in skills/brain/references/wiki-schema.md):
 #     {{src path/to/file.ts:10-20 "anchorText"}}
-CITATION_RE = re.compile(r'\{\{src\s+([^:\s]+):(\d+)(?:-(\d+))?\s+"([^"]*)"\}\}')
+# Paths containing spaces use a quoted path form; the quote goes around the
+# path only, the anchor keeps its own quotes:
+#     {{src "my docs/page.md":3 "anchorText"}}
+CITATION_RE = re.compile(
+    r'\{\{src\s+(?:"([^"]+)"|([^:\s]+)):(\d+)(?:-(\d+))?\s+"([^"]*)"\}\}'
+)
 CITATION_ANCHOR_WINDOW_LINES = 5  # anchor must appear within this many lines after the cited range (mission constant)
 # ponytail: heuristic warn for bare `file.ext:NNN` refs (closed pattern); it
 # cannot catch prose claims with no line ref at all. Upgrade path: extend the
@@ -118,7 +123,7 @@ SECRET_PATTERNS: tuple[tuple[str, "re.Pattern[str]"], ...] = (
     ("slack token", re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b")),
 )
 SECRET_NAME_VALUE_RE = re.compile(
-    r"(?im)^[ \t]*([A-Za-z0-9_]*(?:SECRET|TOKEN|PASSWORD|API_KEY)[A-Za-z0-9_]*)[ \t]*=[ \t]*\S")
+    r"(?m)^[ \t]*([A-Za-z0-9_]*(?:SECRET|TOKEN|PASSWORD|API_KEY)[A-Za-z0-9_]*)[ \t]*=[ \t]*\S")
 
 
 class VerificationCorruptError(Exception):
@@ -806,7 +811,9 @@ def check_citations(root: Path, brain: Path, issues: list[dict], citation_state:
         for m in CITATION_RE.finditer(body):
             spans.append((m.start(), m.end()))
             info["has_citations"] = True
-            path_s, start_s, end_s, anchor = m.groups()
+            quoted_s, path_s, start_s, end_s, anchor = m.groups()
+            if quoted_s is not None:
+                path_s = quoted_s
             line_no = text.count("\n", 0, offset + m.start()) + 1
             target = root / path_s
             if not target.is_file():
@@ -823,7 +830,7 @@ def check_citations(root: Path, brain: Path, issues: list[dict], citation_state:
                 info["drift"] = True
                 continue
             window = "\n".join(lines[start - 1:end + CITATION_ANCHOR_WINDOW_LINES])
-            if norm_ws(anchor) not in norm_ws(window):
+            if not norm_ws(anchor) or norm_ws(anchor) not in norm_ws(window):
                 add(issues, "error", "citation_drift", p, root,
                     f'anchor text not found within {CITATION_ANCHOR_WINDOW_LINES} lines of {path_s}:{start}-{end} — locate the real lines with `grep -n "{anchor}" {path_s}` and re-cite the range they actually appear in, {VERIFY_HINT}', line_no)
                 info["drift"] = True
@@ -945,9 +952,16 @@ def check_all_clear_claims(root: Path, brain: Path, issues: list[dict], verifica
 
 
 def check_brain_secrets(root: Path, brain: Path, issues: list[dict]) -> None:
-    """KD-15: secrets must never live inside .brain/ (error; fails --strict)."""
+    """KD-15: secrets must never live inside .brain/ (error; fails --strict).
+
+    The wiki ledger's own object store (.brain/state/wiki.git) is skipped: it
+    is a bare git database, not user-authored content, and scanning its
+    packfiles produces noise, not findings."""
+    ledger_dir = brain / "state" / "wiki.git"
     for p in sorted(brain.rglob("*")):
         if not p.is_file() or p.name == ".gitkeep":
+            continue
+        if ledger_dir in p.parents:
             continue
         text = read(p)
         for label, pattern in SECRET_PATTERNS:

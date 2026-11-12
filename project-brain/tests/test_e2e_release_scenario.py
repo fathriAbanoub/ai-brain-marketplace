@@ -24,6 +24,10 @@ from pathlib import Path
 import pytest
 
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(PLUGIN_ROOT / "tests"))
+
+from conftest import GIT_REPO_LOCATION_ENV_VARS  # noqa: E402
+
 BIN = PLUGIN_ROOT / "bin"
 HOOK = PLUGIN_ROOT / "hooks" / "brain_hooks.py"
 SKILL = PLUGIN_ROOT / "skills" / "brain" / "SKILL.md"
@@ -42,7 +46,12 @@ def sh(cmd: list[str], cwd: Path | None = None, env: dict | None = None,
 
 
 def git(root: Path, *args: str) -> str:
-    r = sh(["git", "-C", str(root), *args])
+    # Strip inherited Git repository-location variables so every call targets
+    # the explicitly selected repository, never one inherited from the
+    # runner's environment.
+    env = {k: v for k, v in os.environ.items()
+           if k not in GIT_REPO_LOCATION_ENV_VARS}
+    r = sh(["git", "-C", str(root), *args], env=env)
     assert r.returncode == 0, r.stderr
     return r.stdout
 

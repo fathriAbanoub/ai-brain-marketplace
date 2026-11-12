@@ -37,6 +37,10 @@ _SPEC = importlib.util.spec_from_file_location("brain_hooks_under_test", HOOK)
 brain_hooks_mod = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(brain_hooks_mod)
 
+sys.path.insert(0, str(PLUGIN_ROOT / "tests"))
+
+from conftest import GIT_REPO_LOCATION_ENV_VARS  # noqa: E402
+
 # hookSpecificOutput union keys, transcribed from OpenClaude 0.33.0
 # src/types/hooks.ts:83-90 (SessionStart) and :100-106 (PostToolUse).
 SCHEMA_KEYS = {
@@ -668,9 +672,14 @@ def test_wiki_edit_takes_silent_auto_snapshot(brain_repo: Path, tmp_path: Path):
     assert r.stdout.strip() == ""  # silent toward context (schema + throttle untouched)
     log = _ledger_log(brain_repo)
     assert "auto: Write x.md" in log
-    # The outer project repo was never touched by the snapshot.
+    # The outer project repo was never touched by the snapshot. Strip
+    # inherited Git repository-location variables so this status call targets
+    # the outer repo at brain_repo, never a repo inherited from the runner.
+    outer_env = {k: v for k, v in os.environ.items()
+                 if k not in GIT_REPO_LOCATION_ENV_VARS}
     outer = subprocess.run(["git", "-C", str(brain_repo), "status", "--porcelain"],
-                           capture_output=True, text=True, check=True).stdout
+                           capture_output=True, text=True, check=True,
+                           env=outer_env).stdout
     assert ".brain/state/wiki.git" in outer  # untracked, as expected
 
 

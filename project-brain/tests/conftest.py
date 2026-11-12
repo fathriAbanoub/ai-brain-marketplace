@@ -7,6 +7,15 @@ from typing import Any, Dict
 
 import pytest
 
+# Git environment variables that redirect git at a different repository or
+# object store. Tests strip them so a git call targets the explicitly selected
+# repository, never one inherited from the runner's environment.
+GIT_REPO_LOCATION_ENV_VARS = (
+    "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY", "GIT_COMMON_DIR",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NAMESPACE",
+)
+
 
 @pytest.fixture
 def tmp_project(tmp_path: Path) -> Path:

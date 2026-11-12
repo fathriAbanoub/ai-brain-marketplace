@@ -14,7 +14,7 @@ Use this every time the agent writes or edits wiki pages.
   - Reason starts with `"uncommitted changes to source files:"` → check what changed. If the reason says more paths follow (marker contains "more paths omitted"), run `git status` first to see the full list. Then decide: code-only changes use `graphify update .` (AST-only, no API cost); docs/images/comments changes use `/graphify .`
   - Any other stale reason → `/graphify .`
   Wiki edits alone do NOT change the repo — skip graphify for wiki-only changes.
-  After a full build, reconnect the graphify MCP server before querying it (it reads the graph at startup); the CLI is the fallback, with `GRAPHIFY_BACKEND=none` on BOTH `extract` and `cluster-only` when no API access (see `references/graphify-workflow.md`).
+  After ANY change to graph.json (full build or incremental `graphify update .`), reconnect the graphify MCP server before querying it (it reads the graph at startup); the CLI is the fallback, with `GRAPHIFY_BACKEND=none` on BOTH `extract` and `cluster-only` when no API access (see `references/graphify-workflow.md`).
 - [ ] Update `.brain/state/session-brief.md` if project understanding changed.
 - [ ] Append a log entry in `.brain/log/YYYYMMDD.md`.
 

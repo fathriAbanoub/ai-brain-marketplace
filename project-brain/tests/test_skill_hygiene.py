@@ -233,7 +233,7 @@ class TestGraphifySkillClaimLabeling:
             assert "no extra" not in text.lower(), (
                 f"{path}: the unverified 'no extra packages' claim must not return"
             )
-            assert "no API key" not in text.lower(), (
+            assert "no api key" not in text.lower(), (
                 f"{path}: the unverified 'no API key' claim must not return"
             )
             assert "verify on first use" in text, (
@@ -276,7 +276,7 @@ class TestGraphifyDocsPolicy:
             assert f"`{tool}`" in text, f"graphify-mcp tool `{tool}` undocumented"
         assert "reconnect" in text.lower(), (
             "the server reads the graph at startup, so the reconnect step "
-            "after the first build must be documented"
+            "after any change to graph.json must be documented"
         )
         # Documented CLI equivalents (fallback mapping).
         for mapping in ("graphify query", "graphify path", "graphify explain"):

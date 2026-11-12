@@ -77,12 +77,13 @@ server's `mcp__…` prefix):
 | `list_prs` | PR impact listing | — |
 | `triage_prs` | PR triage over the graph | — |
 
-**Reconnect after the first build.** The server reads `graph.json` at startup,
-so a graph built later in the same session is invisible to it. After the
-FIRST successful build (or any full rebuild), reconnect the graphify MCP
-server (restart the session or reconnect the server) before using the query
-tools. Until then, use the CLI fallback or read
-`graphify-out/GRAPH_REPORT.md` directly.
+**Reconnect after anything that changes graph.json.** The server reads
+`graph.json` at startup, so a graph built or updated later in the same
+session is invisible to it. Reconnect the graphify MCP server (restart the
+session or reconnect the server) before using the query tools after ANY
+operation that rewrote graph.json — the FIRST successful build, any full
+rebuild, AND any incremental update (`graphify update .`). Until then, use
+the CLI fallback or read `graphify-out/GRAPH_REPORT.md` directly.
 
 **If the MCP tools are neither in the tool list nor the deferred list:** the
 graph probably does not exist yet — build it via the `/graphify` skill first,

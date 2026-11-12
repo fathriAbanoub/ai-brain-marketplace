@@ -77,8 +77,32 @@ WALK_SKIP_DIRS = {".git", ".brain", "graphify-out", "node_modules", "__pycache__
                   "vendor", "dist", "build", ".venv"}
 BACKTICK_RE = re.compile(r"`([^`\n]+)`")
 # path-like backtick content: has a slash, or is a name.ext with a letter-leading ext
-# (digit-leading extensions like 1.2 are version numbers, not paths)
+# (digit-leading extensions like 1.2 are version numbers, not paths).
+# The crossref check further requires a bare name.ext to carry a KNOWN
+# extension (CODE_EXTS plus the documentation/configuration conventions the
+# plugin itself uses) so ordinary dotted identifiers (config.settings) are
+# not reported missing, and skips scoped package identities (@scope/pkg).
 PATHLIKE_RE = re.compile(r"^(?:[\w.@+-]+(?:/[\w.@+-]+)+|[\w.-]+\.[A-Za-z][A-Za-z0-9]{0,7})$")
+DOC_CONFIG_EXTS = {".md", ".markdown", ".rst", ".txt", ".json", ".yaml", ".yml",
+                   ".toml", ".ini", ".cfg", ".xml", ".html"}
+KNOWN_REF_EXTS = CODE_EXTS | DOC_CONFIG_EXTS
+# glob_match pattern tokens (inventory-policy.json globs). GLOB_DIR_ANY leads
+# a pattern and means zero or more whole path segments; a single '*' or '?'
+# never crosses '/'.
+GLOB_DIR_ANY = "**/"
+GLOB_ANY = "**"
+
+
+def is_pathlike_ref(ref: str) -> bool:
+    """True when a backticked reference should be verified as a project path."""
+    if not PATHLIKE_RE.match(ref):
+        return False
+    if ref.startswith("@"):  # scoped package identity (@scope/pkg), not a path
+        return False
+    if "/" in ref:
+        return True  # multi-segment reference: genuine file-path shape
+    _stem, dot, ext = ref.rpartition(".")
+    return bool(dot) and ("." + ext.lower()) in KNOWN_REF_EXTS
 
 
 def now_iso() -> str:
@@ -100,10 +124,25 @@ def atomic_write_json(path: Path, data: dict) -> None:
 
 
 def glob_match(path_posix: str, pattern: str) -> bool:
-    # ponytail: fnmatch translation — '*' crosses '/', so '**' adds nothing;
-    # no brace expansion. Upgrade path: a real glob library if patterns grow.
-    pat = pattern.replace("**/", "*").replace("/**", "/*").replace("**", "*")
-    return fnmatch.fnmatch(path_posix, pat)
+    # ponytail: regex translation — '**/' = zero or more whole path segments;
+    # a single '*' or '?' never crosses '/'; no brace expansion; '[...]'
+    # character classes are literal here where fnmatch supported them (the
+    # shipped inventory-policy.json uses none). Upgrade path: a real glob
+    # library if patterns grow.
+    out: list[str] = []
+    i = 0
+    while i < len(pattern):
+        if pattern.startswith(GLOB_DIR_ANY, i):
+            out.append("(?:.*/)?"); i += len(GLOB_DIR_ANY)
+        elif pattern.startswith(GLOB_ANY, i):
+            out.append(".*"); i += len(GLOB_ANY)
+        elif pattern[i] == "*":
+            out.append("[^/]*"); i += 1
+        elif pattern[i] == "?":
+            out.append("[^/]"); i += 1
+        else:
+            out.append(re.escape(pattern[i])); i += 1
+    return re.fullmatch("".join(out), path_posix) is not None
 
 
 def load_policy() -> tuple[dict, Path]:
@@ -376,7 +415,7 @@ def cmd_crossrefs(root: Path) -> int:
         text = doc.read_text(encoding="utf-8", errors="replace")
         for ref in BACKTICK_RE.findall(text):
             ref = ref.strip()
-            if ref.startswith(("http://", "https://", "~", "/")) or not PATHLIKE_RE.match(ref):
+            if ref.startswith(("http://", "https://", "~", "/")) or not is_pathlike_ref(ref):
                 continue
             checked += 1
             if (root / ref).exists() or (doc.parent / ref).exists():

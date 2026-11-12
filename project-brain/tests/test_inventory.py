@@ -95,12 +95,25 @@ class TestInventoryBuild:
         (proj / "node_modules" / "pkg").mkdir(parents=True)
         (proj / "node_modules" / "pkg" / "i.js").write_text("x\n", encoding="utf-8")
         (proj / "package-lock.json").write_text("{}\n", encoding="utf-8")
+        # Deny-glob regression: a directory whose name merely CONTAINS a deny
+        # word must never be excluded (the old fnmatch translation turned
+        # '**/build/**' into '*build/*', which also matched src/rebuild/...).
+        (proj / "src" / "rebuild").mkdir(parents=True, exist_ok=True)
+        (proj / "src" / "rebuild" / "engine.ts").write_text("export const rebuild = 1;\n",
+                                                            encoding="utf-8")
+        (proj / "tools" / "prebuild").mkdir(parents=True, exist_ok=True)
+        (proj / "tools" / "prebuild" / "main.py").write_text("print('pre')\n", encoding="utf-8")
         run_inventory(run_script, proj)
-        paths = set(units_by_path(load_inventory(proj)))
+        inv = load_inventory(proj)
+        paths = set(units_by_path(inv))
         assert not any(p.endswith(".env") for p in paths)
         assert "cert.pem" not in paths
         assert "package-lock.json" not in paths
         assert not any(p.startswith("node_modules/") for p in paths)
+        # ...but the deny-word-in-name source units stay in, tier core.
+        assert "src/rebuild/engine.ts" in paths
+        assert units_by_path(inv)["src/rebuild/engine.ts"]["tier"] == "core"
+        assert "tools/prebuild/main.py" in paths
 
     def test_git_listing_tracked_untracked_ignored(self, run_script, tmp_project: Path):
         proj = make_source_project(run_script, tmp_project)

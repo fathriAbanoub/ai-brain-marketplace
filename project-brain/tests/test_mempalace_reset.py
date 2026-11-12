@@ -43,13 +43,21 @@ def test_batches_smaller_than_limit_is_one_batch():
 
 # --- pagination ---------------------------------------------------------------
 
+# Seeded record counts derive from PAGE_LIMIT: PAGINATION_TEST_PAGES whole pages
+# plus a remainder, so every page is exercised including a partial one, and the
+# tests keep testing pagination if PAGE_LIMIT ever changes.
+PAGINATION_TEST_PAGES = 2
+PAGINATION_TEST_REMAINDER = 50
+
+
 def test_collect_drawer_ids_paginates_over_multiple_pages():
     palace = MockPalace()
-    for i in range(250):
+    count = PAGINATION_TEST_PAGES * mr.PAGE_LIMIT + PAGINATION_TEST_REMAINDER
+    for i in range(count):
         palace.add_drawer("wiki_ts_a", room="general", drawer_id=f"d{i}")
     enum = mr.collect_drawer_ids(palace, "wiki_ts_a")
-    assert len(enum.ids) == 250
-    assert enum.pages == 3  # 100 + 100 + 50
+    assert len(enum.ids) == count
+    assert enum.pages == PAGINATION_TEST_PAGES + 1  # whole pages + the remainder
     assert enum.duplicates_found == 0
 
 
@@ -260,15 +268,19 @@ def test_cleanup_graph_exact_names_not_normalized():
     """Two distinct wings that normalize identically must not be conflated:
     only the exact requested name's records are deleted."""
     palace = MockPalace()
+    palace.add_wing("demo-app")
     palace.add_wing("demo_app")
-    palace.add_wing("demo__app")
+    palace.add_drawer("demo-app")
     palace.add_drawer("demo_app")
-    palace.add_drawer("demo__app")
-    palace.add_tunnel("t1", "demo_app", "elsewhere")
-    palace.add_tunnel("t2", "demo__app", "elsewhere")
+    palace.add_tunnel("t1", "demo-app", "elsewhere")
+    palace.add_tunnel("t2", "demo_app", "elsewhere")
+    # The two names normalize identically (both -> demo_app) but are distinct
+    # wings; only the exact confirmed target's records are cleaned.
+    assert mr.normalize_wing_for_compare("demo-app") == mr.normalize_wing_for_compare("demo_app")
     report = mr.cleanup_graph(palace, ["demo_app"])
-    assert "tunnel:t1" in report.deleted
-    assert "t2" in palace.tunnels
+    assert "tunnel:t2" in report.deleted
+    # The unconfirmed normalized twin's tunnel remains after cleanup.
+    assert "t1" in palace.tunnels
 
 
 def test_cleanup_graph_surviving_records_after_wing_vanished():
@@ -302,6 +314,96 @@ def test_cleanup_graph_failure_tracked_separately():
     report = mr.cleanup_graph(broken, ["w"])
     assert "tunnel:t1" in report.failed
     assert "t1" in broken.tunnels  # preserved, not silently claimed deleted
+
+
+def test_cleanup_graph_pages_through_all_hallway_pages():
+    """Hallway collection and post-deletion verification must advance through
+    every list_hallways page so later-page hallways are cleaned too."""
+    palace = MockPalace()
+    palace.add_wing("wiki_target")
+    palace.add_wing("other_wing")
+    palace.add_drawer("other_wing")
+    count = PAGINATION_TEST_PAGES * mr.PAGE_LIMIT + PAGINATION_TEST_REMAINDER
+    for i in range(count):
+        palace.add_hallway(f"h{i}", "wiki_target")
+    palace.add_hallway("h_other", "other_wing")
+    assert len(palace.hallways) == count + 1
+    report = mr.cleanup_graph(palace, ["wiki_target"])
+    assert len(report.deleted) == count
+    assert report.remaining_in_scope == []
+    assert "h_other" in palace.hallways  # out-of-scope record preserved
+
+
+class ListingOutage:
+    """Delegates to a palace but fails the graph listing calls independently."""
+
+    def __init__(self, palace, fail_tunnels: bool = False, fail_hallways: bool = False):
+        self._palace = palace
+        self._fail_tunnels = fail_tunnels
+        self._fail_hallways = fail_hallways
+
+    def __getattr__(self, name):
+        return getattr(self._palace, name)
+
+    def list_tunnels(self, wing=None):
+        if self._fail_tunnels:
+            raise MCPOutage("tunnels listing unavailable")
+        return self._palace.list_tunnels(wing)
+
+    def list_hallways(self, wing=None, limit=100, offset=0):
+        if self._fail_hallways:
+            raise MCPOutage("hallways listing unavailable")
+        return self._palace.list_hallways(wing, limit, offset)
+
+
+def test_cleanup_graph_listing_failure_is_reported_not_success():
+    """A failed post-deletion re-listing must count as cleanup failure."""
+    palace = MockPalace()
+    palace.add_wing("w")
+    palace.add_drawer("w")
+    palace.add_tunnel("t1", "w", "x")
+    report = mr.cleanup_graph(ListingOutage(palace, fail_tunnels=True), ["w"])
+    assert "<list_tunnels>" in report.failed
+    assert "tunnel:t1" not in report.deleted
+
+
+def test_run_normal_reset_listing_failures_independent():
+    """A tunnels-listing failure makes the tunnel postcondition unsuccessful
+    while the hallway postcondition is judged on its own listing."""
+    palace = MockPalace()
+    for i in range(2):
+        palace.add_drawer("wiki_w", drawer_id=f"d{i}")
+    palace.add_tunnel("t1", "wiki_w", "x")
+    palace.add_hallway("h1", "wiki_w")
+    report = mr.run_normal_reset(ListingOutage(palace, fail_tunnels=True), ["wiki_w"])
+    assert report.drawer_success is True
+    assert report.tunnel_success is False
+    assert report.hallway_success is True
+    assert report.overall_success is False
+
+    palace2 = MockPalace()
+    for i in range(2):
+        palace2.add_drawer("wiki_w", drawer_id=f"d{i}")
+    palace2.add_tunnel("t1", "wiki_w", "x")
+    palace2.add_hallway("h1", "wiki_w")
+    report2 = mr.run_normal_reset(ListingOutage(palace2, fail_hallways=True), ["wiki_w"])
+    assert report2.drawer_success is True
+    assert report2.tunnel_success is True
+    assert report2.hallway_success is False
+    assert report2.overall_success is False
+
+
+def test_wing_drawer_count_exact_absence_not_twin_substituted():
+    """When the exact confirmed wing is absent from list_wings, verification
+    reports absence — it never counts a normalized twin's drawers."""
+    palace = MockPalace()
+    palace.add_wing("wiki-demo-app")
+    for i in range(3):
+        palace.add_drawer("wiki-demo-app", drawer_id=f"x{i}")
+    assert mr.normalize_wing_for_compare("wiki_demo_app") == mr.normalize_wing_for_compare("wiki-demo-app")
+    wing_absent, count, evidence = mr._wing_drawer_count(palace, "wiki_demo_app")
+    assert wing_absent is True
+    assert count == 0
 
 
 # --- full workflow -----------------------------------------------------------------

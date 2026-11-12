@@ -332,7 +332,11 @@ variable is set. See the reset skill's "re-creation hazard" section.
 4. Continue with the remaining confirmed wings, then clean up in-scope
    tunnels (`mempalace_list_tunnels` → `mempalace_delete_tunnel`) and
    hallways (`mempalace_list_hallways` → `mempalace_delete_hallway`), then
-   re-verify. A vanished wing never aborts the reset.
+   re-verify. Paginate `mempalace_list_hallways` exactly like
+   `mempalace_list_drawers` — `limit: 100`, `offset` advancing by 100 until a
+   page returns fewer than 100 — in BOTH the collection pass and the
+   re-verification pass, so later-page hallways are included. A vanished wing
+   never aborts the reset.
 
 The canonical, tested implementation of this loop is
 `scripts/mempalace_reset.py`; the `/project-brain:reset` skill mirrors it step

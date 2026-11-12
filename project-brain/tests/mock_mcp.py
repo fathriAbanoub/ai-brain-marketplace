@@ -141,9 +141,12 @@ class MockPalace:
             return {"tunnel_id": tunnel_id, "deleted": True}
         return {"tunnel_id": tunnel_id, "deleted": False, "error": "tunnel not found"}
 
-    def list_hallways(self, wing: str | None = None, limit: int = 100, offset: int = 0) -> dict:
+    def list_hallways(self, wing: str | None = None, limit: int = PAGE_LIMIT, offset: int = 0) -> dict:
+        """Paginated listing: a page returns at most `limit` records so the
+        reset's offset walk is exercised against multiple pages."""
         hallways = [h for h in self.hallways.values() if wing is None or h.wing == wing]
-        return {"hallways": [h.__dict__ for h in hallways]}
+        page = hallways[offset : offset + limit]
+        return {"hallways": [h.__dict__ for h in page], "total": len(hallways)}
 
     def delete_hallway(self, hallway_id: str) -> dict:
         if hallway_id in self.hallways:
@@ -171,6 +174,7 @@ class FlakyDeleteDrawers:
         return self._palace.delete_drawers(drawer_ids)
 
 
+@dataclass
 class PartialFailurePalace(MockPalace):
     """delete_drawers reports per-ID errors for IDs in its failure set and
     leaves those drawers in place (simulates server-side per-drawer refusal

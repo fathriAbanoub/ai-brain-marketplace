@@ -563,14 +563,9 @@ def _wing_drawer_count(mcp: McpLike, wing: str) -> tuple[bool, int, str]:
         else:
             actual_names.append(str(w))
     if wing not in actual_names:
-        # The recorded name may normalize differently from the actual wing.
-        # Check normalized matches too — but only treat an *exact* absence as
-        # absence; a normalized twin is verified via its own drawer count.
-        target = normalize_wing_for_compare(wing)
-        twins = [n for n in actual_names if normalize_wing_for_compare(n) == target]
-        if not twins:
-            return True, 0, f"wing {wing!r} absent from list_wings ({len(actual_names)} wings remain)"
-        wing = twins[0]
+        # Targets are exact, user-confirmed names; a normalized twin is a
+        # distinct wing and must never stand in for the target.
+        return True, 0, f"wing {wing!r} absent from list_wings ({len(actual_names)} wings remain)"
     taxonomy = call_with_retry(mcp.get_taxonomy, "get_taxonomy")
     wings_raw = _unwrap(taxonomy, "wings") or []
     for w in wings_raw:
@@ -582,13 +577,29 @@ def _wing_drawer_count(mcp: McpLike, wing: str) -> tuple[bool, int, str]:
     rooms_result = call_with_retry(lambda: mcp.list_rooms(wing=wing), f"list_rooms({wing!r})")
     rooms_raw = _unwrap(rooms_result, "rooms") or []
     total = 0
-    for r in rooms_raw:
-        room = str(r.get("name")) if isinstance(r, dict) else str(r)
+    if rooms_raw:
+        for r in rooms_raw:
+            room = str(r.get("name")) if isinstance(r, dict) else str(r)
+            offset = 0
+            while True:
+                result = call_with_retry(
+                    lambda rm=room, o=offset: mcp.list_drawers(wing=wing, room=rm, limit=PAGE_LIMIT, offset=o),
+                    f"list_drawers(wing={wing!r}, room={room!r}, offset={offset})",
+                )
+                items = _unwrap(result, "drawers") or []
+                total += len(items)
+                if len(items) < PAGE_LIMIT:
+                    break
+                offset += PAGE_LIMIT
+    else:
+        # Rooms listing came back empty: match collect_drawer_ids' empty-room
+        # handling and probe the wing-level listing, so an unroomed wing is
+        # not misread as empty.
         offset = 0
         while True:
             result = call_with_retry(
-                lambda rm=room, o=offset: mcp.list_drawers(wing=wing, room=rm, limit=PAGE_LIMIT, offset=o),
-                f"list_drawers(wing={wing!r}, room={room!r}, offset={offset})",
+                lambda o=offset: mcp.list_drawers(wing=wing, room="", limit=PAGE_LIMIT, offset=o),
+                f"list_drawers(wing={wing!r}, room='', offset={offset})",
             )
             items = _unwrap(result, "drawers") or []
             total += len(items)
@@ -669,11 +680,41 @@ def _hallway_wings(record: dict) -> set[str]:
     return wings
 
 
+def _list_hallways_paginated(mcp: McpLike) -> list[dict]:
+    """Every hallway record, advancing offset through every returned page.
+
+    A single first-page read would miss later-page hallways in BOTH phases
+    (collection and post-deletion verification), so the walk mirrors the
+    drawer-enumeration pagination contract (limit 100, advance by 100 until
+    a short page) with the same safety bound.
+    """
+    records: list[dict] = []
+    offset = 0
+    pages = 0
+    while True:
+        result = call_with_retry(
+            lambda o=offset: mcp.list_hallways(limit=PAGE_LIMIT, offset=o),
+            f"list_hallways(offset={offset})",
+        )
+        items = _unwrap(result, "hallways") or []
+        if not isinstance(items, list):
+            raise ResetBlocked("list_hallways returned non-list hallways")
+        pages += 1
+        if pages > MAX_ENUM_PAGES:
+            raise ResetBlocked(f"hallway pagination exceeded {MAX_ENUM_PAGES} pages; aborting")
+        records.extend(r for r in items if isinstance(r, dict))
+        if len(items) < PAGE_LIMIT:
+            return records
+        offset += PAGE_LIMIT
+
+
 def collect_graph_records(mcp: McpLike, target_wings: list[str]) -> tuple[list[GraphRecord], list[GraphRecord], GraphCleanupReport]:
     """Collect tunnels/hallways associated with the EXACT confirmed wings.
 
     Matching is by exact wing name in the record's endpoints/association —
     never by normalized slug. Records belonging to other wings are preserved.
+    The tunnel and hallway listings are independent: one failing does not
+    skip the other; the failure is recorded under its own '<list_*>' key.
     """
     targets = set(target_wings)
     tunnels: list[GraphRecord] = []
@@ -683,34 +724,32 @@ def collect_graph_records(mcp: McpLike, target_wings: list[str]) -> tuple[list[G
         tunnels_result = call_with_retry(lambda: mcp.list_tunnels(), "list_tunnels")
     except ResetBlocked as exc:
         report.failed["<list_tunnels>"] = str(exc)
-        return tunnels, hallways, report
-    for record in _unwrap(tunnels_result, "tunnels") or []:
-        if not isinstance(record, dict):
-            continue
-        wings = _tunnel_wings(record)
-        tunnel_id = str(record.get("id") or record.get("tunnel_id") or "")
-        graph = GraphRecord(kind="tunnel", id=tunnel_id, wings=wings, raw=record)
-        if wings & targets:
-            tunnels.append(graph)
-            report.in_scope.append(graph)
-        else:
-            report.preserved += 1
+    else:
+        for record in _unwrap(tunnels_result, "tunnels") or []:
+            if not isinstance(record, dict):
+                continue
+            wings = _tunnel_wings(record)
+            tunnel_id = str(record.get("id") or record.get("tunnel_id") or "")
+            graph = GraphRecord(kind="tunnel", id=tunnel_id, wings=wings, raw=record)
+            if wings & targets:
+                tunnels.append(graph)
+                report.in_scope.append(graph)
+            else:
+                report.preserved += 1
     try:
-        hallways_result = call_with_retry(lambda: mcp.list_hallways(), "list_hallways")
+        hallway_records = _list_hallways_paginated(mcp)
     except ResetBlocked as exc:
         report.failed["<list_hallways>"] = str(exc)
-        return tunnels, hallways, report
-    for record in _unwrap(hallways_result, "hallways") or []:
-        if not isinstance(record, dict):
-            continue
-        wings = _hallway_wings(record)
-        hallway_id = str(record.get("id") or record.get("hallway_id") or "")
-        graph = GraphRecord(kind="hallway", id=hallway_id, wings=wings, raw=record)
-        if wings & targets:
-            hallways.append(graph)
-            report.in_scope.append(graph)
-        else:
-            report.preserved += 1
+    else:
+        for record in hallway_records:
+            wings = _hallway_wings(record)
+            hallway_id = str(record.get("id") or record.get("hallway_id") or "")
+            graph = GraphRecord(kind="hallway", id=hallway_id, wings=wings, raw=record)
+            if wings & targets:
+                hallways.append(graph)
+                report.in_scope.append(graph)
+            else:
+                report.preserved += 1
     return tunnels, hallways, report
 
 
@@ -732,11 +771,13 @@ def cleanup_graph(mcp: McpLike, target_wings: list[str]) -> GraphCleanupReport:
             report.deleted.append(f"{graph.kind}:{graph.id}")
         except ResetBlocked as exc:
             report.failed[f"{graph.kind}:{graph.id}"] = str(exc)
-    # Verify: re-list and keep only in-scope records that survived.
+    # Verify: re-list (paginated, same contract) and report the in-scope
+    # records that survived. A failed re-listing propagates as a failure so a
+    # broken verification can never count as successful cleanup; out-of-scope
+    # records are already counted once by the first listing.
     _, _, post = collect_graph_records(mcp, target_wings)
-    surviving_ids = {f"{g.kind}:{g.id}" for g in post.in_scope}
-    report.remaining_in_scope = [g for g in post.in_scope if f"{g.kind}:{g.id}" in surviving_ids]
-    report.preserved += post.preserved
+    report.remaining_in_scope = list(post.in_scope)
+    report.failed.update(post.failed)
     return report
 
 
@@ -849,12 +890,16 @@ def run_normal_reset(mcp: McpLike, confirmed_wings: list[str]) -> ResetReport:
             report.graph.notes_wings_skipped = [
                 w.wing for w in report.wings if not w.cleared
             ]
-        report.tunnel_success = not any(
-            g.kind == "tunnel" for g in report.graph.remaining_in_scope
-        ) and not any(k.startswith("tunnel") for k in report.graph.failed)
-        report.hallway_success = not any(
-            g.kind == "hallway" for g in report.graph.remaining_in_scope
-        ) and not any(k.startswith("hallway") for k in report.graph.failed)
+        report.tunnel_success = (
+            "<list_tunnels>" not in report.graph.failed
+            and not any(g.kind == "tunnel" for g in report.graph.remaining_in_scope)
+            and not any(k.startswith("tunnel") for k in report.graph.failed)
+        )
+        report.hallway_success = (
+            "<list_hallways>" not in report.graph.failed
+            and not any(g.kind == "hallway" for g in report.graph.remaining_in_scope)
+            and not any(k.startswith("hallway") for k in report.graph.failed)
+        )
     except ResetBlocked as exc:
         report.blocked.append(f"graph cleanup blocked: {exc}")
     drawer_success = all(w.cleared for w in report.wings)

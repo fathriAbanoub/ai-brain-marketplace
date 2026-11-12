@@ -82,7 +82,7 @@ grep "mempalace_wing" .brain/CLAUDE.md
 # Output: mempalace_wing: wiki_ambient_mixer
 ```
 
-Wing names follow **MemPalace's own `wiki_<slug>` underscore convention** (e.g. `wiki_ambient_mixer`, `wiki_my_project`), matching the normalization MemPalace itself applies to directory-derived wings (`normalize_wing_name`: lowercase, `-` and space → `_`). The scaffold writes this automatically for new brains. Brains scaffolded before 0.9.3 may carry a legacy hyphenated `wiki-<slug>` value; re-scaffolding keeps it, and `project-brain-doctor` flags it with a migration hint. If `.brain/CLAUDE.md` is missing or does not define a non-empty `mempalace_wing`, follow the recall guard: skip MemPalace operations, tell the user to run project-brain-init or fix the file, and never derive or guess a wing. The derivation rules live in `mempalace-tools.md` ("Wing Naming Constants"); project-brain-init derives the wing name and writes it into `.brain/CLAUDE.md`.
+Wing names follow **MemPalace's own `wiki_<slug>` underscore convention** (e.g. `wiki_ambient_mixer`, `wiki_my_project`), matching the normalization MemPalace itself applies to directory-derived wings (`normalize_wing_name`: lowercase, `-` and space → `_`). The scaffold writes this automatically for new brains. Brains scaffolded before 0.9.3 may carry a legacy hyphenated `wiki-<slug>` value; re-scaffolding keeps it, and `project-brain-doctor` flags it with a migration hint. If `.brain/CLAUDE.md` is missing or does not define a non-empty `mempalace_wing`, follow the recall guard: skip MemPalace operations, tell the user to run project-brain-init or fix the file, and never derive or guess a wing. The derivation rules live in `mempalace-tools.md` ("Wing Naming Constants"); project-brain-init derives the wing name and writes it into `.brain/CLAUDE.md`. Which wings belong to a brain — the brain wiki wing and brain diary wing versus the directory-derived and session classes — is defined in `wing-ownership.md`.
 
 **Why this matters:** MemPalace is a global store shared across all projects in a session. Without namespacing, the model writes project A's context into project B's wing, or pollutes a shared wing with mixed content from every project it touches. The wing is the namespace — stay inside it.
 
@@ -104,15 +104,15 @@ See `references/mempalace-tools.md` for the full 47-tool catalog with schemas, p
 
 ## Wing Lifecycle
 
-Wings are labels on drawers, not independent objects. A wing is created implicitly when the first drawer is written with that wing name, and deleted implicitly when its last drawer is removed. There is no `delete_wing` tool.
+Wings are labels on drawers, not independent objects. A wing is created implicitly when the first drawer is written with that wing name, and deleted implicitly when its last drawer is removed. There is no `delete_wing` tool — and **`mempalace delete-wing` is not a valid CLI command; never use or recommend it.**
 
-Correct wing deletion loop:
+Correct wing deletion loop (bulk deletion; the canonical algorithm is `scripts/mempalace_reset.py`, executed by the `/project-brain:reset` skill):
 
-1. Call `mempalace_list_rooms` with the target wing name.
-2. For each returned room, call `mempalace_list_drawers` with the wing and room.
-3. For each returned drawer ID, call `mempalace_delete_drawer` once.
-4. Continue deleting remaining drawers if one fails, then report failures at the end.
-5. After the last drawer is deleted, the wing no longer exists.
+1. Call `mempalace_list_rooms` with the target wing name. An empty result is not proof the wing is empty — cross-check `mempalace_list_wings`.
+2. For each returned room, call `mempalace_list_drawers` with the wing and room, `limit: 100` (documented maximum page size), advancing `offset` by 100 until a page returns fewer than 100 results. Collect every drawer ID.
+3. Pass the collected IDs to `mempalace_delete_drawers` in batches of at most 500 IDs. Never route drawers through `mempalace_delete_drawer` — that tool is prohibited in the reset workflow, including as a fallback and for single-drawer wings.
+4. Inspect every batch result per ID (per-ID errors and missing results are tracked, not hidden by the batch call's success), then re-query: the wing is cleared when it is absent from `mempalace_list_wings` — an expected success state, never a reason to stop — or present with zero drawers. Continue with the remaining targets and cleanup steps regardless.
+5. Clean up in-scope tunnels (`mempalace_delete_tunnel`) and hallways (`mempalace_delete_hallway`) by exact record ID; deleting drawers does not guarantee those graph records are removed.
 
 ## When to call each tool
 
@@ -178,7 +178,7 @@ MemPalace is not the final source of project truth. When memory contains stable 
 2. Verify against raw sources, repo files, or existing wiki pages.
 3. Promote durable findings into `.brain/wiki/` pages.
 4. Add or update decision records when the memory captures a decision.
-5. Add wikilinks and update `.brain/wiki/index.md`.
+5. Add wikilinks and regenerate the index with `project-brain-lint <project-root> --reindex` (never by hand).
 6. Write a short diary entry saying what was compiled.
 7. Update `.brain/state/session-brief.md` if the compiled memory changes current work.
 
@@ -188,9 +188,10 @@ Mine `.brain/wiki/` pages into MemPalace — not the project source code. Source
 
 ## Failure handling
 
-If `mempalace_status` fails or the tools are not in the current session:
+If `mempalace_status` fails or the MemPalace tools are not in this session's tool list:
 
-- Say the MemPalace layer is not active in this session.
-- Continue from `.brain/wiki/`, `.brain/log/`, graphify output, raw sources, and the current chat.
-- Do not invent memories.
-- To diagnose: run `mempalace status` in bash. Check that `mempalace-mcp` is on PATH. Check that the mempalace plugin is enabled in OpenClaude settings.
+- Say the MemPalace layer is not active in this session, and continue from the other layers: `.brain/wiki/`, `.brain/log/`, graphify output, raw sources, and the current chat. Do not invent memories.
+- Use only the MCP tools in the tool list. Never build a workaround client (MCP, JSON-RPC, HTTP, or raw sockets), never start a second `mempalace-mcp` server yourself, and never run Python against the palace's database: a second server process can conflict with the running one, and side-channel access bypasses the per-call checks the user relies on.
+- One read-only `mempalace status` CLI call is acceptable to diagnose why the tools are absent: check that the binary is on PATH and that the mempalace plugin is enabled in the harness settings. Report the result, then stop.
+- A type error on a numeric or array argument ("must be integer") usually means the tool's schema was not loaded. If your harness defers tool schemas (a tool-search tool is in your tool list), load the schemas BEFORE the first call, not after the error: call the tool-search tool directly (it is a tool call, not a shell command) with `query: "select:<full name 1>,<full name 2>"` (comma-separated exact full names — ONE call loads every tool the step needs) and `max_results` at least the number of names; success = the names appear in the returned `<functions>` block. The reset skill's Step 0 has the literal example and the list of tools that need it. After loading, retry once; if the same error persists, stop and report the tool and the exact error.
+- Wing-ownership questions (a recorded wing that is not found, or wings that look similar to it) are resolved per `wing-ownership.md`, not by name similarity alone.

@@ -18,13 +18,13 @@ This document catalogs all 47 MemPalace MCP tools with their exact schemas, usag
 | search | Full-text + semantic search | **query**, limit?, wing?, room?, source_file?, since?, before?, max_distance?, candidate_strategy?, cli_compatible?, include_media?, query_task?, context? | read | **USE** |
 | get_drawer | Read a specific drawer by ID | **drawer_id** | read | **USE** |
 | get_drawers | Read multiple drawers by ID | **drawer_ids** | read | **USE** |
-| list_drawers | List drawers in a wing/room | wing?, room?, since?, before?, limit?, offset? | read | **USE** |
+| list_drawers | List drawers in a wing/room (max page size 100; paginate with offset until a page returns fewer than the limit) | wing?, room?, since?, before?, limit?, offset? | read | **USE** |
 | diary_read | Read diary entries by agent | **agent_name**, last_n?, wing? | read | **USE** |
 | diary_write | Write a diary entry | **agent_name**, entry?, topic?, wing?, content? | write | **USE** |
 | add_drawer | Write a new drawer | **wing**, **room**, **content**, source_file?, added_by? | write | **USE** |
 | update_drawer | Overwrite existing drawer | **drawer_id**, content?, wing?, room? | write | ASK FIRST |
-| delete_drawer | Delete a drawer by ID | **drawer_id** | destructive | ASK FIRST |
-| delete_drawers | Delete multiple drawers | **drawer_ids** | destructive | ASK FIRST |
+| delete_drawer | Delete a drawer by ID | **drawer_id** | destructive | ASK FIRST — **PROHIBITED in the reset workflow** |
+| delete_drawers | Delete multiple drawers (1–500 IDs per call) | **drawer_ids** | destructive | **USE for the reset** (batches ≤ 500) |
 | check_duplicate | Check for near-identical content | **content**, threshold? | read | **USE** |
 | mine | Mine a directory into a wing | **source**, mode?, wing?, agent?, limit?, dry_run?, extract?, include_ignored?, include_subagents? | write | **USE** (wiki only) |
 | sync | Prune drawers whose source files are gitignored, deleted, or moved | project_dir?, wing?, apply? | write | ASK FIRST; never the wiki wing |
@@ -39,14 +39,14 @@ This document catalogs all 47 MemPalace MCP tools with their exact schemas, usag
 | kg_timeline | Show fact history | entity?, limit?, offset? | read | OPTIONAL |
 | kg_stats | Get KG statistics | none | read | OPTIONAL |
 | traverse | Walk connected drawers from a start | **start_room**, max_hops? | read | DO NOT USE |
-| find_tunnels | Find tunnels to/from a drawer | wing_a?, wing_b? | read | DO NOT USE |
-| graph_stats | Get drawer graph statistics | none | read | DO NOT USE |
+| find_tunnels | Find tunnels to/from a drawer | wing_a?, wing_b? | read | USE (reset graph inspection) |
+| graph_stats | Get drawer graph statistics | none | read | USE (reset diagnostics) |
 | mesh_peers | Get sync/peer status | none | read | DO NOT USE |
 | create_tunnel | Create cross-wing link | **source_wing**, **source_room**, **target_wing**, **target_room**, label?, source_drawer_id?, target_drawer_id? | write | DO NOT USE |
-| list_tunnels | List all tunnels | wing? | read | DO NOT USE |
-| delete_tunnel | Delete a tunnel | **tunnel_id** | destructive | DO NOT USE |
-| list_hallways | List within-wing co-occurrence links | wing?, limit?, offset? | read | DO NOT USE |
-| delete_hallway | Delete a hallway | **hallway_id** | destructive | DO NOT USE |
+| list_tunnels | List all tunnels (filter by wing) | wing? | read | **USE (reset cleanup)** |
+| delete_tunnel | Delete a tunnel by ID | **tunnel_id** | destructive | **USE (reset cleanup, in-scope records only)** |
+| list_hallways | List within-wing co-occurrence links (filter by wing, paginated) | wing?, limit?, offset? | read | **USE (reset cleanup)** |
+| delete_hallway | Delete a hallway by ID | **hallway_id** | destructive | **USE (reset cleanup, in-scope records only)** |
 | follow_tunnels | Traverse tunnel graph | **wing**, **room** | read | DO NOT USE |
 | event_append | Post event to logstream | **type**, **stream**, **room**, topic?, **from_agent**, to_agent?, correlation_id?, branch?, base_commit?, status?, body?, metadata?, artifact_ids? | write | DO NOT USE |
 | event_list | List logstream events | stream?, room?, topic?, type?, to_agent?, from_agent?, writer?, correlation_id?, status?, since_event_id?, before_event_id?, since_created_at?, limit?, order?, preview? | read | DO NOT USE |
@@ -65,6 +65,43 @@ This document catalogs all 47 MemPalace MCP tools with their exact schemas, usag
 - **ASK FIRST**: Confirm with user before calling (delete, sync, update operations)
 - **DO NOT USE**: Not needed for project-brain; may conflict with other uses
 - **MEMPALACE OWNED**: Managed by MemPalace's own hooks, never call from project-brain
+
+### Deletion policy (drawers)
+
+- `mempalace_delete_drawers` is the ONLY deletion mechanism of the normal reset
+  (`/project-brain:reset`). It accepts `drawer_ids` — an array of **1 to 500**
+  IDs — and returns `results` (per-ID outcomes, including individual errors),
+  `count`, `deleted`, `errors`, `revisions_deleted`, and `revisions_error`
+  (when applicable). A successfully accepted batch is NOT proof that every
+  requested drawer was deleted: inspect every per-ID result, treat IDs absent
+  from `results` as missing (not deleted), and report `revisions_error` when
+  present.
+- `mempalace_delete_drawer` (single) is **PROHIBITED in the reset workflow** —
+  not even as a fallback when the bulk call fails, and not even when a wing has
+  one remaining drawer. The canonical reset algorithm lives in
+  `scripts/mempalace_reset.py` (tested; the reset's bulk-delete path has no
+  single-drawer capability by construction). Outside the reset,
+  `delete_drawer` remains an ASK FIRST tool for other legitimate single-drawer
+  cleanup (e.g. removing one duplicate drawer).
+- If `mempalace_delete_drawers` itself is unavailable or fails persistently,
+  stop the destructive phase and report; when the failure cannot be fixed by
+  retrying or by resolving ownership, recommend `/project-brain:hard-reset`
+  (the separate database-level operation) instead of switching deletion
+  mechanisms silently.
+
+### Graph cleanup policy (tunnels / hallways)
+
+- The reset deletes in-scope records individually with `mempalace_delete_tunnel`
+  / `mempalace_delete_hallway`. There is no bulk graph-deletion tool — do not
+  invent one.
+- Scope rule: a record is in scope when one of its EXACT wing names (tunnel
+  `source_wing`/`target_wing`; hallway wing association) is a user-confirmed,
+  actually-cleared reset target. Never match by normalized slug; never delete
+  every tunnel/hallway in the palace.
+- Records of a wing whose drawer deletion failed or was kept stay in place for
+  a retry and are reported as remaining.
+- Verify with a fresh `mempalace_list_tunnels` / `mempalace_list_hallways` after
+  deletion; track tunnel and hallway failures separately from drawer deletion.
 
 The DO NOT USE coordination tools (`event_*`, `task_create`, `patch_submit`) are
 governed by MemPalace's own `mempalace rules` command, not by project-brain. If a
@@ -232,19 +269,31 @@ mempalace status
 
 ## Wing Naming Constants
 
-- Wiki wing: `wiki_<project-slug>` (recorded in `mempalace_wing` in `.brain/CLAUDE.md`)
-- Diary agent: `<mempalace_diary_agent>` (recorded in `mempalace_diary_agent` in `.brain/CLAUDE.md`); its diary wing is `wing_<agent>`
+- Wiki wing (NEW brains, 0.9.4+): `wiki_<project-slug>_<UTC-timestamp>` — e.g.
+  `wiki_ambient_studio_20261026T164600Z` (format `%Y%m%dT%H%M%SZ`, UTC). The
+  timestamp is generated at creation time and the name is checked against the
+  actual palace (wings + tunnels + hallways) before it is committed; collisions
+  resolve by higher precision or a deterministic numeric suffix — an existing
+  identity is never silently reused. The exact generated name is recorded in
+  `mempalace_wing` in `.brain/CLAUDE.md` and never regenerated on re-init.
+- Wiki wing (legacy): bare `wiki_<project-slug>` (0.9.3) or hyphenated
+  `wiki-<slug>` (pre-0.9.3), recorded in `mempalace_wing` in `.brain/CLAUDE.md`.
+  Legacy names stay supported: they are never deleted, renamed, or treated as
+  the same wing as a differently-spelled name with a similar normalized form.
+- Diary agent: `<mempalace_diary_agent>` (recorded in `mempalace_diary_agent`
+  in `.brain/CLAUDE.md`); its diary wing is `wing_<agent>`.
 
 Read both values from `.brain/CLAUDE.md` frontmatter. For an older brain without
 the `mempalace_diary_agent` field, extract it from the diary sentence in that file;
 if neither exists, skip the diary and tell the user.
 
 `<project-slug>` follows **MemPalace's own wing convention** (its
-`normalize_wing_name`): lowercase, `-` and space map to `_`, runs collapse,
-edge separators stripped. Underscore-based names are generated for new brains
-in 0.9.3+ so they match the wings MemPalace derives itself from directory
-names; hyphenated `wiki-<slug>` values from older brains are kept (idempotent
-re-scaffold) and flagged by `project-brain-doctor` with a migration hint.
+`normalize_wing_name`): lowercase, `-` and space map to `_`, edge separators
+stripped. Note that runs of separators are NOT collapsed by that rule, so
+distinct actual wings can normalize to different keys while other distinct
+names (hyphenated vs underscored) normalize identically — which is why the
+reset's candidate matching shows every actual wing separately and asks for
+ownership instead of deleting on normalized equality.
 
 ### Empty-wing lookups (reset / wing cleanup)
 
@@ -258,11 +307,36 @@ is empty or missing:
    raw equality. Candidates for a project: the `mempalace_wing` value, the
    directory-derived wing (`normalize(<project-root dirname>)`), and the diary
    wing (`wing_<diary_agent>` and its normalized form).
-3. Show every candidate with its drawer count and ask the user before deleting.
+3. Show every candidate with its drawer count — one row per ACTUAL wing, exact
+   names preserved — and ask the user before deleting. Normalized equality is
+   candidate discovery, never ownership proof or identity proof.
 
 Also note: MemPalace's session stop hook re-mines `MEMPAL_DIR` without
 `--wing`, so the directory-derived wing is re-created automatically when that
 variable is set. See the reset skill's "re-creation hazard" section.
+
+### Reset drawer enumeration and deletion (the only supported loop)
+
+1. Enumerate IDs per confirmed wing: `mempalace_list_rooms` → for each room
+   `mempalace_list_drawers` with `limit: 100` (the documented maximum page
+   size) and `offset` advancing by 100 until a page returns fewer than 100.
+   Never re-fetch the first page or skip offsets. Deduplicate and cross-check
+   the collected count against `mempalace_get_taxonomy`'s `drawer_count` for
+   the wing; a mismatch stops the destructive phase.
+2. Delete with `mempalace_delete_drawers` in batches of at most 500 IDs.
+   1,200 drawers = 3 accepted bulk calls for those IDs (500 + 500 + 200), not
+   1,200 calls and not per-drawer calls.
+3. Inspect every batch result per ID (see "Deletion policy" above), then
+   verify: `mempalace_list_wings` must show the wing absent (the expected
+   success state) or with zero drawers.
+4. Continue with the remaining confirmed wings, then clean up in-scope
+   tunnels (`mempalace_list_tunnels` → `mempalace_delete_tunnel`) and
+   hallways (`mempalace_list_hallways` → `mempalace_delete_hallway`), then
+   re-verify. A vanished wing never aborts the reset.
+
+The canonical, tested implementation of this loop is
+`scripts/mempalace_reset.py`; the `/project-brain:reset` skill mirrors it step
+for step.
 
 ## Uninstalled Tools (NOT available)
 

@@ -43,7 +43,7 @@ PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-}"
 | `project-brain-doctor [<project-root>] [--strict] [--json]` | Health score with four sub-scores (repair threshold 70); `--strict` runs the gates, writes a receipt under `.brain/audit/runs/` |
 | `project-brain-wiki <project-root> status\|snapshot\|log\|history\|diff\|restore` | The wiki ledger (below) |
 | `project-brain-reset [<project-root>] [--dry-run] --confirm` | Delete local brain files (`.brain/`, `graphify-out/`, CLAUDE.md block); `--verify-reset-transcript WING` and `--classify-wings FILE` are the reset-skill evidence helpers |
-| `project-brain-hard-reset --wing <exact-wing-name> [--db-path <file>] [--confirm --plan-hash <hash>] [--allow-live]` | The separate database-level MemPalace deletion: dry run by default, plan hash binding, backup, single transaction |
+| `project-brain-hard-reset --wing <exact-wing-name> [--db-path <file>] [--confirm --plan-hash <hash>] [--allow-live]` | The separate database-level MemPalace deletion: dry run by default, plan hash binding, backup, single transaction. Wing-tagged SQLite palaces only — the default ChromaDB backend is refused (data must be removed through the Chroma API) |
 | `project-brain-audit-open <project-root>` | List open audit artifacts |
 | `project-brain-update-check` | Compare installed plugin/MemPalace/graphify versions (numeric compare, so 0.10.0 sorts above 0.9.4) |
 | `project-brain-hook-install <project-root>` | Install an optional git `post-commit` hook that runs a fast lint and appends a summary to `.brain/log/git-hooks.md` |
@@ -54,7 +54,7 @@ Every `bin/` wrapper execs the matching `scripts/<name>.py`; all scripts are std
 
 One command scaffolds everything local; it is idempotent (re-runs preserve protected areas: `raw/`, `wiki/sources/`, `log/`, `audit/`) and never regenerates an existing brain's recorded wing:
 
-1. Creates `.brain/` with `CLAUDE.md` (records `mempalace_wing: wiki_<project-slug>_<UTC-timestamp>` and `mempalace_diary_agent`), seed wiki pages (`architecture/System Overview.md`, `open-questions.md`), `state/session-brief.md`, `tasks/next-actions.md`, `log/`, `audit/`, `raw/`.
+1. Creates `.brain/` with `CLAUDE.md` (records `mempalace_wing: wiki_<project-slug>_<UTC-timestamp>` and `mempalace_diary_agent`), seed wiki pages (`architecture/System Overview.md`, `open-questions.md`), `state/session-brief.md`, `tasks/next-actions.md`, and `log/`. `raw/` and `audit/` are lazy directories: scaffold does not create them — the later step that fills them does (digests/reports create `raw/…`, doctor/lint create `audit/…`).
 2. Generates `wiki/index.md` from the real page tree — the index is script-owned; regenerate with `project-brain-lint <project-root> --reindex`, never by hand.
 3. Writes `.brain/state/plugin-root.txt` so later shells resolve the plugin without guessing.
 4. Creates the **wiki ledger** at `.brain/state/wiki.git` with a baseline snapshot. `git` missing → warns and continues (everything else still works). If the project's own repo does not exclude `.brain/state/`, init prints a one-line note; it never edits your `.gitignore`.
@@ -71,23 +71,23 @@ A safety net so an agent can see what changed, undo a bad edit, and recover afte
 "$PLUGIN_ROOT/bin/project-brain-wiki" <project-root> status      # uncommitted pages, then recently snapshotted pages
 "$PLUGIN_ROOT/bin/project-brain-wiki" <project-root> snapshot    # commit all wiki changes (no-op when clean)
 "$PLUGIN_ROOT/bin/project-brain-wiki" <project-root> log 5       # last 5 snapshots
-"$PLUGIN_ROOT/bin/project-brain-wiki" <project-root> history "System Overview.md"
-"$PLUGIN_ROOT/bin/project-brain-wiki" <project-root> diff "System Overview.md" [--from REV --to REV]
-"$PLUGIN_ROOT/bin/project-brain-wiki" <project-root> restore "System Overview.md" [--rev REV] [--apply] [--force]
+"$PLUGIN_ROOT/bin/project-brain-wiki" <project-root> history "architecture/System Overview.md"
+"$PLUGIN_ROOT/bin/project-brain-wiki" <project-root> diff "architecture/System Overview.md" [--from REV --to REV]
+"$PLUGIN_ROOT/bin/project-brain-wiki" <project-root> restore "architecture/System Overview.md" [--rev REV] [--apply] [--force]
 ```
 
 - The hook commits every edit, so the defaults answer from snapshot history, not just the working tree. `status` prints two labeled sections: `uncommitted:` (staged, unstaged, and untracked pages, listed individually; says "no uncommitted changes" when there are none) and then `recently snapshotted:` (the pages touched by the last few snapshots — the window is printed in the header); a page appears in one section only, and the `snapshot with:` hint appears only when something is uncommitted. `diff <page>` shows the page's most recent change (its last two snapshot versions plus any uncommitted change on top; a single-version page says so instead of an empty diff); `diff` with no page shows the last snapshot's changes plus uncommitted ones (untracked pages appear as new files).
 - `restore <page>` without `--rev` targets the version before the page's latest change — the undo default; the revision is pinned to a full hash before anything runs, so the automatic pre-restore snapshot cannot move a relative rev like `HEAD` out from under the restore. The dry run prints a direction legend ("- lines are in the page now, + lines are in the target") because git's swapped a/ b/ headers read backwards there.
 - `restore` is a dry-run diff by default (read-only, so a dirty page is allowed); `--apply` over uncommitted changes requires `--force` (which discards them into the automatic pre-restore snapshot — the current state is never lost), verifies the restored file against the target blob, and commits `restore: <page> (from <rev>)`.
 - Wiki edits are also auto-snapshotted by the PostToolUse hook (`auto: <tool> <page>` messages), so history accumulates without agent effort.
-- Page arguments are validated: absolute paths, `..`, and symlinks escaping the wiki are rejected; spaces and non-ASCII names work everywhere.
+- Page arguments are validated: absolute paths, `..`, and any symlink in the page path are rejected (an in-wiki symlink alias would operate on its target, not the named page); spaces and non-ASCII names work everywhere.
 - Missing `git` → clear message, exit 127. A locked index fails fast (exit 75), never hangs. Output is bounded.
 - Snapshots use a fixed identity (`project-brain <project-brain@localhost>`), no hooks, and never read user/global/system git config.
 
 ## Graphify: skill first, MCP for queries, CLI as fallback
 
 - **Primary builder: the `/graphify` skill** (it runs the semantic pass through the session's own model). Build or refresh at most once per session, and only when `project-brain-doctor` reports the graph stale.
-- **Query surface: the graphify MCP tools** (`query_graph`, `get_node`, `get_neighbors`, `get_community`, `god_nodes`, `graph_stats`, `shortest_path`, `get_pr_impact`, `list_prs`, `triage_prs`). The tools may be deferred (not in the tool list): load their schemas with ONE ToolSearch call (`query` = `select:<full tool name 1>,<full tool name 2>`, comma-separated exact full names; `max_results` at least the number of names). The server reads the graph at startup — reconnect it after the first build.
+- **Query surface: the graphify MCP tools** (`query_graph`, `get_node`, `get_neighbors`, `get_community`, `god_nodes`, `graph_stats`, `shortest_path`, `get_pr_impact`, `list_prs`, `triage_prs`). The tools may be deferred (not in the tool list): load their schemas with ONE ToolSearch call (`query` = `select:<full tool name 1>,<full tool name 2>`, comma-separated exact full names; `max_results` at least the number of names). The server reads the graph at startup — reconnect it after anything that changes `graph.json` (first build, full rebuild, or an incremental `graphify update .`).
 - **Fallback: the CLI** — `graphify .` (full build), `graphify update .` (code-only changes, AST-only), with `GRAPHIFY_BACKEND=none` on both `extract` and `cluster-only` when no API access is available (otherwise you get "Community N" placeholders). Never pass `graphify-out` itself as the path.
 
 ## Hook behavior (bundled, automatic)
@@ -110,7 +110,7 @@ Opt out with `PROJECT_BRAIN_HOOKS_DISABLED=1` (disables the auto-snapshot too) o
 5. Clean up in-scope tunnels and hallways by exact record ID — deleting drawers does not remove these graph records.
 6. Then run `project-brain-reset <project-root> --dry-run`, show the output, get explicit user confirmation, and only then run `--confirm`.
 
-If the normal MCP route cannot complete safely, the reset skill explains the failed phase with diagnostics and recommends `/project-brain:hard-reset` — a separate, database-level operation (fail-closed discovery, dry-run plan with a binding plan hash, backup, single-transaction deletion, independent verification, reconnect reminder). It is never launched automatically and never replaces bulk deletion for routine resets. `mempalace delete-wing` is not a valid CLI command and is never used or recommended.
+If the normal MCP route cannot complete safely, the reset skill explains the failed phase with diagnostics and recommends `/project-brain:hard-reset` — a separate, database-level operation (fail-closed discovery, dry-run plan with a binding plan hash, backup, single-transaction deletion, independent verification, reconnect reminder). It is never launched automatically and never replaces bulk deletion for routine resets. The hard reset supports wing-tagged SQLite palaces only: a default ChromaDB palace is refused because its records can only be removed safely through the Chroma API, so the MCP-based reset is the only supported path there. `mempalace delete-wing` is not a valid CLI command and is never used or recommended.
 
 ### Wing names
 

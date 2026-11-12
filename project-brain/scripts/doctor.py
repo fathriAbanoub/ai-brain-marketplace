@@ -50,6 +50,21 @@ def inventory_state(root: Path) -> dict | None:
         return {"error": f"corrupt JSON: {exc}"}
     if not isinstance(data, dict) or "completion" not in data or "summary" not in data:
         return {"error": "missing completion/summary keys — rerun inventory"}
+    # Validate the nested fields coverage() and strict_gates() read, so a
+    # partial or hand-edited inventory reports an inventory error instead of
+    # raising KeyError mid-gate.
+    completion = data.get("completion")
+    summary = data.get("summary")
+    weighted = completion.get("weighted_coverage") if isinstance(completion, dict) else None
+    if (not isinstance(completion, dict)
+            or not isinstance(completion.get("complete"), bool)
+            or not isinstance(weighted, (int, float)) or isinstance(weighted, bool)
+            or not isinstance(completion.get("core_uncovered"), list)
+            or not isinstance(summary, dict)
+            or not isinstance(summary.get("covered"), int) or isinstance(summary.get("covered"), bool)
+            or not isinstance(summary.get("units"), int) or isinstance(summary.get("units"), bool)):
+        return {"error": ("completion/summary missing required fields (complete, weighted_coverage, "
+                          "core_uncovered, covered, units) — rerun `project-brain-inventory <root> inventory`")}
     return data
 
 
@@ -146,6 +161,9 @@ COMMIT_LINE_RE = re.compile(r"Built from commit:\s*`([0-9a-fA-F]+)`")
 _DIRTY_EXCLUDES = [":(exclude).brain/", ":(exclude)graphify-out/"]
 MAX_DIRTY_LINES = 3  # How many porcelain lines to include in stale reason
 DIRTY_OMITTED_MARKER = "... (more paths omitted; run `git status` for the full list)"
+# Unit names shown per section when the inventory is stale (added/removed each
+# truncate at this many, with an ellipsis when more exist).
+INVENTORY_PREVIEW_UNITS = 5
 # git status -z uses NUL as the record separator (one record per modified file,
 # two consecutive records for renames: new path, then old path).
 STATUS_RECORD_SEP = "\0"
@@ -336,42 +354,39 @@ def completeness(root: Path) -> tuple[int, str]:
     if not pages:
         return 0, "0/0 pages fully formed"
     idx = index_text(root)
+    # Weights: title/heading=2, type=1, wikilink=1, indexed=2, status=1.
+    weights = [2, 1, 1, 2, 1]
     total_points = 0
     max_points = 0
-    # Weights: title/heading=2, type=1, wikilink=1, indexed=2, status=1 (sources optional — new pages start empty)
-    weights = [2, 1, 1, 2, 1]
+    full = 0
     for p in pages:
         text = read(p)
         fm = extract_frontmatter(text)
-        checks = [
+        structural = [
             bool(fm.get("title") or re.search(r"^#\s+", text, re.M)),
             bool(fm.get("type")),
             bool(WIKILINK_RE.search(text)),
             page_in_index(p, root, idx),
             bool(fm.get("status")),
         ]
-        page_points = sum(w for w, c in zip(weights, checks) if c)
-        total_points += page_points
+        total_points += sum(w for w, c in zip(weights, structural) if c)
         max_points += sum(weights)
-    score = round(total_points / max_points * 100) if max_points else 0
-    full = 0
-    for p in pages:
-        text = read(p)
-        fm = extract_frontmatter(text)
-        if not all([
-            bool(fm.get("title") or re.search(r"^#\s+", text, re.M)),
-            bool(fm.get("type")),
-            bool(WIKILINK_RE.search(text)),
-            page_in_index(p, root, idx),
-            bool(fm.get("status")),
-        ]):
+        if not all(structural):
             continue
-        # KD-12: brain-health-metrics requires >=1 source for active pages;
-        # draft pages are exempt.
+        # KD-12 / brain-health-metrics: a page is complete only when an ACTIVE
+        # page also has >=1 source (frontmatter entry or inline citation);
+        # draft pages are exempt from the source requirement.
         if str(fm.get("status", "")).lower() != "draft" and not page_sourced(fm, text):
             continue
         full += 1
-    return score, f"{full}/{len(pages)} pages fully formed (weighted score; active pages need a source or citation)"
+    # The health score is the documented metric: the percentage of pages that
+    # have every required field INCLUDING the source requirement. The weighted
+    # number is a structure-only measure and is reported separately in the
+    # note, so an active page without a source can never score as complete.
+    score = round(full / len(pages) * 100)
+    structural_pct = round(total_points / max_points * 100) if max_points else 0
+    return score, (f"{full}/{len(pages)} pages fully formed (active pages need a source "
+                   f"or citation; structure-only weighted score {structural_pct}%)")
 
 
 def freshness(root: Path) -> tuple[int, str]:
@@ -475,18 +490,29 @@ def mempalace_wing_check(root: Path) -> tuple[str, str]:
     if source == "derived":
         return "warning", f"wing={wing} (derived — .brain/CLAUDE.md missing mempalace_wing)"
 
-    if wing.startswith(WIKI_WING_PREFIX):
-        return "ok", f"wing={wing} ({source})"
-    # Check if both files declare mempalace_wing
+    # Cross-check the other declaration source: root CLAUDE.md and
+    # .brain/CLAUDE.md disagreeing on mempalace_wing is a conflict that no
+    # canonical prefix can paper over — report it before any "ok".
     root_claude = root / "CLAUDE.md"
     brain_claude = root / ".brain" / "CLAUDE.md"
     other_source = ".brain/CLAUDE.md" if source == "CLAUDE.md" else "CLAUDE.md"
     other_file = brain_claude if source == "CLAUDE.md" else root_claude
-    other_declares = False
+    other_wing: str | None = None
     if other_file.exists():
-        text = other_file.read_text(encoding="utf-8")
-        if re.search(r"mempalace_wing:\s*\S+", text):
-            other_declares = True
+        m2 = re.search(r"mempalace_wing:\s*(\S+)", other_file.read_text(encoding="utf-8"))
+        if m2:
+            other_wing = m2.group(1)
+    wing_conflict = other_wing is not None and other_wing != wing
+
+    if wing.startswith(WIKI_WING_PREFIX):
+        if wing_conflict:
+            return "warning", (
+                f"wing conflict: {source} declares {wing!r} but {other_source} declares "
+                f"{other_wing!r} — mempalace_wing must be identical in both files; "
+                f"update {other_source} to match {source}"
+            )
+        return "ok", f"wing={wing} ({source})"
+    other_declares = other_wing is not None
     if wing.startswith(LEGACY_WIKI_WING_PREFIX):
         slug_part = normalize_wing_slug(wing[len(LEGACY_WIKI_WING_PREFIX):])
         prefix_note = (
@@ -562,6 +588,43 @@ def strict_status(gates: dict) -> str:
     return "passed-for-scope"
 
 
+def inventory_fresh(root: Path, inv: dict) -> tuple[bool, str]:
+    """True when the saved inventory still matches the current project units.
+
+    completion.complete was computed for the unit set at inventory time; if a
+    core unit is added or removed afterwards, the saved value no longer
+    certifies the current project, so the strict coverage gate must not pass
+    on it."""
+    import brain_inventory as bi  # local: spawns git subprocesses only when needed
+
+    saved = inv.get("units")
+    if not isinstance(saved, list) or not all(
+            isinstance(u, dict) and "path" in u for u in saved):
+        return False, ("inventory.json has no usable units list — "
+                       "rerun `project-brain-inventory <root> inventory`")
+    try:
+        policy, _policy_path = bi.load_policy()
+        current_units, _source, _commit = bi.list_units(root, policy)
+    except (OSError, ValueError, KeyError, subprocess.SubprocessError) as exc:
+        return False, f"cannot verify inventory freshness against current units: {exc}"
+    saved_paths = {str(u["path"]) for u in saved}
+    current_paths = {str(u["path"]) for u in current_units}
+    if saved_paths != current_paths:
+        added = sorted(current_paths - saved_paths)
+        removed = sorted(saved_paths - current_paths)
+        detail = (f"stale inventory: {len(added)} unit(s) added, {len(removed)} removed "
+                  "since the last inventory run — rerun "
+                  "`project-brain-inventory <root> inventory` and re-check coverage")
+        if added:
+            detail += ("; added: " + ", ".join(added[:INVENTORY_PREVIEW_UNITS])
+                       + ("…" if len(added) > INVENTORY_PREVIEW_UNITS else ""))
+        if removed:
+            detail += ("; removed: " + ", ".join(removed[:INVENTORY_PREVIEW_UNITS])
+                       + ("…" if len(removed) > INVENTORY_PREVIEW_UNITS else ""))
+        return False, detail
+    return True, ""
+
+
 def strict_gates(root: Path) -> dict:
     """KD-13: the hard gate. A gate is passed/failed/could-not-run; --strict
     exits 0 only when every gate passed. Lint errors cover citation drift,
@@ -586,8 +649,12 @@ def strict_gates(root: Path) -> dict:
     elif inv.get("error"):
         gates["coverage"] = {"status": "could-not-run", "detail": inv["error"]}
     else:
-        gates["coverage"] = {"status": "passed" if inv["completion"]["complete"] else "failed",
-                             "detail": inv["completion"]}
+        fresh, fresh_detail = inventory_fresh(root, inv)
+        if not fresh:
+            gates["coverage"] = {"status": "could-not-run", "detail": fresh_detail}
+        else:
+            gates["coverage"] = {"status": "passed" if inv["completion"]["complete"] else "failed",
+                                 "detail": inv["completion"]}
     return gates
 
 

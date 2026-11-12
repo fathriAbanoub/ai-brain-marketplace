@@ -61,7 +61,7 @@ Example:
 
 ```text
 Project Brain Health: 73/100
-  Completeness:   81/100  (17/21 pages fully formed (weighted score; active pages need a source or citation))
+  Completeness:   81/100  (17/21 pages fully formed (active pages need a source or citation; structure-only weighted score 88%))
   Freshness:      65/100  (session brief 9 days old, graphify 22 days old)
   Coverage:       70/100  (14/20 units covered, weighted 70% (core uncovered: 2))
   Memory sync:    75/100  (MemPalace last written 2 sessions ago) [estimated from logs]

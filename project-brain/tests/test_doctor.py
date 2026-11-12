@@ -2,7 +2,6 @@
 
 import pytest
 import sys
-import tempfile
 from pathlib import Path
 
 PLUGIN_ROOT = Path(__file__).parent.parent
@@ -15,10 +14,10 @@ class TestDoctorBoundary:
     """CodeRabbit #14: a sub-score of exactly 70 must pass (the doctor flags
     strictly-below-70 only, and skill text says 'at or above 70' is done)."""
 
-    def test_score_70_is_not_flagged(self, capsys):
-        # completeness: 7/10 pages fully formed -> exactly 70.
-        import tempfile
-        root = Path(tempfile.mkdtemp())
+    def test_score_70_is_not_flagged(self, capsys, tmp_path):
+        # completeness: 7/10 pages fully formed -> exactly 70. Active pages
+        # need a source (frontmatter entry or inline citation) to count.
+        root = tmp_path / "boundary-70"
         brain = root / ".brain"
         (brain / "wiki").mkdir(parents=True)
         (brain / "wiki" / "index.md").write_text("# index\n", encoding="utf-8")
@@ -27,7 +26,7 @@ class TestDoctorBoundary:
             page = brain / "wiki" / f"p{i}.md"
             if good:
                 page.write_text(
-                    "---\ntitle: t\ntype: concept\nstatus: active\n---\n"
+                    "---\ntitle: t\ntype: concept\nstatus: active\nsources: [src.md]\n---\n"
                     f"# p{i}\n[[p0]] link\n",
                     encoding="utf-8",
                 )
@@ -43,9 +42,8 @@ class TestDoctorBoundary:
         completeness_line = next(l for l in out.splitlines() if "Completeness" in l)
         assert "BELOW REPAIR THRESHOLD" not in completeness_line
 
-    def test_score_below_70_is_flagged(self, capsys):
-        import tempfile
-        root = Path(tempfile.mkdtemp())
+    def test_score_below_70_is_flagged(self, capsys, tmp_path):
+        root = tmp_path / "boundary-69"
         brain = root / ".brain"
         (brain / "wiki").mkdir(parents=True)
         (brain / "wiki" / "index.md").write_text("# index\n", encoding="utf-8")
@@ -54,7 +52,7 @@ class TestDoctorBoundary:
             page = brain / "wiki" / f"p{i}.md"
             if good:
                 page.write_text(
-                    "---\ntitle: t\ntype: concept\nstatus: active\n---\n"
+                    "---\ntitle: t\ntype: concept\nstatus: active\nsources: [src.md]\n---\n"
                     f"# p{i}\n[[p0]] link\n",
                     encoding="utf-8",
                 )

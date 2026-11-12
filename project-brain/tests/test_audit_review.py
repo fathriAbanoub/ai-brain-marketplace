@@ -22,6 +22,7 @@ class TestAuditReview:
         
         # Create an open audit file
         audit_file = brain / "audit" / "test-audit.md"
+        audit_file.parent.mkdir(parents=True, exist_ok=True)
         audit_file.write_text(
             """---
 id: TEST-001
@@ -53,6 +54,7 @@ This is a test audit item.
         # Create a resolved audit file
         resolved_dir = brain / "audit" / "resolved"
         resolved_dir.mkdir(parents=True, exist_ok=True)
+        resolved_dir.mkdir(parents=True, exist_ok=True)
         audit_file = resolved_dir / "done-audit.md"
         audit_file.write_text(
             """---
@@ -83,6 +85,7 @@ This is a resolved audit item.
         
         # Create an open audit file
         audit_file = brain / "audit" / "open-audit.md"
+        audit_file.parent.mkdir(parents=True, exist_ok=True)
         audit_file.write_text(
             """---
 id: OPEN-001
@@ -102,6 +105,7 @@ Open item.
         
         # Create a resolved audit file
         resolved_dir = brain / "audit" / "resolved"
+        resolved_dir.mkdir(parents=True, exist_ok=True)
         resolved_dir.mkdir(parents=True, exist_ok=True)
         resolved_file = resolved_dir / "closed-audit.md"
         resolved_file.write_text(
@@ -129,27 +133,133 @@ Resolved item.
         assert "OPEN-001" in output and "CLOSED-001" in output
 
     def test_audit_no_audit_directory(self, run_script, tmp_project: Path):
-        """Exit non-zero, stderr mentions 'audit' when audit directory missing."""
+        """Lazy audit/ (KD-10): a missing dir means no findings, exit 0."""
         project_dir = tmp_project / "no-audit"
         project_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Scaffold to create .brain but we won't have audit files
+
         result_scaffold = run_script("scaffold_brain.py", [str(project_dir), "Test"])
         assert result_scaffold.returncode == 0
+
+        result = run_script("audit_review.py", [str(project_dir / ".brain"), "--open"])
+        assert result.returncode == 0
+        assert "no findings" in (result.stdout + result.stderr).lower() or "no audit" in (result.stdout + result.stderr).lower()
+
+    def test_audit_detects_open_task(self, run_script, scaffolded_project: Path):
+        """Detects an open audit task."""
+        brain = scaffolded_project
         
-        # Remove audit directory
-        import shutil
-        brain_dir = project_dir / ".brain"
-        audit_dir = brain_dir / "audit"
-        if audit_dir.exists():
-            shutil.rmtree(audit_dir)
+        # Create an open audit file
+        audit_file = brain / "audit" / "test-audit.md"
+        audit_file.parent.mkdir(parents=True, exist_ok=True)
+        audit_file.write_text(
+            """---
+id: TEST-001
+severity: error
+target: wiki/index.md
+author: Test Author
+created: 2024-01-01
+status: open
+---
+
+# Comment
+
+This is a test audit item.
+""",
+            encoding="utf-8"
+        )
         
-        result = run_script("audit_review.py", [str(brain_dir)])
+        result = run_script("audit_review.py", [str(brain), "--open"])
         
-        # Should fail - no audit directory
-        assert result.returncode != 0
-        output_lower = result.stdout.lower() + result.stderr.lower()
-        assert "audit" in output_lower
+        assert result.returncode == 0
+        # Should detect the open item
+        output_lower = result.stdout.lower()
+        assert "TEST-001" in result.stdout
+
+    def test_audit_done_items_only(self, run_script, scaffolded_project: Path):
+        """--resolved mode shows only resolved items."""
+        brain = scaffolded_project
+        
+        # Create a resolved audit file
+        resolved_dir = brain / "audit" / "resolved"
+        resolved_dir.mkdir(parents=True, exist_ok=True)
+        resolved_dir.mkdir(parents=True, exist_ok=True)
+        audit_file = resolved_dir / "done-audit.md"
+        audit_file.write_text(
+            """---
+id: DONE-001
+severity: warn
+target: wiki/concepts/Test.md
+author: Tester
+created: 2024-01-01
+status: resolved
+---
+
+# Comment
+
+This is a resolved audit item.
+""",
+            encoding="utf-8"
+        )
+        
+        result = run_script("audit_review.py", [str(brain), "--resolved"])
+        
+        assert result.returncode == 0
+        # Should find the resolved item
+        assert "DONE-001" in result.stdout
+
+    def test_audit_mode_all(self, run_script, scaffolded_project: Path):
+        """--all mode shows both open and resolved items."""
+        brain = scaffolded_project
+        
+        # Create an open audit file
+        audit_file = brain / "audit" / "open-audit.md"
+        audit_file.parent.mkdir(parents=True, exist_ok=True)
+        audit_file.write_text(
+            """---
+id: OPEN-001
+severity: error
+target: wiki/index.md
+author: Test
+created: 2024-01-01
+status: open
+---
+
+# Comment
+
+Open item.
+""",
+            encoding="utf-8"
+        )
+        
+        # Create a resolved audit file
+        resolved_dir = brain / "audit" / "resolved"
+        resolved_dir.mkdir(parents=True, exist_ok=True)
+        resolved_dir.mkdir(parents=True, exist_ok=True)
+        resolved_file = resolved_dir / "closed-audit.md"
+        resolved_file.write_text(
+            """---
+id: CLOSED-001
+severity: warn
+target: wiki/concepts/Test.md
+author: Tester
+created: 2024-01-01
+status: resolved
+---
+
+# Comment
+
+Resolved item.
+""",
+            encoding="utf-8"
+        )
+        
+        result = run_script("audit_review.py", [str(brain), "--all"])
+        
+        assert result.returncode == 0
+        # Should show both open and closed items
+        output = result.stdout
+        assert "OPEN-001" in output and "CLOSED-001" in output
+
 
     def test_audit_default_mode_is_open(self, run_script, scaffolded_project: Path):
         """Default mode (no flag) is --open."""
@@ -157,6 +267,7 @@ Resolved item.
         
         # Create an open audit file
         audit_file = brain / "audit" / "default-test.md"
+        audit_file.parent.mkdir(parents=True, exist_ok=True)
         audit_file.write_text(
             """---
 id: DEFAULT-001
@@ -190,6 +301,7 @@ Default mode test.
         severities = ["info", "suggest", "warn", "error"]
         for i, sev in enumerate(severities):
             audit_file = brain / "audit" / f"sev-{sev}.md"
+            audit_file.parent.mkdir(parents=True, exist_ok=True)
             audit_file.write_text(
                 f"""---
 id: SEV-{sev.upper()}
@@ -245,6 +357,7 @@ status: open
         
         # Create an audit file without frontmatter
         bad_audit = brain / "audit" / "bad-frontmatter.md"
+        bad_audit.parent.mkdir(parents=True, exist_ok=True)
         bad_audit.write_text(
             """# No Frontmatter
 

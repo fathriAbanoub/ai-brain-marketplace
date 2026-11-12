@@ -38,6 +38,7 @@ STOP_RULE_MARKER = "NEVER write or modify"
 FALLBACK_ENV_LINE = 'PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-}"'
 MARKETPLACE_GUESS = "plugins/cache/ai-brain-marketplace"
 CANDIDATE_LOOP_START = "for _c in"
+CANDIDATE_GUARD_START = 'if [ -z "$PLUGIN_ROOT" ]; then'
 BASE_DIR_ASSIGN = "BASE_DIR='<path-from-that-line>'"
 
 
@@ -126,23 +127,50 @@ def make_plugin_fixture(tmp_path: Path) -> Path:
 
 
 def extract_candidate_loop(text: str) -> str:
+    # Prefer the guarded block: the skills wrap the candidate loop in an
+    # empty-PLUGIN_ROOT guard so an already-resolved root is preserved, and
+    # the guarded block is what a session actually copies and runs. Fall
+    # back to the bare loop when no guard is present.
+    start = text.find(CANDIDATE_GUARD_START)
+    if start != -1:
+        end = text.find("\nfi", start)
+        if end != -1:
+            return text[start:end + len("\nfi")]
     start = text.find(CANDIDATE_LOOP_START)
     if start == -1:
         return ""
-    end = text.find("\ndone", start)
-    if end == -1:
+    # The taught loop may sit inside an `if [ -z "$PLUGIN_ROOT" ]` guard
+    # (skills run it only when no root is resolved yet), which indents the
+    # loop's `done`. Find the loop's own terminator, however indented.
+    m = re.search(r"(?m)^\s*done\s*$", text[start:])
+    if m is None:
         return ""
-    return text[start:end + len("\ndone")]
+    return text[start:start + m.end()]
 
 
-def run_taught_loop(loop_src: str, base_dir: Path) -> str:
+def run_taught_loop(loop_src: str, base_dir: Path,
+                    inherited_root: str = "") -> str:
+    # The taught block carries its own BASE_DIR placeholder line ("Set
+    # BASE_DIR to that path"); substitute it exactly as a session would.
+    # A bare loop (no guard) has no placeholder and uses the prepended value.
+    loop_src = loop_src.replace("'<path-from-that-line>'", repr(str(base_dir)))
     script = (
         'PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-}"\n'
         "BASE_DIR=" + repr(str(base_dir)) + "\n"
         + loop_src
         + '\nprintf "%s" "$PLUGIN_ROOT"\n'
     )
-    proc = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+    # The subprocess must not inherit a CLAUDE_PLUGIN_ROOT from the runner:
+    # the script under test derives PLUGIN_ROOT from that variable itself,
+    # and an inherited value would make the empty-root expectations depend on
+    # where pytest happens to run. The preservation case passes one
+    # explicitly instead.
+    import os
+    env = {k: v for k, v in os.environ.items() if k != "CLAUDE_PLUGIN_ROOT"}
+    if inherited_root:
+        env["CLAUDE_PLUGIN_ROOT"] = inherited_root
+    proc = subprocess.run(["bash", "-c", script], capture_output=True, text=True,
+                          env=env)
     assert proc.returncode == 0, proc.stderr
     return proc.stdout.strip()
 
@@ -164,7 +192,7 @@ class TestBaseDirDepthRobustness:
                 f"{skill_md}: the candidate loop must be runnable code, not a "
                 "comment recipe (comment recipes get re-typed at the wrong depth)"
             )
-        assert "\ndone" in text, f"{skill_md}: loop terminator missing"
+        assert re.search(r"(?m)^\s*done\s*$", text), f"{skill_md}: loop terminator missing"
 
     @pytest.mark.parametrize("below", [0, 1, 2])
     def test_taught_loop_resolves_plugin_root_at_any_depth(self, below, tmp_path):
@@ -185,6 +213,21 @@ class TestBaseDirDepthRobustness:
         assert loop, "brain SKILL.md: no candidate loop to test"
         assert run_taught_loop(loop, tmp_path) == "", (
             "loop must not invent a root when no candidate has bin/"
+        )
+
+    def test_taught_loop_preserves_resolved_root(self, tmp_path):
+        """A root already resolved from CLAUDE_PLUGIN_ROOT is preserved: the
+        taught selection runs only when PLUGIN_ROOT is empty, never
+        overwriting a valid root with a base-directory candidate."""
+        plugin = make_plugin_fixture(tmp_path)
+        other = tmp_path / "othertree"
+        (other / "bin").mkdir(parents=True)  # a DIFFERENT valid candidate
+        loop = extract_candidate_loop(
+            (SKILLS_DIR / "brain" / "SKILL.md").read_text(encoding="utf-8")
+        )
+        assert loop, "brain SKILL.md: no candidate loop to test"
+        assert run_taught_loop(loop, other, inherited_root=str(plugin)) == str(plugin), (
+            "a resolved PLUGIN_ROOT must survive the candidate selection"
         )
 
 

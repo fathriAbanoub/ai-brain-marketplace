@@ -39,11 +39,14 @@ PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-}"
 # If still empty: the harness prints "Base directory for this skill: <path>"
 # directly above this skill's text. Do NOT count dirname levels by hand — a
 # wrong depth guess ends on a foreign copy of the plugin. Take the first
-# candidate that actually contains the plugin's bin/:
-BASE_DIR='<path-from-that-line>'
-for _c in "$BASE_DIR" "$(dirname "$BASE_DIR")" "$(dirname "$(dirname "$BASE_DIR")")"; do
-  if [ -d "$_c/bin" ]; then PLUGIN_ROOT="$_c"; break; fi
-done
+# candidate that actually contains the plugin's bin/. The candidate loop
+# runs only when PLUGIN_ROOT is still empty — never overwrite a resolved root.
+if [ -z "$PLUGIN_ROOT" ]; then
+  BASE_DIR='<path-from-that-line>'
+  for _c in "$BASE_DIR" "$(dirname "$BASE_DIR")" "$(dirname "$(dirname "$BASE_DIR")")"; do
+    if [ -d "$_c/bin" ]; then PLUGIN_ROOT="$_c"; break; fi
+  done
+fi
 # Verify before use: ls "$PLUGIN_ROOT/bin" must list the project-brain-* wrappers.
 : "${PLUGIN_ROOT:=$(ls -d ~/.openclaude/plugins/cache/ai-brain-marketplace/project-brain/*/ 2>/dev/null | sort -V | tail -1)}"
 : "${PLUGIN_ROOT:=$HOME/.openclaude/plugins/marketplaces/ai-brain-marketplace/project-brain}"
@@ -159,7 +162,7 @@ missing.
 7. **Leftover-wing check (new brains only — skip on re-init):** read the recorded `mempalace_wing` from the new `.brain/CLAUDE.md`, call `mempalace_status`, then `mempalace_list_wings`; report any match separately with its drawer count and offer cleanup via `/project-brain:reset` — never delete unasked (full procedure: `references/wing-ownership.md` → "Leftover-wing check").
 8. Ingest the project's primary sources (README, manifests, entry points)
    into `.brain/raw/` or pointer files per `references/evidence-lifecycle.md`.
-9. Compile wiki pages from those primary sources under Contracts 7 and 8 (read `references/wiki-schema.md` before the first write): update System Overview, add source summaries under `.brain/wiki/sources/` with `reliability:` frontmatter, regenerate the index with `project-brain-lint <project-root> --reindex`, record contradictions in the source page and `open-questions.md`. Then run the Work loop (steps 4–7) until the gate passes.
+9. Compile wiki pages from those primary sources under Contracts 7 and 8 (read `references/wiki-schema.md` before the first write): update System Overview, add source summaries under `.brain/wiki/sources/` with `reliability:` frontmatter, regenerate the index with `project-brain-lint <project-root> --reindex`, record contradictions in the source page and `open-questions.md`. Then run the Work loop (steps 2–7) until the gate passes — steps 2–3 come first on a fresh brain: no inventory or digests exist yet, and the step 7 coverage gate cannot run without them.
 10. Mine `.brain/wiki` into the wiki wing with an explicit `--wing` from
     `mempalace_wing` (Recipe 3 in mempalace-tools.md; dry run first). Never
     mine the project root into the wiki wing.
@@ -193,7 +196,7 @@ CLI. Do not reinstall either.
 
 **1. Verify before calling any tool unavailable.** A tool is unavailable only if it is in NEITHER the tool list NOR the deferred-tools list. A deferred tool exists — load its schema first with ONE ToolSearch call (query `select:<full name 1>,<full name 2>` — comma-separated exact full names — and `max_results` at least the number of names; success = the names appear in the returned `<functions>` block), then call it; for MemPalace the verification call is `mempalace_status`. Report a failing call as the real failure it is, with the tool and the error. Never probe with shell/node/pip, never write a check that always succeeds, never build a workaround client. Covers ANY tool (including `TaskCreate`). Details: `references/deferred-tools.md`.
 
-**2. Never reinvent graphify — keep its precedence straight.** Do not write scripts to parse code structure or extract relationships. Precedence: `/graphify` skill = PRIMARY builder (it runs the semantic pass through the session's own model — per this project's setup, reported, verify on first use); graphify MCP tools = query surface once a graph exists (deferred; reconnect the server after the FIRST build — it reads the graph at startup); CLI = FALLBACK (`graphify .` full build, `graphify update .` code-only; `GRAPHIFY_BACKEND=none` on BOTH `extract` and `cluster-only` when no API access, or you get "Community N" placeholders). Details: `references/graphify-workflow.md`.
+**2. Never reinvent graphify — keep its precedence straight.** Do not write scripts to parse code structure or extract relationships. Precedence: `/graphify` skill = PRIMARY builder (it runs the semantic pass through the session's own model — per this project's setup, reported, verify on first use); graphify MCP tools = query surface once a graph exists (deferred; reconnect the server after ANY change to graph.json — first build, full rebuild, or incremental `graphify update .` — it reads the graph at startup); CLI = FALLBACK (`graphify .` full build, `graphify update .` code-only; `GRAPHIFY_BACKEND=none` on BOTH `extract` and `cluster-only` when no API access, or you get "Community N" placeholders). Details: `references/graphify-workflow.md`.
 
 **3. Never let wiki edits be the last step.** Every wiki edit is followed by
 the post-wiki loop (below). No exceptions — the loop is what makes the brain
@@ -241,8 +244,9 @@ script exit codes is a failure.
      full list). Code-only changes: `graphify update .` (AST-only, no API
      cost). Docs/images/comments: `/graphify .`.
    - Any other stale reason → `/graphify .` via the skill.
-   Skip graphify for wiki-only changes. After a full build, reconnect the
-   graphify MCP server before querying it.
+   Skip graphify for wiki-only changes. After ANY change to graph.json (full
+   build or incremental `graphify update .`), reconnect the graphify MCP
+   server before querying it.
 4. Consolidate MemPalace memory (diary entry) if session context changed;
    record contradictions and open questions; update the session brief; append
    a log entry; run lint for large changes.

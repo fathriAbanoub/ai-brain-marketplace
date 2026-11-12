@@ -21,11 +21,14 @@ PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-}"
 # the marketplace paths below do not exist). Do NOT count dirname levels by
 # hand — a wrong depth guess cascades into a filesystem hunt that can end on
 # a foreign copy of the plugin. Set BASE_DIR to that path and take the first
-# candidate that actually contains the plugin's bin/:
-BASE_DIR='<path-from-that-line>'
-for _c in "$BASE_DIR" "$(dirname "$BASE_DIR")" "$(dirname "$(dirname "$BASE_DIR")")"; do
-  if [ -d "$_c/bin" ]; then PLUGIN_ROOT="$_c"; break; fi
-done
+# candidate that actually contains the plugin's bin/. The candidate loop runs
+# only when PLUGIN_ROOT is still empty — never overwrite a resolved root.
+if [ -z "$PLUGIN_ROOT" ]; then
+  BASE_DIR='<path-from-that-line>'
+  for _c in "$BASE_DIR" "$(dirname "$BASE_DIR")" "$(dirname "$(dirname "$BASE_DIR")")"; do
+    if [ -d "$_c/bin" ]; then PLUGIN_ROOT="$_c"; break; fi
+  done
+fi
 # Verify before use: ls "$PLUGIN_ROOT/bin" must list the project-brain-* wrappers.
 : "${PLUGIN_ROOT:=$(ls -d ~/.openclaude/plugins/cache/ai-brain-marketplace/project-brain/*/ 2>/dev/null | sort -V | tail -1)}"
 : "${PLUGIN_ROOT:=$HOME/.openclaude/plugins/marketplaces/ai-brain-marketplace/project-brain}"

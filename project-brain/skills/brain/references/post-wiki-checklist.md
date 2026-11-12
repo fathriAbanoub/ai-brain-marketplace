@@ -4,7 +4,7 @@ Use this every time the agent writes or edits wiki pages.
 
 ## Required
 
-- [ ] Update `.brain/wiki/index.md`.
+- [ ] Regenerate `.brain/wiki/index.md` with `project-brain-lint <project-root> --reindex` (never by hand).
 - [ ] Add wikilinks to related pages.
 - [ ] Add or update decision records when choices were made.
 - [ ] Resolve open questions: for each question in `open-questions.md`, make a genuine attempt to answer it from the files already read. If the answer exists in any file you have access to, document it in the relevant wiki page and remove the question from open-questions.md. Only leave a question open if: (a) the answer requires reading a file not yet ingested, OR (b) the answer genuinely does not exist anywhere in the codebase. For case (a), name the specific file that needs to be read next. Never leave a question open if the answer is visible in a file you have already read.
@@ -14,6 +14,7 @@ Use this every time the agent writes or edits wiki pages.
   - Reason starts with `"uncommitted changes to source files:"` → check what changed. If the reason says more paths follow (marker contains "more paths omitted"), run `git status` first to see the full list. Then decide: code-only changes use `graphify update .` (AST-only, no API cost); docs/images/comments changes use `/graphify .`
   - Any other stale reason → `/graphify .`
   Wiki edits alone do NOT change the repo — skip graphify for wiki-only changes.
+  After a full build, reconnect the graphify MCP server before querying it (it reads the graph at startup); the CLI is the fallback, with `GRAPHIFY_BACKEND=none` on BOTH `extract` and `cluster-only` when no API access (see `references/graphify-workflow.md`).
 - [ ] Update `.brain/state/session-brief.md` if project understanding changed.
 - [ ] Append a log entry in `.brain/log/YYYYMMDD.md`.
 

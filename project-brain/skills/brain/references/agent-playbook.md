@@ -106,7 +106,7 @@ Ask the user when a choice changes the brain's scope, privacy, or source of trut
 
 Act without asking when:
 
-- updating the index,
+- regenerating the index (`project-brain-lint <project-root> --reindex`),
 - adding wikilinks,
 - logging work,
 - moving resolved audit notes,
@@ -131,8 +131,8 @@ Compress a wiki page when:
 
 1. Read the wiki index end to end, looking for duplicates, orphans, and stubs.
 2. For each candidate, check whether other pages link to it before deleting or merging.
-3. When merging: keep the richer page, add a redirect note in the thinner page, update all wikilinks pointing to the old page, update the index.
-4. When archiving: move the page to `.brain/wiki/archive/`, update the index, add a log entry.
+3. When merging: keep the richer page, add a redirect note in the thinner page, update all wikilinks pointing to the old page, then regenerate the index with `project-brain-lint <project-root> --reindex`.
+4. When archiving: move the page to `.brain/wiki/archive/`, regenerate the index with `project-brain-lint <project-root> --reindex`, add a log entry.
 5. Never delete a page with a decision record or source link without verifying the decision/source is captured elsewhere.
 6. After compression, run `project-brain-lint` to verify no broken wikilinks were introduced.
 

@@ -31,6 +31,7 @@ def valid_transcript() -> list[dict]:
     return [
         {"tool": "mempalace_list_drawers", "wing": WING, "limit": mr.PAGE_LIMIT,
          "returned_ids": ["d1", "d2", "d3"]},
+        {"tool": "mempalace_get_taxonomy", "wing": WING, "drawer_count": 3},
         {"tool": "mempalace_delete_drawers", "wing": WING, "ids": ["d1", "d2"],
          "deleted_ids": ["d1", "d2"]},
         {"tool": "mempalace_delete_drawers", "wing": WING, "ids": ["d3"],
@@ -128,13 +129,81 @@ class TestTranscriptVerifier:
         proj = tmp_project / "reset-project"
         proj.mkdir(parents=True)
         write_transcript(proj, [
+            {"tool": "mempalace_list_drawers", "wing": WING, "limit": mr.PAGE_LIMIT,
+             "returned_ids": ["d1"]},
             {"tool": "mempalace_delete_drawers", "wing": "wiki_something_else",
              "ids": ["d1"], "deleted_ids": ["d1"]},
             {"tool": "mempalace_list_wings", "wings": []},
         ])
         result = verify(run_script, proj)
         assert result.returncode == 1
-        assert "wing" in result.stderr
+        assert "not recorded as deleted" in result.stderr
+
+    def test_normalized_twin_wing_delete_not_accepted(self, run_script, tmp_project: Path):
+        """A delete record for a normalized twin (same slug, different exact
+        name) is another wing's record: it must not satisfy this wing's
+        contract even though normalize_wing_for_compare maps both to one key."""
+        proj = tmp_project / "reset-project"
+        proj.mkdir(parents=True)
+        assert mr.normalize_wing_for_compare("wiki-transcript-test") == mr.normalize_wing_for_compare(WING)
+        write_transcript(proj, [
+            {"tool": "mempalace_list_drawers", "wing": WING, "limit": mr.PAGE_LIMIT,
+             "returned_ids": ["d1", "d2"]},
+            {"tool": "mempalace_get_taxonomy", "wing": WING, "drawer_count": 2},
+            {"tool": "mempalace_delete_drawers", "wing": "wiki-transcript-test",
+             "ids": ["d1", "d2"], "deleted_ids": ["d1", "d2"]},
+            {"tool": "mempalace_list_wings", "wings": []},
+        ])
+        result = verify(run_script, proj)
+        assert result.returncode == 1
+        assert "not recorded as deleted" in result.stderr
+
+    def test_multi_wing_shared_transcript_each_wing_verifies(self, run_script, tmp_project: Path):
+        """Step 3 writes every confirmed wing's calls to one transcript; the
+        verifier for one wing skips the other wing's records instead of
+        reporting them as violations."""
+        proj = tmp_project / "reset-project"
+        proj.mkdir(parents=True)
+        other = "wiki_diary_other"
+        lines = [
+            {"tool": "mempalace_list_drawers", "wing": other, "limit": mr.PAGE_LIMIT,
+             "returned_ids": ["x1"]},
+            {"tool": "mempalace_get_taxonomy", "wing": other, "drawer_count": 1},
+            {"tool": "mempalace_delete_drawers", "wing": other, "ids": ["x1"],
+             "deleted_ids": ["x1"]},
+        ] + valid_transcript()
+        write_transcript(proj, lines)
+        result = verify(run_script, proj)
+        assert result.returncode == 0, result.stdout + result.stderr
+
+    def test_missing_pre_delete_taxonomy_rejected(self, run_script, tmp_project: Path):
+        proj = tmp_project / "reset-project"
+        proj.mkdir(parents=True)
+        write_transcript(proj, [
+            {"tool": "mempalace_list_drawers", "wing": WING, "limit": mr.PAGE_LIMIT,
+             "returned_ids": ["d1"]},
+            {"tool": "mempalace_delete_drawers", "wing": WING, "ids": ["d1"],
+             "deleted_ids": ["d1"]},
+            {"tool": "mempalace_list_wings", "wings": []},
+        ])
+        result = verify(run_script, proj)
+        assert result.returncode == 1
+        assert "no mempalace_get_taxonomy record before the first delete" in result.stderr
+
+    def test_taxonomy_count_mismatch_rejected(self, run_script, tmp_project: Path):
+        proj = tmp_project / "reset-project"
+        proj.mkdir(parents=True)
+        write_transcript(proj, [
+            {"tool": "mempalace_list_drawers", "wing": WING, "limit": mr.PAGE_LIMIT,
+             "returned_ids": ["d1", "d2", "d3"]},
+            {"tool": "mempalace_get_taxonomy", "wing": WING, "drawer_count": 2},
+            {"tool": "mempalace_delete_drawers", "wing": WING, "ids": ["d1", "d2", "d3"],
+             "deleted_ids": ["d1", "d2", "d3"]},
+            {"tool": "mempalace_list_wings", "wings": []},
+        ])
+        result = verify(run_script, proj)
+        assert result.returncode == 1
+        assert "counts disagree" in result.stderr
 
     def test_missing_and_corrupt_transcript(self, run_script, tmp_project: Path):
         proj = tmp_project / "reset-project"

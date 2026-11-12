@@ -226,8 +226,11 @@ def verify_reset_transcript(root: Path, wing: str) -> int:
     Contracts checked: no single-drawer deletes; batch size 1..MAX_BATCH;
     page limit <= PAGE_LIMIT; every enumerated drawer id recorded as deleted;
     wing-cleared evidence (list_wings absence or taxonomy drawer_count 0)
-    after the last delete; every call targets the expected wing. Exit 0 only
-    when the transcript satisfies every contract.
+    after the last delete; a mempalace_get_taxonomy count cross-check before
+    the first delete whose count matches the pre-delete enumeration
+    (reset skill Step 3a.4). The transcript is shared across confirmed wings,
+    so records naming a different wing (exact-name comparison) are skipped,
+    not violations. Exit 0 only when the transcript satisfies every contract.
     """
     import mempalace_reset as mr
 
@@ -257,6 +260,12 @@ def verify_reset_transcript(root: Path, wing: str) -> int:
     wing_absent: bool | None = None
     drawer_count: int | None = None
     cleared_evidence_after_delete = False
+    # Step 3a.4 cross-check state: the enumeration must be compared against a
+    # pre-deletion mempalace_get_taxonomy count before anything is deleted.
+    delete_started = False
+    enumerated_pre_delete: set[str] = set()
+    saw_taxonomy_pre_delete = False
+    taxonomy_count_pre_delete: int | None = None
     for i, rec in enumerate(records, start=1):
         tool = str(rec.get("tool", ""))
         if tool in PROHIBITED_TRANSCRIPT_TOOLS:
@@ -267,10 +276,25 @@ def verify_reset_transcript(root: Path, wing: str) -> int:
             violations.append(f"line {i}: unknown or unrecorded tool {tool!r}")
             continue
         rec_wing = rec.get("wing")
-        if rec_wing is not None and mr.normalize_wing_for_compare(str(rec_wing)) != target:
-            violations.append(f"line {i}: call targets wing {rec_wing!r}, expected {wing!r}")
+        if rec_wing is not None and str(rec_wing) != wing:
+            # Another confirmed wing's record in the shared transcript. Exact
+            # name comparison: a normalized twin is a distinct wing and its
+            # records must never count for (or against) this one.
             continue
         if tool == "mempalace_delete_drawers":
+            if not delete_started:
+                delete_started = True
+                if not saw_taxonomy_pre_delete:
+                    violations.append(
+                        f"line {i}: no mempalace_get_taxonomy record before the first delete — "
+                        "cross-check the enumeration against the taxonomy drawer_count "
+                        "before any deletion (reset skill Step 3a.4)")
+                elif taxonomy_count_pre_delete != len(enumerated_pre_delete):
+                    violations.append(
+                        f"line {i}: enumerated {len(enumerated_pre_delete)} drawer(s) before the "
+                        f"first delete but the pre-deletion taxonomy reported "
+                        f"{taxonomy_count_pre_delete} — counts disagree; the skill requires "
+                        "STOP, delete nothing, re-run the enumeration")
             ids = rec.get("ids")
             size = len(ids) if isinstance(ids, list) else -1
             if not (1 <= size <= mr.MAX_BATCH):
@@ -288,7 +312,10 @@ def verify_reset_transcript(root: Path, wing: str) -> int:
                 violations.append(f"line {i}: page limit {limit} exceeds {mr.PAGE_LIMIT}")
             ret = rec.get("returned_ids")
             if isinstance(ret, list):
-                enumerated.update(str(x) for x in ret)
+                page_ids = {str(x) for x in ret}
+                enumerated.update(page_ids)
+                if not delete_started:
+                    enumerated_pre_delete.update(page_ids)
         elif tool == "mempalace_list_wings":
             wings = rec.get("wings")
             if isinstance(wings, list):
@@ -301,6 +328,9 @@ def verify_reset_transcript(root: Path, wing: str) -> int:
             if isinstance(count, int):
                 drawer_count = count
                 cleared_evidence_after_delete = True
+                if not delete_started:
+                    saw_taxonomy_pre_delete = True
+                    taxonomy_count_pre_delete = count
 
     not_deleted = enumerated - deleted
     if not_deleted:

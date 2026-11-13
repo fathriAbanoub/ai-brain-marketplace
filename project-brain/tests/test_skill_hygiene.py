@@ -303,3 +303,21 @@ class TestWikiSchemaAuthoringRules:
     def test_line_refs_must_be_verified(self):
         text = (BRAIN_REFS / "wiki-schema.md").read_text(encoding="utf-8")
         assert "grep -n" in text and "never copy line numbers" in text.lower()
+
+
+class TestResetSkillConfirmGuard:
+    """CodeRabbit fix: Step 2's classifier run and Step 3c's transcript
+    verification must never carry the confirmed deletion. --confirm is
+    reserved for Step 5, after its dry run and the user's explicit yes."""
+
+    def test_reset_skill_phases_do_not_attach_confirm(self):
+        text = (SKILLS_DIR / "reset" / "SKILL.md").read_text(encoding="utf-8")
+        assert "performs ONLY its own phase's work" in text, (
+            "reset SKILL.md: the later-shell rule must scope each invocation "
+            "to its own phase's command"
+        )
+        assert "never attach the confirmed deletion to a classifier or verification invocation" in text
+        # The confirmed-run snippet is marked as the Step 5 confirmed run only.
+        assert "Step 5's CONFIRMED run only" in text
+        # The prohibition statement survives: --confirm requires dry run + yes.
+        assert "Never pass `--confirm` before the user has seen the dry-run output" in text

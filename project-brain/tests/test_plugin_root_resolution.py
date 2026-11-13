@@ -258,3 +258,62 @@ class TestFullPathInvocationRule:
         assert "Never type a bare `project-brain-*` command" in text, (
             f"{skill_md}: the never-bare invocation rule is missing"
         )
+
+
+ENV_GUARD_VALIDATION = 'if [ -n "$PLUGIN_ROOT" ] && [ ! -d "$PLUGIN_ROOT/bin" ]; then'
+
+
+class TestEnvRootValidation:
+    """CodeRabbit fix: a stale CLAUDE_PLUGIN_ROOT (moved/foreign installation)
+    must not let the empty-PLUGIN_ROOT guard skip discovery. Every fallback
+    skill validates the env value against the plugin's bin/ and clears it when
+    invalid, so the base-directory candidates still run."""
+
+    @pytest.mark.parametrize("skill_md", skills_with_fallback(), ids=lambda p: p.parent.name)
+    def test_env_value_validated_before_guard(self, skill_md: Path):
+        text = skill_md.read_text(encoding="utf-8")
+        assert ENV_GUARD_VALIDATION in text, (
+            f"{skill_md}: CLAUDE_PLUGIN_ROOT is accepted without validation — "
+            "a moved or foreign installation would skip discovery entirely"
+        )
+        # The validation must run BEFORE the guarded candidate loop, so an
+        # invalid value is already cleared when discovery starts.
+        assert text.find(ENV_GUARD_VALIDATION) < text.find(CANDIDATE_GUARD_START), (
+            f"{skill_md}: the validation must precede the candidate-loop guard"
+        )
+
+    def test_taught_guard_clears_stale_env_value(self, tmp_path):
+        """Behavioral: with CLAUDE_PLUGIN_ROOT pointing at a directory without
+        bin/, the taught snippet clears it and resolves the base-directory
+        root instead; a VALID env value is preserved."""
+        plugin = make_plugin_fixture(tmp_path)
+        base = plugin / "skills" / "brain"
+        stale = tmp_path / "moved-away"
+        stale.mkdir()  # exists but has no bin/
+        text = (SKILLS_DIR / "brain" / "SKILL.md").read_text(encoding="utf-8")
+        env_line = FALLBACK_ENV_LINE
+        idx = text.find(env_line)
+        guard_idx = text.find(ENV_GUARD_VALIDATION)
+        fi_idx = text.find("\nfi", guard_idx)
+        assert idx != -1 and guard_idx != -1 and fi_idx != -1
+        validation_block = text[guard_idx:fi_idx + len("\nfi")]
+        loop = extract_candidate_loop(text)
+        assert loop, "no candidate loop to test"
+        # Substitute BASE_DIR exactly as a session would (run_taught_loop's rule).
+        script = (
+            env_line + "\n"
+            + validation_block + "\n"
+            + loop.replace("'<path-from-that-line>'", repr(str(base))) + "\n"
+            'printf "%s" "$PLUGIN_ROOT"\n'
+        )
+        import os
+        env = {k: v for k, v in os.environ.items() if k != "CLAUDE_PLUGIN_ROOT"}
+        # Stale value: cleared, discovery finds the base-directory root.
+        env["CLAUDE_PLUGIN_ROOT"] = str(stale)
+        proc = subprocess.run(["bash", "-c", script], capture_output=True, text=True, env=env)
+        assert proc.returncode == 0, proc.stderr
+        assert proc.stdout.strip() == str(plugin)
+        # Valid value: preserved.
+        env["CLAUDE_PLUGIN_ROOT"] = str(plugin)
+        proc = subprocess.run(["bash", "-c", script], capture_output=True, text=True, env=env)
+        assert proc.stdout.strip() == str(plugin)

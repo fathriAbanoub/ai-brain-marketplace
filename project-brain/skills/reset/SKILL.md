@@ -179,6 +179,11 @@ Use the SAME command form for both the dry run and the confirmed run. If `projec
 
 ```bash
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-}"
+# A stale CLAUDE_PLUGIN_ROOT (moved/foreign copy) must not skip discovery:
+# validate it against bin/ and clear it when invalid; a valid one is kept.
+if [ -n "$PLUGIN_ROOT" ] && [ ! -d "$PLUGIN_ROOT/bin" ]; then
+  PLUGIN_ROOT=""
+fi
 # If still empty: the harness prints "Base directory for this skill: <path>"
 # directly above this skill's text (verified in --plugin-dir sessions, where
 # the marketplace paths below do not exist). Do NOT count dirname levels by
@@ -208,12 +213,15 @@ After any shell resolves PLUGIN_ROOT successfully, persist it — the variable d
 printf '%s' "$PLUGIN_ROOT" > .brain/state/plugin-root.txt
 ```
 
-In every LATER shell — Step 2's classifier run, Step 3c's transcript verification, and the confirmed run below — try the persisted value first (with a staleness check — a moved plugin must fall back to re-resolution, never be used blindly), then run the confirmed deletion in that same invocation. When the persisted value is missing or fails the staleness check, re-run the FULL Step 5 resolution chain (CLAUDE_PLUGIN_ROOT → base-directory candidates → marketplace paths) in that same invocation — and if it still resolves to nothing, STOP with a clear message naming the paths you tried: the confirmed deletion must never run with an empty `PLUGIN_ROOT`:
+In every LATER shell — Step 2's classifier run, Step 3c's transcript verification, and the confirmed run below — try the persisted value first (with a staleness check — a moved plugin must fall back to re-resolution, never be used blindly). When the persisted value is missing or fails the staleness check, re-run the FULL Step 5 resolution chain (CLAUDE_PLUGIN_ROOT → base-directory candidates → marketplace paths) in that same invocation — and if it still resolves to nothing, STOP with a clear message naming the paths you tried: no `project-brain-*` command may ever run with an empty `PLUGIN_ROOT`. Each of those invocations performs ONLY its own phase's work after resolving the root: Step 2 runs the classifier, Step 3c runs the transcript verification, and neither ever carries `--confirm` or deletes anything. `--confirm` and deletion are reserved for the Step 5 confirmed run, and only after its dry run has been shown to the user and they answered yes — never attach the confirmed deletion to a classifier or verification invocation:
 
 ```bash
+# Step 5's CONFIRMED run only — never a Step 2 classifier or Step 3c
+# verification invocation; those resolve PLUGIN_ROOT the same way but run
+# their own single command without --confirm.
 PLUGIN_ROOT="$(cat .brain/state/plugin-root.txt 2>/dev/null || true)"
 if [ -z "$PLUGIN_ROOT" ] || [ ! -d "$PLUGIN_ROOT/bin" ]; then
-  echo "error: PLUGIN_ROOT missing or invalid — re-run the Step 5 resolution chain; never run the confirmed deletion with an empty PLUGIN_ROOT" >&2
+  echo "error: PLUGIN_ROOT missing or invalid — re-run the Step 5 resolution chain; never run any project-brain command with an empty PLUGIN_ROOT" >&2
   exit 127
 fi
 "$PLUGIN_ROOT/bin/project-brain-reset" <project-root> --confirm

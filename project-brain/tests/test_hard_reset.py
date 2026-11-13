@@ -412,8 +412,8 @@ def test_multi_wing_hard_reset(palace):
 # --- CodeRabbit fix: name-keyed registry rows are part of the plan --------------
 
 def test_name_keyed_registry_in_plan_hash_and_verify(tmp_path):
-    """A registry keyed by 'name' is absent from plan.tables but its row for
-    the confirmed wing is deleted: it must be counted in affected rows and
+    """A registry keyed by 'name' is absent from plan.tables but its rows for
+    the confirmed wings are deleted: they must be counted in affected rows and
     the plan hash, and verified after deletion."""
     db = make_palace(tmp_path / "palace.db", {"wiki_target": 3, "wiki_other": 2})
     conn = sqlite3.connect(db)
@@ -421,7 +421,11 @@ def test_name_keyed_registry_in_plan_hash_and_verify(tmp_path):
     conn.execute("INSERT INTO wings (name) VALUES ('wiki_target'), ('wiki_other')")
     conn.commit()
     conn.close()
-    plan = hr.build_plan(db, ["wiki_target"])
+    # The baseline plan targets BOTH wings and is built BEFORE the registry
+    # row is inserted: plan_hash covers plan.wings, so only a same-wings
+    # comparison isolates the registry change under test.
+    wings = ["wiki_target", "wiki_target2"]
+    plan = hr.build_plan(db, wings)
     assert plan.registry_table == "wings"
     assert plan.registry_key == "name"
     assert plan.registry_row_count == 1
@@ -433,9 +437,9 @@ def test_name_keyed_registry_in_plan_hash_and_verify(tmp_path):
     conn.execute("INSERT INTO wings (name) VALUES ('wiki_target2')")
     conn.commit()
     conn.close()
-    plan2 = hr.build_plan(db, ["wiki_target", "wiki_target2"])
+    plan2 = hr.build_plan(db, wings)
     assert hr.plan_hash(plan2) != hash_before
-    # Post-deletion verification: the registry row is gone.
+    # Post-deletion verification: the registry rows are gone.
     backup = hr.make_backup(plan)
     conn = sqlite3.connect(str(db))
     try:

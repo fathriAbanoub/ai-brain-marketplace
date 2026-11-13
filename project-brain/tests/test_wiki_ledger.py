@@ -812,3 +812,106 @@ class TestClearerMessages:
         assert "(- lines are in the page now, + lines are in the target)" in r.stdout
         # Direction unchanged: minus = current content, plus = the target.
         assert "-# A v2" in r.stdout and "+# A v1" in r.stdout
+
+
+# --- CodeRabbit fixes: exact historical filenames + rename-aware preview --------
+
+def _full_hashes(proj: Path, count: int) -> list[str]:
+    """Full snapshot hashes, oldest first, via a throwaway WikiLedger."""
+    ledger = wiki_ledger.WikiLedger(proj)
+    entries = ledger.log(count)
+    return [e[0] for e in reversed(entries)]
+
+
+def _snapshot_quoted_history(proj: Path) -> list[str]:
+    """Three snapshots: weird/old.md created (v1), renamed in place to
+    weird/we"ird.md (same content, so the rename is detected), then edited
+    (v2). Returns the full hashes oldest-first."""
+    page = write_page(proj, "weird/old.md", "v1 body\n")
+    run_cli(proj, "snapshot", "-m", "c1: create")
+    os.rename(page, page.with_name("we\"ird.md"))  # rename, same content
+    run_cli(proj, "snapshot", "-m", "c2: rename")
+    quoted = page.with_name("we\"ird.md")
+    quoted.write_text("v2 body\n", encoding="utf-8")
+    run_cli(proj, "snapshot", "-m", "c3: edit")
+    return _full_hashes(proj, 3)
+
+
+class TestHistoricalNameParsing:
+    def test_pre_rename_source_preserves_quoted_name(self, proj: Path):
+        """A historical name with an embedded double quote is C-quoted by git
+        in non--z output; the follow-log must be parsed from -z output split
+        on NUL without stripping, so restore looks up the ORIGINAL page."""
+        hashes = _snapshot_quoted_history(proj)
+        ledger = wiki_ledger.WikiLedger(proj)
+        rel = 'weird/we"ird.md'
+        rev_before_rename = hashes[0]  # c1: only weird/old.md exists
+        assert not ledger._page_in_rev(rel, rev_before_rename)
+        source = ledger._pre_rename_source(rel, rev_before_rename)
+        assert source == "weird/old.md"
+        # The name is usable: the rev carries the page's content under it.
+        assert ledger._page_in_rev(source, rev_before_rename)
+
+    def test_restore_with_quoted_pre_rename_name(self, proj: Path):
+        _snapshot_quoted_history(proj)
+        first = _full_hashes(proj, 3)[0]
+        r = run_cli(proj, "restore", 'weird/we"ird.md', "--rev", first)
+        assert r.returncode == 0, r.stderr
+        assert "predates the rename" in r.stdout
+        assert "v1 body" in r.stdout
+
+
+def _snapshot_rename_history(proj: Path) -> list[str]:
+    """Three snapshots: notes/Old.md created ("old v1"), renamed in place to
+    notes/New.md (same content, so the rename is detected), then edited
+    ("new v2 (edited)"). Returns full hashes oldest-first."""
+    write_page(proj, "notes/Old.md", "old v1\n")
+    run_cli(proj, "snapshot", "-m", "c1: create")
+    os.rename(proj / ".brain" / "wiki" / "notes" / "Old.md",
+              proj / ".brain" / "wiki" / "notes" / "New.md")
+    run_cli(proj, "snapshot", "-m", "c2: rename")
+    write_page(proj, "notes/New.md", "new v2 (edited)\n")
+    run_cli(proj, "snapshot", "-m", "c3: edit")
+    return _full_hashes(proj, 3)
+
+
+class TestRenameRestorePreview:
+    def test_preview_shows_content_that_apply_will_replace(self, proj: Path):
+        """Old.md -> New.md: the dry run compares the CURRENT New.md content
+        with the target blob (not with the absent Old.md worktree path), so
+        the preview shows what --apply replaces and what it writes."""
+        hashes = _snapshot_rename_history(proj)
+        r = run_cli(proj, "restore", "notes/New.md", "--rev", hashes[0])
+        assert r.returncode == 0, r.stderr
+        out = r.stdout
+        assert "predates the rename" in out
+        # Current content shown as removed; target content shown as added:
+        assert "-new v2 (edited)" in out
+        assert "+old v1" in out
+
+    def test_preview_matches_apply_result(self, proj: Path):
+        hashes = _snapshot_rename_history(proj)
+        preview = run_cli(proj, "restore", "notes/New.md", "--rev", hashes[0])
+        assert preview.returncode == 0, preview.stderr
+        applied = run_cli(proj, "restore", "notes/New.md", "--rev", hashes[0], "--apply")
+        assert applied.returncode == 0, applied.stderr
+        page = proj / ".brain" / "wiki" / "notes" / "New.md"
+        assert page.read_text(encoding="utf-8") == "old v1\n"
+        # The applied content is exactly the target the preview showed:
+        assert "+old v1" in preview.stdout
+        assert "-new v2 (edited)" in preview.stdout
+
+    def test_preview_when_current_page_missing(self, proj: Path):
+        """rel absent from the worktree: the preview diffs /dev/null vs the
+        target (an addition), which is what --apply would write."""
+        write_page(proj, "notes/Old.md", "old v1\n")
+        run_cli(proj, "snapshot", "-m", "c1: create")
+        os.rename(proj / ".brain" / "wiki" / "notes" / "Old.md",
+                  proj / ".brain" / "wiki" / "notes" / "New.md")
+        run_cli(proj, "snapshot", "-m", "c2: rename")
+        (proj / ".brain" / "wiki" / "notes" / "New.md").unlink()
+        first = _full_hashes(proj, 2)[0]
+        r = run_cli(proj, "restore", "notes/New.md", "--rev", first)
+        assert r.returncode == 0, r.stderr
+        assert "+old v1" in r.stdout
+        assert "predates the rename" in r.stdout

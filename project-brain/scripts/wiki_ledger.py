@@ -50,6 +50,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -394,12 +395,15 @@ class WikiLedger:
         A revision can predate a rename: `cat-file rev:rel` fails even though
         the page's history (--follow) reaches it under an earlier name. The
         follow-log lists every name the page has had; the most recent one
-        that exists in rev is the restore source. Empty when none resolves."""
-        proc = self._run("log", "--follow", "--format=", "--name-only",
+        that exists in rev is the restore source. Empty when none resolves.
+        The listing is parsed from -z output split on NUL without any
+        stripping or quoting: a historical name with leading/trailing spaces
+        or embedded quotes must survive exactly, or the restore would look
+        up (or verify) a different page than the one the snapshot carries."""
+        proc = self._run("log", "--follow", "--format=", "--name-only", "-z",
                          "--", literal_spec(rel))
         names: dict[str, None] = {}
-        for line in proc.stdout.splitlines():
-            name = line.strip()
+        for name in proc.stdout.split(NUL):
             if name:
                 names.setdefault(name, None)
         for name in names:
@@ -571,6 +575,54 @@ class WikiLedger:
         if not self.has_snapshots():
             raise LedgerError("no snapshots yet — run `project-brain-wiki snapshot` first")
 
+    def _pre_rename_preview(self, rel: str, full: str, pre_rename: str) -> list[str]:
+        """Dry-run preview for a restore whose rev predates a rename.
+
+        Compares the CURRENT rel content with the target pre_rename blob, so
+        the preview shows exactly what --apply will replace (and with what):
+        diffing the pre-rename spec against the worktree would compare the
+        target blob with the ABSENT pre-rename path (git's -R swaps the two
+        diff sides; it does not substitute the current filename) and show an
+        addition that hides the replaced content. The blob is copied to a
+        temp file and diffed --no-index; temp and worktree paths are rewritten
+        back to rel so the output reads like the ordinary restore preview.
+        """
+        try:
+            proc = subprocess.run(
+                git_argv(self.git_dir, self.wiki, "cat-file", "blob", f"{full}:{pre_rename}"),
+                capture_output=True, timeout=self._remaining(), env=build_git_env(),
+                cwd=str(self.root))
+        except subprocess.TimeoutExpired as exc:
+            raise LedgerBusy(f"git cat-file timed out after {GIT_TIMEOUT_SECS:g}s — "
+                             "the ledger may be locked; retry after it finishes") from exc
+        except OSError as exc:
+            raise LedgerError(f"git cat-file failed to run: {exc}") from exc
+        if proc.returncode != 0:
+            raise LedgerError(
+                f"could not read the target content {full}:{pre_rename}: "
+                f"{proc.stderr.decode('utf-8', errors='replace').strip()}")
+        current_path = self.wiki / rel
+        from_side = str(current_path) if current_path.is_file() else "/dev/null"
+        fd, tmp_name = tempfile.mkstemp(prefix="wiki-restore-target-")
+        try:
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(proc.stdout)
+            diff_proc = self._run("diff", "--no-index", "--no-color", "--no-ext-diff",
+                                  "--", from_side, tmp_name, check=False)
+        finally:
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
+        lines: list[str] = []
+        for line in diff_proc.stdout.splitlines():
+            if tmp_name in line:
+                line = line.replace(tmp_name, rel)
+            if str(current_path) in line:
+                line = line.replace(str(current_path), rel)
+            lines.append(line)
+        return lines
+
     def _resolve_rev(self, rev: str) -> str:
         """Validate a revision and pin it to a full commit hash. Restores must
         resolve BEFORE the automatic pre-restore snapshot: a relative rev
@@ -648,11 +700,16 @@ class WikiLedger:
                 f"{rel} has uncommitted changes — snapshot them first "
                 "(`project-brain-wiki snapshot`) or pass --force to discard "
                 "them into an automatic snapshot")
-        # Dry run shows worktree -> target (-R swaps the sides of the rev-vs-
-        # worktree diff), i.e. exactly what --apply would write.
-        proc = self._run("diff", "--no-color", "--no-ext-diff", "-R", full,
-                         "--", spec, check=False)
-        lines = proc.stdout.splitlines()
+        # Dry run shows worktree -> target, i.e. exactly what --apply would
+        # write. For a pre-rename restore the target lives under the
+        # pre-rename name, so the preview is built from the current rel
+        # content vs the target blob instead (see _pre_rename_preview).
+        if pre_rename:
+            lines = self._pre_rename_preview(rel, full, pre_rename)
+        else:
+            proc = self._run("diff", "--no-color", "--no-ext-diff", "-R", full,
+                             "--", spec, check=False)
+            lines = proc.stdout.splitlines()
         if len(lines) > MAX_DIFF_LINES:
             lines = lines[:MAX_DIFF_LINES] + [TRUNCATION_NOTE.format(bound=MAX_DIFF_LINES)]
         if pre_rename:

@@ -553,9 +553,22 @@ class WingVerification:
 
 
 def _wing_drawer_count(mcp: McpLike, wing: str) -> tuple[bool, int, str]:
-    """Return (wing_absent, drawer_count, evidence) by fresh queries."""
+    """Return (wing_absent, drawer_count, evidence) by fresh queries.
+
+    An absent or malformed wings field is never read as an empty wing list:
+    an unrecognized listing cannot confirm that a wing is absent, so it
+    blocks the reset instead of certifying clearance."""
     wings_result = call_with_retry(mcp.list_wings, "list_wings")
-    wings_raw = _unwrap(wings_result, "wings") or []
+    wings_raw = _unwrap(wings_result, "wings")
+    if wings_raw is None:
+        raise ResetBlocked(
+            "list_wings returned no 'wings' field; cannot confirm that the "
+            "wing is absent — an unrecognized listing is never proof of absence"
+        )
+    if not isinstance(wings_raw, (list, dict)):
+        raise ResetBlocked(
+            f"list_wings returned non-collection wings: {type(wings_raw).__name__}"
+        )
     actual_names: list[str] = []
     for w in wings_raw:
         if isinstance(w, dict):
@@ -581,6 +594,7 @@ def _wing_drawer_count(mcp: McpLike, wing: str) -> tuple[bool, int, str]:
         for r in rooms_raw:
             room = str(r.get("name")) if isinstance(r, dict) else str(r)
             offset = 0
+            pages = 0
             while True:
                 result = call_with_retry(
                     lambda rm=room, o=offset: mcp.list_drawers(wing=wing, room=rm, limit=PAGE_LIMIT, offset=o),
@@ -588,6 +602,12 @@ def _wing_drawer_count(mcp: McpLike, wing: str) -> tuple[bool, int, str]:
                 )
                 items = _unwrap(result, "drawers") or []
                 total += len(items)
+                pages += 1
+                if pages > MAX_ENUM_PAGES:
+                    raise ResetBlocked(
+                        f"drawer pagination for wing {wing!r} room {room!r} exceeded "
+                        f"{MAX_ENUM_PAGES} pages without a short page; aborting verification"
+                    )
                 if len(items) < PAGE_LIMIT:
                     break
                 offset += PAGE_LIMIT
@@ -596,6 +616,7 @@ def _wing_drawer_count(mcp: McpLike, wing: str) -> tuple[bool, int, str]:
         # handling and probe the wing-level listing, so an unroomed wing is
         # not misread as empty.
         offset = 0
+        pages = 0
         while True:
             result = call_with_retry(
                 lambda o=offset: mcp.list_drawers(wing=wing, room="", limit=PAGE_LIMIT, offset=o),
@@ -603,6 +624,12 @@ def _wing_drawer_count(mcp: McpLike, wing: str) -> tuple[bool, int, str]:
             )
             items = _unwrap(result, "drawers") or []
             total += len(items)
+            pages += 1
+            if pages > MAX_ENUM_PAGES:
+                raise ResetBlocked(
+                    f"drawer pagination for wing {wing!r} exceeded {MAX_ENUM_PAGES} "
+                    "pages without a short page; aborting verification"
+                )
             if len(items) < PAGE_LIMIT:
                 break
             offset += PAGE_LIMIT
@@ -696,7 +723,12 @@ def _list_hallways_paginated(mcp: McpLike) -> list[dict]:
             lambda o=offset: mcp.list_hallways(limit=PAGE_LIMIT, offset=o),
             f"list_hallways(offset={offset})",
         )
-        items = _unwrap(result, "hallways") or []
+        items = _unwrap(result, "hallways")
+        if items is None:
+            # A missing field is an unrecognized response, never an empty page:
+            # reading it as [] would let collection and the post-deletion
+            # check report no in-scope records and pass cleanup.
+            raise ResetBlocked("list_hallways returned no 'hallways' field")
         if not isinstance(items, list):
             raise ResetBlocked("list_hallways returned non-list hallways")
         pages += 1
@@ -725,7 +757,19 @@ def collect_graph_records(mcp: McpLike, target_wings: list[str]) -> tuple[list[G
     except ResetBlocked as exc:
         report.failed["<list_tunnels>"] = str(exc)
     else:
-        for record in _unwrap(tunnels_result, "tunnels") or []:
+        tunnels_raw = _unwrap(tunnels_result, "tunnels")
+        if tunnels_raw is None:
+            # A missing field is an unrecognized response, never an empty
+            # listing: record the failure so collection and the post-deletion
+            # check cannot treat the outage as "no tunnels in scope".
+            report.failed["<list_tunnels>"] = "list_tunnels returned no 'tunnels' field"
+            tunnels_raw = []
+        elif not isinstance(tunnels_raw, list):
+            report.failed["<list_tunnels>"] = (
+                f"list_tunnels returned non-list tunnels: {type(tunnels_raw).__name__}"
+            )
+            tunnels_raw = []
+        for record in tunnels_raw:
             if not isinstance(record, dict):
                 continue
             wings = _tunnel_wings(record)

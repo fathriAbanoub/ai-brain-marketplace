@@ -335,18 +335,27 @@ def test_cleanup_graph_pages_through_all_hallway_pages():
 
 
 class ListingOutage:
-    """Delegates to a palace but fails the graph listing calls independently."""
+    """Delegates to a palace but fails the graph listing calls independently.
 
-    def __init__(self, palace, fail_tunnels: bool = False, fail_hallways: bool = False):
+    fail_tunnels_from_call=N fails only the Nth and later tunnel listings, so
+    a test can target the post-deletion verification listing specifically
+    while the first (collection) listing succeeds."""
+
+    def __init__(self, palace, fail_tunnels: bool = False, fail_hallways: bool = False,
+                 fail_tunnels_from_call: int | None = None):
         self._palace = palace
         self._fail_tunnels = fail_tunnels
         self._fail_hallways = fail_hallways
+        self._fail_tunnels_from_call = fail_tunnels_from_call
+        self._tunnel_listing_calls = 0
 
     def __getattr__(self, name):
         return getattr(self._palace, name)
 
     def list_tunnels(self, wing=None):
-        if self._fail_tunnels:
+        self._tunnel_listing_calls += 1
+        from_call = self._fail_tunnels_from_call
+        if self._fail_tunnels or (from_call is not None and self._tunnel_listing_calls >= from_call):
             raise MCPOutage("tunnels listing unavailable")
         return self._palace.list_tunnels(wing)
 
@@ -505,3 +514,151 @@ def test_no_single_drawer_tool_on_protocol():
     """The McpLike protocol must not expose delete_drawer."""
     assert not hasattr(mr.McpLike, "delete_drawer")
     assert hasattr(mr.McpLike, "delete_drawers")
+
+
+# --- CodeRabbit fixes: fail-closed verification listings -----------------------
+
+class _MissingFieldPalace(MockPalace):
+    """list_wings / list_tunnels / list_hallways drop their result field, as an
+    error-shaped response would (no exception raised)."""
+
+    def list_wings(self) -> dict:
+        return {"ok": False}
+
+    def list_tunnels(self, wing=None):
+        return {"count": 0}
+
+    def list_hallways(self, wing=None, limit=100, offset=0):
+        return {"total": 0}
+
+
+def test_wing_drawer_count_missing_wings_field_blocked():
+    """A list_wings result without its wings field (or with a non-collection
+    value) must never read as an empty wing list: an unrecognized listing
+    cannot confirm that a wing is absent (ResetBlocked, not cleared)."""
+    palace = _MissingFieldPalace()
+    palace.add_wing("w")
+    palace.add_drawer("w")
+    with pytest.raises(mr.ResetBlocked, match="no 'wings' field"):
+        mr._wing_drawer_count(palace, "w")
+
+    class NonCollectionWings(MockPalace):
+        def list_wings(self) -> dict:
+            return {"wings": "oops"}
+
+    with pytest.raises(mr.ResetBlocked, match="non-collection wings"):
+        mr._wing_drawer_count(NonCollectionWings(), "w")
+
+
+def test_wing_drawer_count_explicit_empty_list_confirms_absence():
+    """An explicitly returned empty wing collection is a valid listing: the
+    exact-name absence check keeps working (empty result is only proof of
+    absence when the field itself was returned)."""
+    palace = MockPalace()  # no wings -> {"wings": []}
+    wing_absent, count, evidence = mr._wing_drawer_count(palace, "wiki_gone")
+    assert wing_absent is True
+    assert count == 0
+    assert "0 wings remain" in evidence
+
+
+class _FullPageDrawerPalace(MockPalace):
+    """list_drawers ignores offset and always returns a full page: a misbehaving
+    paginator that would loop forever without the MAX_ENUM_PAGES bound.
+    get_taxonomy omits drawer_count so verification falls through to the
+    rooms + list_drawers counting loops."""
+
+    def get_taxonomy(self) -> dict:
+        return {"wings": [{"wing": w} for w in self.wings]}
+
+    def list_drawers(self, wing, room="", limit=100, offset=0):
+        return {"drawers": [{"id": f"d{i}"} for i in range(limit)], "total": 10**9}
+
+
+def test_wing_drawer_count_pagination_bound_on_both_fallback_loops():
+    """Both fallback verification pagination loops (per-room and wing-level
+    probe) stop with a failure instead of hanging after deletion."""
+    palace = _FullPageDrawerPalace()
+    palace.add_wing("w")
+    palace.add_drawer("w")
+    with pytest.raises(mr.ResetBlocked, match="exceeded"):
+        mr._wing_drawer_count(palace, "w")
+
+    class NoRoomsFullPage(_FullPageDrawerPalace):
+        def list_rooms(self, wing=None):
+            return {"wing": wing, "rooms": []}
+
+    probe = NoRoomsFullPage()
+    probe.add_wing("w")
+    probe.add_drawer("w")
+    with pytest.raises(mr.ResetBlocked, match="exceeded"):
+        mr._wing_drawer_count(probe, "w")
+
+
+def test_verify_wing_cleared_blocked_when_wings_field_missing():
+    """verify_wing_cleared propagates the blocked listing instead of marking
+    the wing cleared: enumeration works (taxonomy/rooms/drawers), deletion
+    runs, but the post-deletion wing listing is unrecognized, so the wing is
+    NOT cleared and the reset is not reported as success."""
+    palace = _MissingFieldPalace()
+    palace.add_wing("w")
+    palace.add_drawer("w")
+    report = mr.run_normal_reset(palace, ["w"])
+    wiki_result = report.wings[0]
+    assert wiki_result.cleared is False
+    assert "no 'wings' field" in wiki_result.blocked_reason
+    assert report.drawer_success is False
+    assert report.overall_success is False
+
+
+def test_collect_graph_records_tunnels_missing_field_is_listing_failure():
+    """A tunnel listing without its 'tunnels' field is recorded under
+    '<list_tunnels>' instead of being read as an empty listing."""
+    palace = _MissingFieldPalace()
+    palace.add_wing("w")
+    palace.add_drawer("w")
+    palace.add_tunnel("t1", "w", "x")
+    tunnels, hallways, report = mr.collect_graph_records(palace, ["w"])
+    assert tunnels == []
+    assert "<list_tunnels>" in report.failed
+
+
+def test_cleanup_graph_hallways_missing_field_is_failure_not_success():
+    """A hallway page without its 'hallways' field fails the listing so
+    collection and the post-deletion check cannot pass on an outage."""
+    palace = _MissingFieldPalace()
+    palace.add_wing("w")
+    palace.add_drawer("w")
+    palace.add_hallway("h1", "w")
+    report = mr.cleanup_graph(palace, ["w"])
+    assert report.deleted == []
+    assert "<list_hallways>" in report.failed
+    assert "h1" in palace.hallways  # nothing was deleted
+    full = mr.run_normal_reset(palace, ["w"])
+    assert full.hallway_success is False
+    assert full.overall_success is False
+
+
+def test_explicit_empty_graph_listings_still_pass():
+    """An explicitly returned empty list keeps the old success path: an empty
+    palace result is a valid listing, not an outage."""
+    palace = MockPalace()
+    palace.add_wing("w")
+    palace.add_drawer("w")
+    tunnels, hallways, report = mr.collect_graph_records(palace, ["w"])
+    assert tunnels == [] and hallways == []
+    assert report.failed == {}
+    assert report.preserved == 0
+
+
+# --- nitpick: the verification listing fails, not the first listing ------------
+
+def test_cleanup_graph_fails_post_deletion_verification_listing_only():
+    """fail_tunnels_from_call=N fails only the Nth tunnel listing: deletion
+    succeeds, the re-listing fails, and the report shows both facts."""
+    palace = MockPalace()
+    palace.add_wing("w")
+    palace.add_drawer("w")
+    palace.add_tunnel("t1", "w", "x")
+    report = mr.cleanup_graph(ListingOutage(palace, fail_tunnels_from_call=2), ["w"])
+    assert "tunnel:t1" in report.deleted
+    assert "<list_tunnels>" in report.failed

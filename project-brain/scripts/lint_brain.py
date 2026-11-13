@@ -16,6 +16,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from datetime import datetime, date, timezone
@@ -792,6 +793,11 @@ def write_verification(root: Path, citation_state: dict) -> None:
 def check_citations(root: Path, brain: Path, issues: list[dict], citation_state: dict) -> None:
     """KD-01/KD-02: validate {{src path:a-b "anchor"}} citations on every page.
 
+    Citations are prose evidence: a {{src ...}} example inside a fenced code
+    block or inline code span is documentation of the syntax, not a citation,
+    so it neither validates nor counts toward coverage (brain_inventory's
+    covered status builds on citation_state here).
+
     citation_drift (error): cited file missing, range outside the file, or
     anchor text not found (whitespace-normalized) within
     CITATION_ANCHOR_WINDOW_LINES lines after the range. Bare `file.ext:NNN`
@@ -806,9 +812,14 @@ def check_citations(root: Path, brain: Path, issues: list[dict], citation_state:
         text = read(p)
         body = body_text(text)
         offset = len(text) - len(body)
+        # Match citations against the code-masked body: strip_code_regions
+        # blanks fenced blocks and inline spans with same-length whitespace,
+        # so every match position still indexes the original body for line
+        # numbers and messages.
+        scan = strip_code_regions(body)
         info = {"has_citations": False, "drift": False, "files": {}}
         spans: list[tuple[int, int]] = []
-        for m in CITATION_RE.finditer(body):
+        for m in CITATION_RE.finditer(scan):
             spans.append((m.start(), m.end()))
             info["has_citations"] = True
             quoted_s, path_s, start_s, end_s, anchor = m.groups()
@@ -951,12 +962,141 @@ def check_all_clear_claims(root: Path, brain: Path, issues: list[dict], verifica
             f"and `project-brain-lint <root> --verify`, or drop the claim")
 
 
+# Wiki ledger history scan bounds (KD-15): the object enumeration is one git
+# call; the content pass streams every blob through one cat-file --batch call.
+LEDGER_HISTORY_GIT_TIMEOUT = 60.0
+LEDGER_HISTORY_MAX_BLOBS = 20000
+LEDGER_HISTORY_MAX_BYTES = 64 * 1024 * 1024
+
+
+def _git_env_for_ledger() -> dict:
+    """Environment for the ledger's git calls: strip GIT_* redirector
+    variables so the scan always addresses exactly the brain's own ledger
+    (same contract as wiki_ledger.build_git_env, without importing it — lint
+    must not depend on the ledger module)."""
+    return {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+
+
+def _scan_ledger_history_secrets(root: Path, brain: Path, ledger_dir: Path,
+                                 issues: list[dict]) -> None:
+    """KD-15: scan historical wiki content in the ledger's git database.
+
+    A wiki edit enters .brain/state/wiki.git through an automatic snapshot; if
+    a secret was later removed from the current page, the historical snapshot
+    still holds it. Packfiles are binary noise for a text scan, so the history
+    is read THROUGH Git: enumerate every object (cat-file --batch-check
+    --batch-all-objects), then stream each blob's content once (cat-file
+    --batch) and scan it with the same patterns as current files. A retained
+    secret is an error and requires rotating the credential AND purging the
+    ledger history — deleting the page is not enough.
+    """
+    git_exe = shutil.which("git")
+    if not git_exe:
+        add(issues, "warn", "brain_secret_scan_skipped", ledger_dir, root,
+            "wiki ledger history exists but git is unavailable — cannot check "
+            "historical wiki snapshots for retained secrets")
+        return
+    try:
+        check_proc = subprocess.run(
+            [git_exe, "--git-dir", str(ledger_dir),
+             "cat-file", "--batch-check", "--batch-all-objects"],
+            capture_output=True, timeout=LEDGER_HISTORY_GIT_TIMEOUT,
+            env=_git_env_for_ledger(), cwd=str(root))
+    except (OSError, subprocess.SubprocessError) as exc:
+        add(issues, "warn", "brain_secret_scan_skipped", ledger_dir, root,
+            f"could not enumerate wiki ledger history for secrets: {exc}")
+        return
+    if check_proc.returncode != 0:
+        add(issues, "warn", "brain_secret_scan_skipped", ledger_dir, root,
+            "could not enumerate wiki ledger history for secrets: "
+            f"{(check_proc.stderr or b'').decode('utf-8', errors='replace').strip()}")
+        return
+    blob_ids: list[bytes] = []
+    for line in check_proc.stdout.splitlines():
+        fields = line.split()
+        if len(fields) >= 2 and fields[1] == b"blob":
+            blob_ids.append(fields[0])
+    truncated = False
+    if len(blob_ids) > LEDGER_HISTORY_MAX_BLOBS:
+        blob_ids = blob_ids[:LEDGER_HISTORY_MAX_BLOBS]
+        truncated = True
+    if not blob_ids:
+        return
+    reported: set[tuple[str, str]] = set()
+    total_bytes = 0
+    try:
+        batch_proc = subprocess.run(
+            [git_exe, "--git-dir", str(ledger_dir), "cat-file", "--batch"],
+            input=b"\n".join(blob_ids) + b"\n",
+            capture_output=True, timeout=LEDGER_HISTORY_GIT_TIMEOUT,
+            env=_git_env_for_ledger(), cwd=str(root))
+    except (OSError, subprocess.SubprocessError) as exc:
+        add(issues, "warn", "brain_secret_scan_skipped", ledger_dir, root,
+            f"could not read wiki ledger history for secrets: {exc}")
+        return
+    if batch_proc.returncode != 0:
+        add(issues, "warn", "brain_secret_scan_skipped", ledger_dir, root,
+            "could not read wiki ledger history for secrets: "
+            f"{(batch_proc.stderr or b'').decode('utf-8', errors='replace').strip()}")
+        return
+    stream = batch_proc.stdout
+    pos = 0
+    while pos < len(stream):
+        nl = stream.find(b"\n", pos)
+        if nl == -1:
+            break
+        sha, _, rest = stream[pos:nl].partition(b" ")
+        _otype, _, size_field = rest.partition(b" ")
+        try:
+            size = int(size_field)
+        except ValueError:
+            break  # malformed stream: stop scanning rather than mis-slice
+        content_start = nl + 1
+        content = stream[content_start:content_start + size]
+        pos = content_start + size + 1  # skip the trailing newline
+        total_bytes += size
+        if total_bytes > LEDGER_HISTORY_MAX_BYTES:
+            truncated = True
+            break
+        text = content.decode("utf-8", errors="replace")
+        for label, pattern in SECRET_PATTERNS:
+            m = pattern.search(text)
+            if m and (label, m.group(0)) not in reported:
+                reported.add((label, m.group(0)))
+                add(issues, "error", "brain_secret", ledger_dir, root,
+                    f"possible {label} retained in wiki ledger history (object "
+                    f"{sha.decode('utf-8', errors='replace')[:12]}) — remove it from the "
+                    "wiki page, rotate the credential, AND purge the ledger history "
+                    "(delete .brain/state/wiki.git and re-snapshot); the current page "
+                    "being clean does not clean the history",
+                    text.count("\n", 0, m.start()) + 1)
+        for m in SECRET_NAME_VALUE_RE.finditer(text):
+            key = (m.group(1), m.group(0))
+            if key in reported:
+                continue
+            reported.add(key)
+            add(issues, "error", "brain_secret", ledger_dir, root,
+                f"possible secret assignment '{m.group(1)}=…' retained in wiki ledger "
+                f"history (object {sha.decode('utf-8', errors='replace')[:12]}) — remove "
+                "it from the wiki page, rotate the credential, AND purge the ledger "
+                "history (delete .brain/state/wiki.git and re-snapshot)",
+                text.count("\n", 0, m.start()) + 1)
+    if truncated:
+        add(issues, "warn", "brain_secret_scan_partial", ledger_dir, root,
+            f"wiki ledger history exceeded the scan bound "
+            f"({LEDGER_HISTORY_MAX_BLOBS} objects / {LEDGER_HISTORY_MAX_BYTES} bytes) — "
+            "retained secrets beyond the bound were not checked")
+
+
 def check_brain_secrets(root: Path, brain: Path, issues: list[dict]) -> None:
     """KD-15: secrets must never live inside .brain/ (error; fails --strict).
 
-    The wiki ledger's own object store (.brain/state/wiki.git) is skipped: it
-    is a bare git database, not user-authored content, and scanning its
-    packfiles produces noise, not findings."""
+    The wiki ledger's own object store (.brain/state/wiki.git) is skipped as
+    raw files — its packfiles are a bare git database, not user-authored
+    content, and scanning them as text produces noise, not findings — but the
+    wiki snapshots INSIDE it are checked through Git by
+    _scan_ledger_history_secrets, so a secret removed from the current page
+    is still reported while it survives in history."""
     ledger_dir = brain / "state" / "wiki.git"
     for p in sorted(brain.rglob("*")):
         if not p.is_file() or p.name == ".gitkeep":
@@ -974,6 +1114,8 @@ def check_brain_secrets(root: Path, brain: Path, issues: list[dict]) -> None:
             add(issues, "error", "brain_secret", p, root,
                 f"possible secret assignment '{m.group(1)}=…' inside .brain/ — remove it and rotate the credential",
                 text.count("\n", 0, m.start()) + 1)
+    if ledger_dir.is_dir():
+        _scan_ledger_history_secrets(root, brain, ledger_dir, issues)
 
 
 def check_volatile_numbers(root: Path, brain: Path, issues: list[dict]) -> None:

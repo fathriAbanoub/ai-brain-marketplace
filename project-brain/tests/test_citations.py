@@ -342,3 +342,51 @@ class TestBinWiring:
         assert result.returncode in (0, 1)
         ver = json.loads((proj / ".brain" / "verification.json").read_text(encoding="utf-8"))
         assert "wiki/concepts/Clean.md" in ver["pages"]
+
+
+class TestCitationsInCodeRegions:
+    def test_fenced_example_is_not_a_citation(self, run_script, tmp_project: Path):
+        """A {{src ...}} example inside a fenced block documents the syntax;
+        it must not count toward coverage (a substantive page whose only
+        citation lives in a fence leaves its source unit uncovered)."""
+        proj = make_project_with_source(run_script, tmp_project, SOURCE_LINES)
+        write_page(proj / ".brain", "concepts/Example.md",
+                   substantive_body() + "\n"
+                   "Example syntax:\n\n"
+                   "```markdown\n"
+                   f'{CITATION_OK}\n'
+                   "```\n")
+        state: dict = {}
+        import lint_brain as lb
+        lb.build_report(proj, citation_state=state)
+        info = state["wiki/concepts/Example.md"]
+        assert info["has_citations"] is False
+        assert info["files"] == {}
+        # And inventory coverage agrees: src/app.ts is NOT covered by the page.
+        import brain_inventory as bi
+        statuses = bi.compute_statuses(proj, proj / ".brain",
+                                       [{"path": "src/app.ts"}], {})
+        assert statuses["src/app.ts"]["status"] == "uncovered"
+
+    def test_inline_code_span_is_not_a_citation(self, run_script, tmp_project: Path):
+        proj = make_project_with_source(run_script, tmp_project, SOURCE_LINES)
+        write_page(proj / ".brain", "concepts/Inline.md",
+                   substantive_body() + " Inline: `" + CITATION_OK + "` as a sample.\n")
+        state: dict = {}
+        import lint_brain as lb
+        lb.build_report(proj, citation_state=state)
+        assert state["wiki/concepts/Inline.md"]["has_citations"] is False
+
+    def test_prose_citation_line_numbers_survive_code_masking(self, run_script, tmp_project: Path):
+        """A real citation after a fenced block still validates, and a drifted
+        one reports the ORIGINAL line number (positions are preserved)."""
+        proj = make_project_with_source(run_script, tmp_project, SOURCE_LINES)
+        write_page(proj / ".brain", "concepts/Mixed.md",
+                   substantive_body() + "\n\n```bash\n{{src src/app.ts:99-99 \"nope\"}}\n```\n\n"
+                   f"Real: {CITATION_OK}\n")
+        report = lint_json(run_script, proj)
+        assert "citation_drift" not in categories(report)
+
+
+def substantive_body() -> str:
+    return "# Page\n\n" + ("This page carries a real, checkable summary of the project. " * 4)

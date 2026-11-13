@@ -1,6 +1,7 @@
 """Tests for lint_brain.py script."""
 
 import json
+import sys
 import pytest
 from pathlib import Path
 
@@ -314,3 +315,51 @@ class TestWikilinkCodeSkipping:
         expected_line = (self.FRONTMATTER + body).count("\n", 0,
                          (self.FRONTMATTER + body).index("real [[Ghost]]")) + 1
         assert broken[0]["line"] == expected_line, broken[0]
+
+
+class TestLedgerHistorySecrets:
+    """KD-15 through Git: a secret removed from the current page is still
+    reported while it survives in the wiki ledger's snapshot history."""
+
+    def _lint_json(self, run_script, project: Path) -> dict:
+        result = run_script("lint_brain.py", [str(project), "--json"])
+        assert result.returncode in (0, 1), result.stderr
+        return json.loads(result.stdout)
+
+    def test_secret_removed_from_page_but_retained_in_history(self, run_script, scaffolded_project: Path):
+        brain = scaffolded_project
+        project = brain.parent
+        page = brain / "wiki" / "concepts" / "Creds.md"
+        page.parent.mkdir(parents=True, exist_ok=True)
+        fm = ("---\ntitle: Creds\ntype: concept\ncreated: 2026-01-01\nupdated: 2026-01-01\n"
+              "status: active\nsources: []\ntags: [t]\n---\n")
+        page.write_text(fm + "# Creds\n\naws key AKIAABCDEFGHIJKLMNOP was leaked here\n",
+                        encoding="utf-8")
+        # Snapshot the leak, then clean the current page and snapshot again.
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+        import wiki_ledger as wl
+        ledger = wl.WikiLedger(project)
+        ledger.snapshot("snapshot: leak")
+        page.write_text(fm + "# Creds\n\nthe credential was rotated and removed\n",
+                        encoding="utf-8")
+        ledger.snapshot("snapshot: cleaned")
+        report = self._lint_json(run_script, project)
+        history = [i for i in report["issues"]
+                   if i["category"] == "brain_secret" and "ledger history" in i["message"]]
+        assert history, "retained secret in ledger history was not reported"
+        assert any("aws access key id" in i["message"] for i in history)
+        assert any(i["file"].endswith("wiki.git") for i in history)
+        # Cleanup guidance is required in the message.
+        assert any("rotate" in i["message"] and "purge" in i["message"] for i in history)
+        # The current page is clean: no issue points at the page file.
+        assert not any(i["file"].endswith("Creds.md") for i in report["issues"]
+                       if i["category"] == "brain_secret")
+
+    def test_clean_history_produces_no_history_findings(self, run_script, scaffolded_project: Path):
+        brain = scaffolded_project
+        project = brain.parent
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+        import wiki_ledger as wl
+        wl.WikiLedger(project).snapshot("snapshot: clean")
+        report = self._lint_json(run_script, project)
+        assert not [i for i in report["issues"] if i["category"] == "brain_secret"]

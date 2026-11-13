@@ -824,38 +824,40 @@ def _full_hashes(proj: Path, count: int) -> list[str]:
 
 
 def _snapshot_quoted_history(proj: Path) -> list[str]:
-    """Three snapshots: weird/old.md created (v1), renamed in place to
-    weird/we"ird.md (same content, so the rename is detected), then edited
-    (v2). Returns the full hashes oldest-first."""
-    page = write_page(proj, "weird/old.md", "v1 body\n")
+    """Three snapshots: a historical name with an embedded quote and leading
+    and trailing spaces created (v1), renamed in place to a simple name (same
+    content, so the rename is detected), then edited (v2). Returns the full
+    hashes oldest-first."""
+    historical = 'weird/ "old" name .md'
+    page = write_page(proj, historical, "v1 body\n")
     run_cli(proj, "snapshot", "-m", "c1: create")
-    os.rename(page, page.with_name("we\"ird.md"))  # rename, same content
+    os.rename(page, page.with_name("plain.md"))  # rename, same content
     run_cli(proj, "snapshot", "-m", "c2: rename")
-    quoted = page.with_name("we\"ird.md")
-    quoted.write_text("v2 body\n", encoding="utf-8")
+    write_page(proj, "weird/plain.md", "v2 body\n")
     run_cli(proj, "snapshot", "-m", "c3: edit")
     return _full_hashes(proj, 3)
 
 
 class TestHistoricalNameParsing:
     def test_pre_rename_source_preserves_quoted_name(self, proj: Path):
-        """A historical name with an embedded double quote is C-quoted by git
-        in non--z output; the follow-log must be parsed from -z output split
-        on NUL without stripping, so restore looks up the ORIGINAL page."""
+        """A historical name with an embedded double quote and leading and
+        trailing spaces is C-quoted by git in non--z output; the follow-log
+        must be parsed from -z output split on NUL without stripping, so
+        restore looks up the ORIGINAL page."""
         hashes = _snapshot_quoted_history(proj)
         ledger = wiki_ledger.WikiLedger(proj)
-        rel = 'weird/we"ird.md'
-        rev_before_rename = hashes[0]  # c1: only weird/old.md exists
+        rel = "weird/plain.md"
+        rev_before_rename = hashes[0]  # c1: only the historical name exists
         assert not ledger._page_in_rev(rel, rev_before_rename)
         source = ledger._pre_rename_source(rel, rev_before_rename)
-        assert source == "weird/old.md"
+        assert source == 'weird/ "old" name .md'
         # The name is usable: the rev carries the page's content under it.
         assert ledger._page_in_rev(source, rev_before_rename)
 
     def test_restore_with_quoted_pre_rename_name(self, proj: Path):
         _snapshot_quoted_history(proj)
         first = _full_hashes(proj, 3)[0]
-        r = run_cli(proj, "restore", 'weird/we"ird.md', "--rev", first)
+        r = run_cli(proj, "restore", "weird/plain.md", "--rev", first)
         assert r.returncode == 0, r.stderr
         assert "predates the rename" in r.stdout
         assert "v1 body" in r.stdout

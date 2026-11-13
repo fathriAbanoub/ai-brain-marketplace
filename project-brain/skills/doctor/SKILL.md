@@ -16,6 +16,11 @@ If not on PATH (exit 127):
 
 ```bash
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-}"
+# A stale CLAUDE_PLUGIN_ROOT (moved/foreign copy) must not skip discovery:
+# validate it against bin/ and clear it when invalid; a valid one is kept.
+if [ -n "$PLUGIN_ROOT" ] && [ ! -d "$PLUGIN_ROOT/bin" ]; then
+  PLUGIN_ROOT=""
+fi
 # If still empty: the harness prints "Base directory for this skill: <path>"
 # directly above this skill's text (verified in --plugin-dir sessions, where
 # the marketplace paths below do not exist). Do NOT count dirname levels by

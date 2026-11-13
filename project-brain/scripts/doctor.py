@@ -589,12 +589,15 @@ def strict_status(gates: dict) -> str:
 
 
 def inventory_fresh(root: Path, inv: dict) -> tuple[bool, str]:
-    """True when the saved inventory still matches the current project units.
+    """True when the saved inventory still certifies the current project.
 
-    completion.complete was computed for the unit set at inventory time; if a
-    core unit is added or removed afterwards, the saved value no longer
-    certifies the current project, so the strict coverage gate must not pass
-    on it."""
+    completion.complete was computed for the unit set AND the wiki content at
+    inventory time. Two things can make the saved value stale:
+    - a core unit added or removed afterwards (unit-path set changes), or
+    - wiki page content edited with no path change (e.g. a page's only
+      citation removed): the saved completion must not certify coverage it
+      was not computed from, so the inventory binds itself to a wiki content
+      digest and any content change forces a rerun."""
     import brain_inventory as bi  # local: spawns git subprocesses only when needed
 
     saved = inv.get("units")
@@ -622,6 +625,20 @@ def inventory_fresh(root: Path, inv: dict) -> tuple[bool, str]:
             detail += ("; removed: " + ", ".join(removed[:INVENTORY_PREVIEW_UNITS])
                        + ("…" if len(removed) > INVENTORY_PREVIEW_UNITS else ""))
         return False, detail
+    saved_wiki_sha = inv.get("wiki_content_sha256")
+    if not isinstance(saved_wiki_sha, str) or not saved_wiki_sha:
+        return False, ("inventory predates wiki-content binding — the saved completion "
+                       "cannot be tied to the current wiki pages; rerun "
+                       "`project-brain-inventory <root> inventory` and re-check coverage")
+    try:
+        current_wiki_sha = bi.wiki_content_sha256(root / ".brain")
+    except OSError as exc:
+        return False, f"cannot verify inventory freshness against current wiki content: {exc}"
+    if saved_wiki_sha != current_wiki_sha:
+        return False, ("wiki content changed since the inventory run (same unit paths, "
+                       "edited pages) — the saved completion no longer certifies the "
+                       "current coverage; rerun "
+                       "`project-brain-inventory <root> inventory` and re-check coverage")
     return True, ""
 
 

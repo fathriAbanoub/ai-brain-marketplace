@@ -126,3 +126,49 @@ class TestStrictGate:
         result = subprocess.run(["bash", str(wrapper), str(proj), "--strict"],
                                 capture_output=True, text=True, timeout=30)
         assert result.returncode == 0, result.stderr
+
+
+class TestStrictStaleCompletion:
+    def test_wiki_content_change_invalidates_saved_completion(self, run_script, tmp_project: Path):
+        """Matching unit paths alone cannot validate stale completion data: an
+        editor removes a core unit's only citation from an existing page, the
+        path set is unchanged, and the saved completion.complete must NOT
+        pass the strict coverage gate. Rerunning the inventory re-binds it."""
+        proj = green_project(run_script, tmp_project)
+        page = proj / ".brain/wiki/concepts/Coverage.md"
+        run_script("brain_inventory.py", [str(proj), "inventory"])
+        code, data = doctor_json(run_script, proj, "--strict")
+        assert code == 0, data["gates"]
+
+        # Remove one citation from the SAME page (no unit added/removed).
+        edited = page.read_text(encoding="utf-8").replace(
+            '{{src package.json:1 "strict-project"}}\n', "")
+        assert edited != page.read_text(encoding="utf-8")
+        page.write_text(edited, encoding="utf-8")
+
+        code, data = doctor_json(run_script, proj, "--strict")
+        assert code == 1
+        gate = data["gates"]["coverage"]
+        assert gate["status"] == "could-not-run"
+        assert "wiki content changed" in gate["detail"]
+
+        # Rerunning the inventory re-computes coverage for the current pages:
+        # the completion now honestly reports the lost citation.
+        run_script("brain_inventory.py", [str(proj), "inventory"])
+        code, data = doctor_json(run_script, proj, "--strict")
+        assert code == 1
+        assert data["gates"]["coverage"]["status"] == "failed"
+
+    def test_inventory_without_binding_is_stale_for_strict(self, run_script, tmp_project: Path):
+        """An inventory.json written before wiki-content binding carries no
+        digest: strict mode refuses it (fail closed) instead of trusting a
+        completion it cannot tie to the current pages."""
+        proj = green_project(run_script, tmp_project)
+        run_script("brain_inventory.py", [str(proj), "inventory"])
+        inv_path = proj / ".brain" / "inventory.json"
+        inv = json.loads(inv_path.read_text(encoding="utf-8"))
+        inv.pop("wiki_content_sha256", None)
+        inv_path.write_text(json.dumps(inv), encoding="utf-8")
+        code, data = doctor_json(run_script, proj, "--strict")
+        assert code == 1
+        assert "wiki-content binding" in data["gates"]["coverage"]["detail"]

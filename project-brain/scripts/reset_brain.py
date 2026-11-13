@@ -217,6 +217,13 @@ ALLOWED_TRANSCRIPT_TOOLS = {
     "mempalace_list_drawers", "mempalace_delete_drawers",
 }
 PROHIBITED_TRANSCRIPT_TOOLS = {"mempalace_delete_drawer"}
+# Tools whose transcript records are scoped to one wing (the reset skill's
+# transcript format assigns a wing to each of these). list_wings is a global
+# listing and stays valid unscoped; every wing-scoped record must name its
+# wing, or it cannot be attributed to any target.
+WING_SCOPED_TRANSCRIPT_TOOLS = {
+    "mempalace_get_taxonomy", "mempalace_list_drawers", "mempalace_delete_drawers",
+}
 
 
 def verify_reset_transcript(root: Path, wing: str) -> int:
@@ -264,6 +271,7 @@ def verify_reset_transcript(root: Path, wing: str) -> int:
     # pre-deletion mempalace_get_taxonomy count before anything is deleted.
     delete_started = False
     enumerated_pre_delete: set[str] = set()
+    enumerated_pre_delete_raw = 0
     saw_taxonomy_pre_delete = False
     taxonomy_count_pre_delete: int | None = None
     for i, rec in enumerate(records, start=1):
@@ -276,10 +284,25 @@ def verify_reset_transcript(root: Path, wing: str) -> int:
             violations.append(f"line {i}: unknown or unrecorded tool {tool!r}")
             continue
         rec_wing = rec.get("wing")
-        if rec_wing is not None and str(rec_wing) != wing:
-            # Another confirmed wing's record in the shared transcript. Exact
-            # name comparison: a normalized twin is a distinct wing and its
-            # records must never count for (or against) this one.
+        if tool in WING_SCOPED_TRANSCRIPT_TOOLS:
+            if rec_wing is None:
+                # A wing-scoped taxonomy/drawer-list/bulk-delete record
+                # without a wing is malformed: it cannot be attributed to
+                # this wing, and accepting it would let one wing's record
+                # supply another wing's clearance evidence.
+                violations.append(
+                    f"line {i}: {tool} record is missing its wing — the transcript "
+                    "format assigns a wing to every taxonomy, drawer-list, and "
+                    "bulk-delete record")
+                continue
+            if str(rec_wing) != wing:
+                # Another confirmed wing's record in the shared transcript. Exact
+                # name comparison: a normalized twin is a distinct wing and its
+                # records must never count for (or against) this one.
+                continue
+        elif rec_wing is not None and str(rec_wing) != wing:
+            # Unscoped list_wings records stay valid; a wing key on them is
+            # tolerated but never compared by normalization (exact names only).
             continue
         if tool == "mempalace_delete_drawers":
             if not delete_started:
@@ -289,9 +312,9 @@ def verify_reset_transcript(root: Path, wing: str) -> int:
                         f"line {i}: no mempalace_get_taxonomy record before the first delete — "
                         "cross-check the enumeration against the taxonomy drawer_count "
                         "before any deletion (reset skill Step 3a.4)")
-                elif taxonomy_count_pre_delete != len(enumerated_pre_delete):
+                elif taxonomy_count_pre_delete != enumerated_pre_delete_raw:
                     violations.append(
-                        f"line {i}: enumerated {len(enumerated_pre_delete)} drawer(s) before the "
+                        f"line {i}: enumerated {enumerated_pre_delete_raw} drawer(s) before the "
                         f"first delete but the pre-deletion taxonomy reported "
                         f"{taxonomy_count_pre_delete} — counts disagree; the skill requires "
                         "STOP, delete nothing, re-run the enumeration")
@@ -316,6 +339,11 @@ def verify_reset_transcript(root: Path, wing: str) -> int:
                 enumerated.update(page_ids)
                 if not delete_started:
                     enumerated_pre_delete.update(page_ids)
+                    # Raw count (duplicates included): the taxonomy counts
+                    # records, so the cross-check compares against what the
+                    # pages actually returned before deduplication — same
+                    # contract as collect_drawer_ids.
+                    enumerated_pre_delete_raw += len(ret)
         elif tool == "mempalace_list_wings":
             wings = rec.get("wings")
             if isinstance(wings, list):
@@ -357,6 +385,10 @@ def verify_reset_transcript(root: Path, wing: str) -> int:
 
 # Frontmatter keys in .brain/CLAUDE.md that record the brain's identity.
 IDENTITY_KEY_RE = re.compile(r"^(mempalace_wing|mempalace_diary_agent):\s*(.+?)\s*$")
+# Older brains record the diary agent only in the diary sentence of
+# .brain/CLAUDE.md (same recovery rule as scaffold_brain.py and the wake-up
+# recall reference): `mempalace_diary_write` with agent `<name>`.
+DIARY_SENTENCE_RE = re.compile(r"`mempalace_diary_write`\s+with\s+agent\s+`([^`]+)`")
 
 
 def read_brain_identity(root: Path) -> tuple[str | None, str | None]:
@@ -365,6 +397,14 @@ def read_brain_identity(root: Path) -> tuple[str | None, str | None]:
     An absent or unreadable file, or a missing key, means "not recorded"
     (None) — the classifier then derives the orphan-scan slug from the
     project directory name instead.
+
+    When mempalace_diary_agent is absent, the agent is recovered from the
+    recorded diary sentence (`mempalace_diary_write` with agent `<name>`),
+    exactly as the wake-up recall rule and scaffold_brain.py do for older
+    brains. Recovering it lets classify_wings identify the brain diary wing
+    even when the recorded wiki wing is missing from the palace — without
+    it, a reset that skipped the diary wing would orphan the diary. An
+    explicitly recorded value always wins over the recovered one.
     """
     path = root / ".brain" / "CLAUDE.md"
     if not path.is_file():
@@ -384,12 +424,20 @@ def read_brain_identity(root: Path) -> tuple[str | None, str | None]:
             wing = wing or value
         else:
             agent = agent or value
+    if agent is None:
+        diary_sentence = DIARY_SENTENCE_RE.search(text)
+        if diary_sentence:
+            agent = diary_sentence.group(1).strip("'\"") or None
     return wing, agent
 
 
 def parse_wings_payload(text: str) -> dict[str, int]:
-    """Parse a mempalace_list_wings result: {"wings": {name: count}} or a
-    bare {name: count} map. Anything else is a bad input (ResetError)."""
+    """Parse a mempalace_list_wings result into a name -> drawer-count map.
+
+    Accepted forms: {"wings": {name: count}}, a bare {name: count} map, and
+    the raw list-of-records form the tools return ({"wings": [{"wing": name,
+    "drawer_count": n}, ...]}) — Step 2 pipes that result verbatim into
+    --classify-wings. Anything else is a bad input (ResetError)."""
     try:
         payload = json.loads(text)
     except ValueError as exc:
@@ -400,6 +448,24 @@ def parse_wings_payload(text: str) -> dict[str, int]:
             f"map of name to drawer count) or a bare such map, got {type(payload).__name__}"
         )
     wings = payload.get("wings")
+    if isinstance(wings, list):
+        records: dict[str, int] = {}
+        for entry in wings:
+            if not isinstance(entry, dict):
+                raise ResetError(
+                    '--classify-wings: each "wings" record must be an object '
+                    f'with "wing" and "drawer_count", got {entry!r}'
+                )
+            name = entry.get("wing") or entry.get("name")
+            count = entry.get("drawer_count")
+            if (not isinstance(name, str) or not name
+                    or not isinstance(count, int) or isinstance(count, bool)):
+                raise ResetError(
+                    '--classify-wings: wing records must carry a wing name and an '
+                    f'integer drawer_count, found {name!r}: {count!r}'
+                )
+            records[name] = count
+        return records
     if not isinstance(wings, dict):
         wings = payload  # bare map form
     for name, count in wings.items():

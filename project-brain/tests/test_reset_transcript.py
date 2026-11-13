@@ -219,3 +219,75 @@ class TestTranscriptVerifier:
     def test_dead_benchmark_deleted(self):
         """S-a: stress_reset_benchmark.py had zero callers and is deleted (D-3)."""
         assert not (PLUGIN_ROOT / "scripts" / "stress_reset_benchmark.py").exists()
+
+
+# --- CodeRabbit fixes: wing-scoped records and the raw enumeration count --------
+
+def test_unscoped_taxonomy_record_rejected(run_script, tmp_project: Path):
+    """A mempalace_get_taxonomy record without a wing cannot be attributed to
+    the target: it must never supply clearance evidence for it."""
+    proj = tmp_project / "reset-project"
+    proj.mkdir(parents=True)
+    write_transcript(proj, [
+        {"tool": "mempalace_list_drawers", "wing": WING, "limit": mr.PAGE_LIMIT,
+         "returned_ids": ["d1"]},
+        {"tool": "mempalace_delete_drawers", "wing": WING, "ids": ["d1"],
+         "deleted_ids": ["d1"]},
+        {"tool": "mempalace_get_taxonomy", "drawer_count": 0},  # no wing
+        {"tool": "mempalace_list_wings", "wings": []},
+    ])
+    result = verify(run_script, proj)
+    assert result.returncode == 1
+    assert "missing its wing" in result.stderr
+    # The unscoped record was rejected, so it also cannot serve as the
+    # pre-deletion taxonomy cross-check:
+    assert "no mempalace_get_taxonomy record before the first delete" in result.stderr
+
+
+def test_unscoped_drawer_list_and_delete_records_rejected(run_script, tmp_project: Path):
+    """Wing-scoped drawer-list and bulk-delete records without a wing are
+    malformed and rejected, not silently attributed to the target wing."""
+    proj = tmp_project / "reset-project"
+    proj.mkdir(parents=True)
+    write_transcript(proj, [
+        {"tool": "mempalace_list_drawers", "limit": mr.PAGE_LIMIT,
+         "returned_ids": ["d1"]},  # no wing
+        {"tool": "mempalace_delete_drawers", "ids": ["d1"], "deleted_ids": ["d1"]},
+        {"tool": "mempalace_list_wings", "wings": []},
+    ])
+    result = verify(run_script, proj)
+    assert result.returncode == 1
+    assert result.stderr.count("missing its wing") == 2
+
+
+def test_unscoped_list_wings_record_still_valid(run_script, tmp_project: Path):
+    """list_wings is a global listing: an unscoped record stays valid
+    clearance evidence (existing contract, pinned against over-rejection)."""
+    proj = tmp_project / "reset-project"
+    proj.mkdir(parents=True)
+    write_transcript(proj, valid_transcript())
+    result = verify(run_script, proj)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_duplicate_returned_ids_match_taxonomy_raw_count(run_script, tmp_project: Path):
+    """Two room pages reporting the same ID: the taxonomy cross-check compares
+    the RAW returned count (4) before deduplication, like collect_drawer_ids —
+    duplicate IDs must not make the verifier reject a matching taxonomy count.
+    The set is still used for deletion coverage (d2 counted once)."""
+    proj = tmp_project / "reset-project"
+    proj.mkdir(parents=True)
+    write_transcript(proj, [
+        {"tool": "mempalace_list_drawers", "wing": WING, "limit": mr.PAGE_LIMIT,
+         "returned_ids": ["d1", "d2"]},
+        {"tool": "mempalace_list_drawers", "wing": WING, "limit": mr.PAGE_LIMIT,
+         "returned_ids": ["d2", "d3"]},  # d2 again: raw 4, unique 3
+        {"tool": "mempalace_get_taxonomy", "wing": WING, "drawer_count": 4},
+        {"tool": "mempalace_delete_drawers", "wing": WING,
+         "ids": ["d1", "d2"], "deleted_ids": ["d1", "d2"]},
+        {"tool": "mempalace_delete_drawers", "wing": WING,
+         "ids": ["d3"], "deleted_ids": ["d3"]},
+        {"tool": "mempalace_list_wings", "wings": []},
+    ])
+    result = verify(run_script, proj)
+    assert result.returncode == 0, result.stdout + result.stderr

@@ -15,8 +15,11 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
+
 PLUGIN_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PLUGIN_ROOT / "scripts"))
+sys.path.insert(0, str(PLUGIN_ROOT / "tests"))
 
 import mempalace_reset as mr  # noqa: E402
 import reset_brain  # noqa: E402
@@ -331,3 +334,90 @@ def test_wing_ownership_doc_lists_every_class_name():
         mr.CLASS_OTHER,
     ):
         assert constant in doc, f"wing-ownership.md must name the class {constant!r}"
+
+
+# --- CodeRabbit fixes: raw list-of-records payload + diary-sentence recovery ----
+
+
+def test_parse_wings_payload_accepts_list_of_records():
+    """The raw mempalace_list_wings result shape ({"wings": [{"wing": ...,
+    "drawer_count": n}, ...]}) is what Step 2 pipes into --classify-wings:
+    parse it to the name -> count map the classifier expects."""
+    raw = {"wings": [
+        {"wing": "wiki_demo_app_20261026t164600z", "drawer_count": 3},
+        {"wing": "wing_brain_demo_app", "drawer_count": 7},
+    ]}
+    assert reset_brain.parse_wings_payload(json.dumps(raw)) == {
+        "wiki_demo_app_20261026t164600z": 3,
+        "wing_brain_demo_app": 7,
+    }
+
+
+def test_parse_wings_payload_rejects_malformed_records():
+    with pytest.raises(reset_brain.ResetError):
+        reset_brain.parse_wings_payload(json.dumps({"wings": [{"wing": "w"}]}))  # no count
+    with pytest.raises(reset_brain.ResetError):
+        reset_brain.parse_wings_payload(json.dumps({"wings": [{"wing": "w", "drawer_count": True}]}))
+    with pytest.raises(reset_brain.ResetError):
+        reset_brain.parse_wings_payload(json.dumps({"wings": ["w"]}))
+
+
+def test_cli_classify_wings_raw_mock_palace_result(tmp_path, capsys):
+    """CLI-level: the exact MockPalace.list_wings() shape (the recorded raw
+    result Step 2 feeds the classifier) must classify, not exit with an
+    input error before the user can confirm reset targets."""
+    from mock_mcp import MockPalace  # noqa: E402 — tests/ is on sys.path above
+    palace = MockPalace()
+    palace.add_drawer("wiki_demo_app_20261026t164600z")
+    palace.add_drawer("wiki_demo_app_20261026t164600z", drawer_id="d2")
+    palace.add_drawer("wing_brain_demo_app")
+    root = make_project(tmp_path)
+    payload = tmp_path / "wings.json"
+    payload.write_text(json.dumps(palace.list_wings()), encoding="utf-8")
+    assert reset_brain.main([str(root), "--classify-wings", str(payload)]) == 0
+    out = capsys.readouterr().out
+    assert "Received 2 wing(s), 3 drawer(s)." in out
+    assert "OUTCOME: B" in out  # classified, not an input error (no recorded identity here)
+
+
+def test_read_brain_identity_recovers_diary_agent_from_sentence(tmp_path):
+    """Older brains record the diary agent only in the diary sentence; the
+    classifier needs it to identify the brain diary wing when the recorded
+    wiki wing is absent from the palace."""
+    brain = tmp_path / "proj" / ".brain"
+    brain.mkdir(parents=True)
+    (brain / "CLAUDE.md").write_text(
+        "---\n"
+        "mempalace_wing: wiki_demo_app_20261026t164600z\n"
+        "---\n"
+        "# Demo\n\nThe session diary is separate: `mempalace_diary_write` with agent\n"
+        "`brain-demo-app` stores under MemPalace's diary default.\n",
+        encoding="utf-8")
+    wing, agent = reset_brain.read_brain_identity(tmp_path / "proj")
+    assert wing == "wiki_demo_app_20261026t164600z"
+    assert agent == "brain-demo-app"
+
+
+def test_read_brain_identity_explicit_agent_wins_over_sentence(tmp_path):
+    brain = tmp_path / "proj" / ".brain"
+    brain.mkdir(parents=True)
+    (brain / "CLAUDE.md").write_text(
+        "mempalace_wing: wiki_demo\n"
+        "mempalace_diary_agent: wing_brain_explicit\n"
+        "The session diary: `mempalace_diary_write` with agent `brain-old`.\n",
+        encoding="utf-8")
+    _wing, agent = reset_brain.read_brain_identity(tmp_path / "proj")
+    assert agent == "wing_brain_explicit"
+
+
+def test_classify_wings_identifies_diary_wing_via_recovered_agent():
+    """Outcome correction: with the recorded wiki wing missing from the
+    palace, the diary agent recovered from the sentence still classifies the
+    diary wing as brain-owned (outcome B, not C)."""
+    classification = classify(
+        {"wing_brain_demo_app": 4},
+        recorded_wing=None,
+        agent="brain-demo-app",
+    )
+    row = row_by_name(classification, "wing_brain_demo_app")
+    assert row.wing_class == mr.CLASS_BRAIN_DIARY

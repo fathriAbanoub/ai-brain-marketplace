@@ -287,6 +287,28 @@ def load_skips(brain: Path) -> dict[str, str]:
     return skips
 
 
+def wiki_content_sha256(brain: Path) -> str:
+    """Digest over the current wiki page contents (index.md excluded).
+
+    Binds a computed completion to the exact wiki content it was computed
+    from: doctor --strict uses this to reject a saved completion whose pages
+    have since changed even when the unit-path set is unchanged (a citation
+    removed from an existing page keeps every unit path identical)."""
+    digest = hashlib.sha256()
+    wiki = brain / "wiki"
+    for p in sorted(wiki.rglob("*.md")):
+        if p.name == "index.md":
+            continue
+        digest.update(p.relative_to(brain).as_posix().encode("utf-8"))
+        digest.update(b"\0")
+        try:
+            digest.update(p.read_bytes())
+        except OSError:
+            digest.update(b"<unreadable>")
+        digest.update(b"\n")
+    return digest.hexdigest()
+
+
 def compute_statuses(root: Path, brain: Path, units: list[dict],
                      skips: dict[str, str]) -> dict[str, dict]:
     """covered = cited with a lint-passing citation by a non-draft page whose
@@ -364,6 +386,7 @@ def cmd_inventory(root: Path, as_json: bool) -> int:
                    "sha256": sha256_file(policy_path)},
         "stub_min_body_chars": STUB_MIN_BODY_CHARS,
         "weighted_coverage_min": WEIGHTED_COVERAGE_MIN,
+        "wiki_content_sha256": wiki_content_sha256(brain),
         "units": units,
         "completion": {
             "core_all_covered": core_cov == core_total,
@@ -405,7 +428,26 @@ def cmd_crossrefs(root: Path) -> int:
               file=sys.stderr)
         return 2
     inv = json.loads(inv_path.read_text(encoding="utf-8"))
-    doc_units = [u for u in inv["units"] if u["kind"] == "docs"]
+    saved_units = inv.get("units") if isinstance(inv, dict) else None
+    saved_doc_paths = {u.get("path") for u in saved_units
+                       if isinstance(u, dict) and u.get("kind") == "docs"} \
+        if isinstance(saved_units, list) else set()
+    # Scan the CURRENT documentation files, not the saved inventory's list:
+    # a doc added after inventory generation must be included, or the receipt
+    # could report missing: [] while the new file contains a broken backticked
+    # path — and check_all_clear_claims would then license an all-clear claim.
+    policy, _policy_path = load_policy()
+    current_units, _source, _commit = list_units(root, policy)
+    doc_units = [u for u in current_units if u["kind"] == "docs"]
+    stale_note = ""
+    current_doc_paths = {u["path"] for u in doc_units}
+    if saved_doc_paths != current_doc_paths:
+        added = len(current_doc_paths - saved_doc_paths)
+        removed = len(saved_doc_paths - current_doc_paths)
+        stale_note = (f"inventory stale for crossrefs: {added} doc file(s) added, "
+                      f"{removed} removed since generation — rerun "
+                      "`project-brain-inventory <root> inventory`; this receipt "
+                      "scanned the current docs")
     missing = []
     checked = 0
     for u in doc_units:
@@ -427,8 +469,12 @@ def cmd_crossrefs(root: Path) -> int:
         "refs_checked": checked,
         "missing": missing,
     }
+    if stale_note:
+        report["note"] = stale_note
     (brain / "audit").mkdir(parents=True, exist_ok=True)
     atomic_write_json(brain / CROSSREFS_RECEIPT, report)
+    if stale_note:
+        print(f"note: {stale_note}")
     print(f"crossrefs: checked {checked} refs across {len(doc_units)} doc units; missing {len(missing)}")
     for m in missing:
         print(f"  MISSING  {m['doc']}: `{m['ref']}`")

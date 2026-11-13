@@ -263,3 +263,36 @@ class TestWiring:
                                 capture_output=True, text=True, timeout=30)
         assert result.returncode == 0, result.stderr
         assert (proj / ".brain" / "inventory.json").is_file()
+
+
+class TestCrossrefsFreshness:
+    def test_doc_added_after_inventory_is_scanned(self, run_script, tmp_project: Path):
+        """A documentation file added after inventory generation must be
+        included in the cross-reference scan: the receipt may never report
+        missing: [] while the new file contains a broken backticked path
+        (check_all_clear_claims licenses all-clear claims off this receipt)."""
+        proj = make_source_project(run_script, tmp_project)
+        brain = proj / ".brain"
+        run_inventory(run_script, proj)  # inventory BEFORE the new doc exists
+        (proj / "docs" / "late.md").write_text(
+            "# Late doc\n\nReferences `src/engine.ts` and `src/gone.md`.\n", encoding="utf-8")
+        result = run_script("brain_inventory.py", [str(proj), "crossrefs"])
+        assert result.returncode == 1, result.stdout + result.stderr
+        report = json.loads((brain / "audit" / "crossrefs-report.json").read_text(encoding="utf-8"))
+        assert {"doc": "docs/late.md", "ref": "src/gone.md"} in report["missing"]
+        assert "stale" in report.get("note", "")
+        assert "docs/late.md" in result.stdout
+
+
+class TestWikiContentBinding:
+    def test_wiki_content_sha256_stable_and_sensitive(self, tmp_path: Path):
+        brain = tmp_path / ".brain"
+        page = write_page(brain, "concepts/A.md", substantive())
+        first = bi.wiki_content_sha256(brain)
+        assert first == bi.wiki_content_sha256(brain)  # stable
+        page.write_text(page.read_text(encoding="utf-8") + "extra\n", encoding="utf-8")
+        assert first != bi.wiki_content_sha256(brain)  # content-sensitive
+        # index.md is excluded: regenerating it does not change the digest
+        before = bi.wiki_content_sha256(brain)
+        (brain / "wiki" / "index.md").write_text("# index v2\n", encoding="utf-8")
+        assert before == bi.wiki_content_sha256(brain)

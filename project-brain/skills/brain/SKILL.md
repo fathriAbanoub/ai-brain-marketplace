@@ -36,11 +36,15 @@ fallback:
 
 ```bash
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-}"
+# A stale CLAUDE_PLUGIN_ROOT (moved/foreign copy) must not skip discovery:
+# validate it against bin/ and clear it when invalid; a valid one is kept.
+if [ -n "$PLUGIN_ROOT" ] && [ ! -d "$PLUGIN_ROOT/bin" ]; then
+  PLUGIN_ROOT=""
+fi
 # If still empty: the harness prints "Base directory for this skill: <path>"
 # directly above this skill's text. Do NOT count dirname levels by hand — a
 # wrong depth guess ends on a foreign copy of the plugin. Take the first
-# candidate that actually contains the plugin's bin/. The candidate loop
-# runs only when PLUGIN_ROOT is still empty — never overwrite a resolved root.
+# candidate that actually contains the plugin's bin/.
 if [ -z "$PLUGIN_ROOT" ]; then
   BASE_DIR='<path-from-that-line>'
   for _c in "$BASE_DIR" "$(dirname "$BASE_DIR")" "$(dirname "$(dirname "$BASE_DIR")")"; do

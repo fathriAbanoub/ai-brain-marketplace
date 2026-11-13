@@ -407,3 +407,92 @@ def test_multi_wing_hard_reset(palace):
     assert drawer_count(palace, "wiki_target") == 0
     assert drawer_count(palace, "wiki_other") == 0
     assert drawer_count(palace, "solo_wing") == 2
+
+
+# --- CodeRabbit fix: name-keyed registry rows are part of the plan --------------
+
+def test_name_keyed_registry_in_plan_hash_and_verify(tmp_path):
+    """A registry keyed by 'name' is absent from plan.tables but its row for
+    the confirmed wing is deleted: it must be counted in affected rows and
+    the plan hash, and verified after deletion."""
+    db = make_palace(tmp_path / "palace.db", {"wiki_target": 3, "wiki_other": 2})
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE wings (name TEXT PRIMARY KEY)")
+    conn.execute("INSERT INTO wings (name) VALUES ('wiki_target'), ('wiki_other')")
+    conn.commit()
+    conn.close()
+    plan = hr.build_plan(db, ["wiki_target"])
+    assert plan.registry_table == "wings"
+    assert plan.registry_key == "name"
+    assert plan.registry_row_count == 1
+    assert plan.affected_rows() == sum(t.row_count for t in plan.tables) + 1
+    # The registry is part of the confirmed hash: adding a row for ANOTHER
+    # target wing changes the hash, so stale confirmations are refused.
+    hash_before = hr.plan_hash(plan)
+    conn = sqlite3.connect(db)
+    conn.execute("INSERT INTO wings (name) VALUES ('wiki_target2')")
+    conn.commit()
+    conn.close()
+    plan2 = hr.build_plan(db, ["wiki_target", "wiki_target2"])
+    assert hr.plan_hash(plan2) != hash_before
+    # Post-deletion verification: the registry row is gone.
+    backup = hr.make_backup(plan)
+    conn = sqlite3.connect(str(db))
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        registry, registry_key = hr.wing_registry_table(conn)
+        hr.execute_deletions(conn, plan, registry, registry_key)
+        conn.commit()
+    finally:
+        conn.close()
+    ok, problems = hr.verify_result(plan, backup)
+    assert ok, problems
+
+
+def test_name_keyed_registry_survivor_fails_verification(tmp_path):
+    """If the registry row somehow survives (a partial deletion), verify_result
+    must report it — the reset may not be declared successful."""
+    db = make_palace(tmp_path / "palace.db", {"wiki_target": 2, "wiki_other": 1})
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE wings (name TEXT PRIMARY KEY)")
+    conn.execute("INSERT INTO wings (name) VALUES ('wiki_target'), ('wiki_other')")
+    conn.commit()
+    conn.close()
+    plan = hr.build_plan(db, ["wiki_target"])
+    backup = hr.make_backup(plan)
+    # Simulate a deletion run that skipped the registry delete.
+    conn = sqlite3.connect(str(db))
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        for table_plan in plan.tables:
+            if table_plan.role != "wing-tagged" or table_plan.row_count == 0:
+                continue
+            predicate = " OR ".join(
+                f'"{col}" IN ({",".join("?" for _ in plan.wings)})' for col in table_plan.wing_columns
+            )
+            conn.execute(f'DELETE FROM "{table_plan.name}" WHERE {predicate}',
+                         plan.wings * len(table_plan.wing_columns))
+        conn.commit()
+    finally:
+        conn.close()
+    ok, problems = hr.verify_result(plan, backup)
+    assert not ok
+    assert any("registry row(s) remain" in p for p in problems)
+
+
+def test_wing_tagged_registry_is_not_double_counted(tmp_path):
+    """A wings registry that carries a wing column is already wing-tagged in
+    plan.tables: its rows are counted once (no registry_row_count duplication)."""
+    db = make_palace(tmp_path / "palace.db", {"wiki_target": 2, "wiki_other": 1})
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE wings (name TEXT PRIMARY KEY, wing TEXT)")
+    conn.execute("INSERT INTO wings (name, wing) VALUES ('w-registry', 'wiki_target')")
+    conn.commit()
+    conn.close()
+    plan = hr.build_plan(db, ["wiki_target"])
+    assert plan.registry_row_count == 0
+    assert plan.registry_table == ""  # not re-registered as a name-keyed registry
+    planned = [t for t in plan.tables if t.name == "wings"]
+    assert len(planned) == 1 and planned[0].role == "wing-tagged"
+    expected = sum(t.row_count for t in plan.tables)
+    assert plan.affected_rows() == expected

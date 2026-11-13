@@ -145,9 +145,18 @@ class ResetPlan:
     unrelated_wing_counts: dict[str, int] = field(default_factory=dict)
     notes: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    # Name-keyed wing registry (e.g. a `wings` table keyed by `name`): it has
+    # no wing column, so classify_schema never puts it in plan.tables, but
+    # execute_deletions still removes its row for the confirmed wings. Its
+    # affected rows are counted here so totals, the plan hash, and post-delete
+    # verification cover every row the operation can delete. A registry that
+    # IS wing-tagged stays in plan.tables only (never counted twice).
+    registry_table: str = ""
+    registry_key: str = ""
+    registry_row_count: int = 0
 
     def affected_rows(self) -> int:
-        return sum(t.row_count for t in self.tables)
+        return sum(t.row_count for t in self.tables) + self.registry_row_count
 
 
 def _quote_ident(name: str) -> str:
@@ -382,12 +391,34 @@ def build_plan(db_path: Path, wings: list[str], backup_root: Path | None = None)
             tables=plans,
             unrelated_wing_counts=unrelated,
         )
-        registry, _registry_key = wing_registry_table(conn)
+        registry, registry_key = wing_registry_table(conn)
         if registry:
             plan.notes.append(
                 f"wing registry table {registry!r} detected; its row for the "
                 "confirmed wings is deleted last (children first)"
             )
+            # Include the registry in the plan unless classify_schema already
+            # planned it as wing-tagged (a wings table WITH a wing column):
+            # counting it twice would inflate affected_rows and the hash.
+            already_planned = any(
+                p.role == "wing-tagged" and p.name.lower() == registry.lower()
+                for p in plan.tables
+            )
+            if not already_planned:
+                placeholders = ",".join("?" for _ in wings)
+                cur = conn.execute(
+                    f"SELECT COUNT(*) FROM {_quote_ident(registry)} "
+                    f"WHERE {_quote_ident(registry_key)} IN ({placeholders})",
+                    wings,
+                )
+                plan.registry_table = registry
+                plan.registry_key = registry_key
+                plan.registry_row_count = int(cur.fetchone()[0])
+                plan.notes.append(
+                    f"registry {registry!r} is keyed by {registry_key!r} (no wing column): "
+                    f"{plan.registry_row_count} row(s) for the confirmed wings are "
+                    "counted in the affected total, the plan hash, and verification"
+                )
         live = detect_live_server(db_path)
         if live:
             plan.warnings.append(
@@ -408,6 +439,10 @@ def plan_hash(plan: ResetPlan) -> str:
         "db": str(plan.db_path),
         "wings": plan.wings,
         "tables": [(t.name, t.role, t.row_count) for t in plan.tables if t.row_count],
+        # A name-keyed registry is not in plan.tables; its rows are part of
+        # what confirmation deletes, so the hash must change when they do.
+        "registry": ([plan.registry_table, plan.registry_key, plan.registry_row_count]
+                     if plan.registry_table and plan.registry_row_count else []),
         "sidecars": [(str(s.path), s.affected_lines) for s in plan.sidecars if s.affected_lines],
         "affected_rows": plan.affected_rows(),
     }
@@ -424,6 +459,9 @@ def print_plan(plan: ResetPlan) -> None:
         if table.row_count or table.role == "wing-tagged":
             detail = f"wing columns: {', '.join(table.wing_columns)}" if table.role == "wing-tagged" else f"child of drawers via {table.child_column}"
             print(f"    - {table.name} [{table.role}]: {table.row_count} row(s) ({detail})")
+    if plan.registry_row_count:
+        print(f"    - {plan.registry_table} [wing-registry]: {plan.registry_row_count} row(s) "
+              f"(keyed by {plan.registry_key})")
     for sidecar in plan.sidecars:
         if sidecar.total_lines < 0:
             print(f"    - {sidecar.path.name}: UNREADABLE (will be backed up, not rewritten)")
@@ -550,6 +588,22 @@ def verify_result(plan: ResetPlan, backup_dir: Path) -> tuple[bool, list[str]]:
             remaining = int(cur.fetchone()[0])
             if remaining:
                 problems.append(f"{table_plan.name}: {remaining} row(s) remain for target wings")
+        # A name-keyed registry deleted by execute_deletions is verified here
+        # too, even though it is absent from plan.tables.
+        if plan.registry_table and plan.registry_key and not any(
+                t.role == "wing-tagged" and t.name.lower() == plan.registry_table.lower()
+                for t in plan.tables):
+            placeholders = ",".join("?" for _ in plan.wings)
+            cur = conn.execute(
+                f"SELECT COUNT(*) FROM {_quote_ident(plan.registry_table)} "
+                f"WHERE {_quote_ident(plan.registry_key)} IN ({placeholders})",
+                plan.wings,
+            )
+            remaining = int(cur.fetchone()[0])
+            if remaining:
+                problems.append(
+                    f"{plan.registry_table}: {remaining} registry row(s) remain for target wings"
+                )
         # Unrelated wings must be untouched.
         parent = next((p for p in plan.tables if p.role == "wing-tagged" and p.name.lower() in ("drawers", "drawer")), None)
         if parent is not None:

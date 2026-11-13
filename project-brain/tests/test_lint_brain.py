@@ -363,3 +363,41 @@ class TestLedgerHistorySecrets:
         wl.WikiLedger(project).snapshot("snapshot: clean")
         report = self._lint_json(run_script, project)
         assert not [i for i in report["issues"] if i["category"] == "brain_secret"]
+
+    def test_byte_budget_bounds_content_pass_and_reports_partial(self, scaffolded_project: Path,
+                                                                 monkeypatch):
+        """LEDGER_HISTORY_MAX_BYTES bounds the cat-file --batch request BEFORE
+        any content is captured: blobs beyond the budget are skipped (nothing
+        beyond the bound is reported) and the skipped content is reported as a
+        partial scan. Runs in-process so the module constant can be patched."""
+        import lint_brain as lb
+        brain = scaffolded_project
+        project = brain.parent
+        page = brain / "wiki" / "concepts" / "Creds.md"
+        page.parent.mkdir(parents=True, exist_ok=True)
+        fm = ("---\ntitle: Creds\ntype: concept\ncreated: 2026-01-01\nupdated: 2026-01-01\n"
+              "status: active\nsources: []\ntags: [t]\n---\n")
+        page.write_text(fm + "# Creds\n\naws key AKIAIOSFODNN7EXAMPLE was leaked here\n",
+                        encoding="utf-8")
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+        import wiki_ledger as wl
+        ledger = wl.WikiLedger(project)
+        ledger.snapshot("snapshot: leak")
+        page.write_text(fm + "# Creds\n\nthe credential was rotated and removed\n",
+                        encoding="utf-8")
+        ledger.snapshot("snapshot: cleaned")
+        ledger_dir = brain / "state" / "wiki.git"
+
+        def scan() -> list[str]:
+            issues: list[dict] = []
+            lb._scan_ledger_history_secrets(project, brain, ledger_dir, issues)
+            return [i["category"] for i in issues]
+
+        # Full budget: the retained secret is found (in-process control).
+        assert "brain_secret" in scan()
+        # One-byte budget: no blob fits, nothing is scanned, and the gap is
+        # reported as a partial scan instead of being silently ignored.
+        monkeypatch.setattr(lb, "LEDGER_HISTORY_MAX_BYTES", 1)
+        cats = scan()
+        assert "brain_secret" not in cats
+        assert "brain_secret_scan_partial" in cats

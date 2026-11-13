@@ -27,13 +27,17 @@ def make_project_with_source(run_script, tmp_path: Path, source_lines: list[str]
     return proj
 
 
+def write_page_frontmatter() -> str:
+    """The default frontmatter write_page() prepends (kept in sync for the
+    line-number math tests do against the written page text)."""
+    return ("---\ntitle: T\ntype: concept\ncreated: 2026-01-01\nupdated: 2026-01-01\n"
+            "status: active\nsources: []\ntags: [t]\n---\n")
+
+
 def write_page(brain: Path, rel: str, body: str, frontmatter: str = "") -> Path:
     page = brain / "wiki" / rel
     page.parent.mkdir(parents=True, exist_ok=True)
-    fm = frontmatter or (
-        "---\ntitle: T\ntype: concept\ncreated: 2026-01-01\nupdated: 2026-01-01\n"
-        "status: active\nsources: []\ntags: [t]\n---\n"
-    )
+    fm = frontmatter or write_page_frontmatter()
     page.write_text(fm + body, encoding="utf-8")
     return page
 
@@ -357,6 +361,8 @@ class TestCitationsInCodeRegions:
                    f'{CITATION_OK}\n'
                    "```\n")
         state: dict = {}
+        import sys
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
         import lint_brain as lb
         lb.build_report(proj, citation_state=state)
         info = state["wiki/concepts/Example.md"]
@@ -373,6 +379,8 @@ class TestCitationsInCodeRegions:
         write_page(proj / ".brain", "concepts/Inline.md",
                    substantive_body() + " Inline: `" + CITATION_OK + "` as a sample.\n")
         state: dict = {}
+        import sys
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
         import lint_brain as lb
         lb.build_report(proj, citation_state=state)
         assert state["wiki/concepts/Inline.md"]["has_citations"] is False
@@ -386,6 +394,56 @@ class TestCitationsInCodeRegions:
                    f"Real: {CITATION_OK}\n")
         report = lint_json(run_script, proj)
         assert "citation_drift" not in categories(report)
+
+    def test_drift_after_fence_reports_original_line(self, run_script, tmp_project: Path):
+        """A drifted citation that follows a fenced block is reported on the
+        line the page really shows it on: masked fence lines keep their
+        length, so citation offsets index the original text."""
+        proj = make_project_with_source(run_script, tmp_project, SOURCE_LINES)
+        body = ('# Page\n\n```bash\n' + "x" * 80 + '\n```\n\n'
+                'Drift: {{src src/nope.ts:1 "missing"}}\n')
+        write_page(proj / ".brain", "concepts/Late.md", body)
+        report = lint_json(run_script, proj)
+        drift = [i for i in report["issues"] if i["category"] == "citation_drift"]
+        assert drift, "drifted citation not reported"
+        page_text = write_page_frontmatter() + body
+        true_line = page_text.count("\n", 0, page_text.index("{{src src/nope")) + 1
+        assert drift[0]["line"] == true_line, drift[0]
+
+    def test_citation_after_fence_is_not_reported_unanchored(self, run_script, tmp_project: Path):
+        """A valid prose citation after a fenced block shields the file:line
+        inside it from unanchored_line_ref: citation spans and bare refs share
+        the original text's coordinates."""
+        proj = make_project_with_source(run_script, tmp_project, SOURCE_LINES)
+        write_page(proj / ".brain", "concepts/Shield.md",
+                   "# Shield\n\n```bash\n" + "x" * 80 + "\n```\n\n"
+                   f"Real: {CITATION_OK}\n")
+        report = lint_json(run_script, proj)
+        assert "unanchored_line_ref" not in categories(report)
+
+    def test_anchor_with_inline_code_span_passes(self, run_script, tmp_project: Path):
+        """An anchor quoting a line that contains a template literal keeps its
+        backticks: extracting citations from the original body means masking
+        cannot mangle prose anchors (and coverage still counts)."""
+        source = SOURCE_LINES[:14] + ["const msg = `hi`;"] + SOURCE_LINES[14:]
+        proj = make_project_with_source(run_script, tmp_project, source)
+        write_page(proj / ".brain", "concepts/Tick.md",
+                   substantive_body() + "\n"
+                   '# Tick cites: {{src src/app.ts:15-15 "const msg = `hi`;"}}, checked.\n')
+        state: dict = {}
+        import sys
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+        import lint_brain as lb
+        lb.build_report(proj, citation_state=state)
+        info = state["wiki/concepts/Tick.md"]
+        assert info["has_citations"] is True
+        assert info["drift"] is False
+        assert "src/app.ts" in info["files"]
+        # And inventory coverage agrees: src/app.ts IS covered by the page.
+        import brain_inventory as bi
+        statuses = bi.compute_statuses(proj, proj / ".brain",
+                                       [{"path": "src/app.ts"}], {})
+        assert statuses["src/app.ts"]["status"] == "covered"
 
 
 def substantive_body() -> str:

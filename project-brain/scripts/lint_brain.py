@@ -42,15 +42,16 @@ FENCE_OPEN_RE = re.compile(r"(?:`{3,}|~{3,})")
 def strip_code_regions(text: str) -> str:
     """Mask fenced code blocks and inline code spans with same-length
     whitespace, so wikilink scanners skip code (`` `[[ghost]]` `` in docs is
-    documentation, not a link) while line_for() keeps reporting the original
-    line numbers: every '\\n' survives, only intra-line content is blanked.
+    documentation, not a link) while every match position still indexes the
+    original text: each masked line keeps its exact length, so character
+    offsets and line_for() line numbers are valid against the unmasked text.
     An unclosed fence masks to the end of the text."""
     out: list[str] = []
     fence: tuple[str, int] | None = None  # (fence char, minimum closer length)
     for line in text.split("\n"):
         stripped = line.lstrip(" \t")
         if fence is not None:
-            out.append("")
+            out.append(" " * len(line))
             closer = stripped.rstrip()
             if set(closer) == {fence[0]} and len(closer) >= fence[1]:
                 fence = None
@@ -58,7 +59,7 @@ def strip_code_regions(text: str) -> str:
         opener = FENCE_OPEN_RE.match(stripped)
         if opener:
             fence = (opener.group(0)[0], len(opener.group(0)))
-            out.append("")
+            out.append(" " * len(line))
             continue
         # ponytail: inline spans are matched per line, so a backtick pair
         # spanning two lines is not masked; upgrade path: a cross-line span
@@ -812,14 +813,19 @@ def check_citations(root: Path, brain: Path, issues: list[dict], citation_state:
         text = read(p)
         body = body_text(text)
         offset = len(text) - len(body)
-        # Match citations against the code-masked body: strip_code_regions
-        # blanks fenced blocks and inline spans with same-length whitespace,
-        # so every match position still indexes the original body for line
-        # numbers and messages.
+        # Citations are matched in the ORIGINAL body so anchors keep inline
+        # code spans (backticks) verbatim — masking them would mangle the
+        # anchor and falsely report citation_drift. strip_code_regions
+        # preserves offsets, so the masked body only decides whether a
+        # citation starts inside a code region (masked positions are spaces,
+        # never the '{' that opens a citation), and every position here
+        # indexes the original body for line numbers and messages.
         scan = strip_code_regions(body)
         info = {"has_citations": False, "drift": False, "files": {}}
         spans: list[tuple[int, int]] = []
-        for m in CITATION_RE.finditer(scan):
+        for m in CITATION_RE.finditer(body):
+            if scan[m.start()] != "{":  # starts inside a masked code region
+                continue
             spans.append((m.start(), m.end()))
             info["has_citations"] = True
             quoted_s, path_s, start_s, end_s, anchor = m.groups()
@@ -963,7 +969,9 @@ def check_all_clear_claims(root: Path, brain: Path, issues: list[dict], verifica
 
 
 # Wiki ledger history scan bounds (KD-15): the object enumeration is one git
-# call; the content pass streams every blob through one cat-file --batch call.
+# call that also prints each blob's size (--batch-check); the content pass
+# requests only the blobs that fit the byte budget, through one cat-file
+# --batch call, so its captured response can never exceed the bound.
 LEDGER_HISTORY_GIT_TIMEOUT = 60.0
 LEDGER_HISTORY_MAX_BLOBS = 20000
 LEDGER_HISTORY_MAX_BYTES = 64 * 1024 * 1024
@@ -977,6 +985,15 @@ def _git_env_for_ledger() -> dict:
     return {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
 
 
+def _report_ledger_history_partial(issues: list[dict], ledger_dir: Path,
+                                   root: Path) -> None:
+    """The history scan skipped content at a named bound: report the gap."""
+    add(issues, "warn", "brain_secret_scan_partial", ledger_dir, root,
+        f"wiki ledger history exceeded the scan bound "
+        f"({LEDGER_HISTORY_MAX_BLOBS} objects / {LEDGER_HISTORY_MAX_BYTES} bytes) — "
+        "retained secrets beyond the bound were not checked")
+
+
 def _scan_ledger_history_secrets(root: Path, brain: Path, ledger_dir: Path,
                                  issues: list[dict]) -> None:
     """KD-15: scan historical wiki content in the ledger's git database.
@@ -984,11 +1001,12 @@ def _scan_ledger_history_secrets(root: Path, brain: Path, ledger_dir: Path,
     A wiki edit enters .brain/state/wiki.git through an automatic snapshot; if
     a secret was later removed from the current page, the historical snapshot
     still holds it. Packfiles are binary noise for a text scan, so the history
-    is read THROUGH Git: enumerate every object (cat-file --batch-check
-    --batch-all-objects), then stream each blob's content once (cat-file
-    --batch) and scan it with the same patterns as current files. A retained
-    secret is an error and requires rotating the credential AND purging the
-    ledger history — deleting the page is not enough.
+    is read THROUGH Git: enumerate every object with its size (cat-file
+    --batch-check --batch-all-objects), then request the content of the blobs
+    that fit the byte budget (cat-file --batch) and scan it with the same
+    patterns as current files. A retained secret is an error and requires
+    rotating the credential AND purging the ledger history — deleting the
+    page is not enough.
     """
     git_exe = shutil.which("git")
     if not git_exe:
@@ -1011,23 +1029,43 @@ def _scan_ledger_history_secrets(root: Path, brain: Path, ledger_dir: Path,
             "could not enumerate wiki ledger history for secrets: "
             f"{(check_proc.stderr or b'').decode('utf-8', errors='replace').strip()}")
         return
-    blob_ids: list[bytes] = []
+    blobs: list[tuple[bytes, int]] = []
+    truncated = False
     for line in check_proc.stdout.splitlines():
         fields = line.split()
-        if len(fields) >= 2 and fields[1] == b"blob":
-            blob_ids.append(fields[0])
-    truncated = False
-    if len(blob_ids) > LEDGER_HISTORY_MAX_BLOBS:
-        blob_ids = blob_ids[:LEDGER_HISTORY_MAX_BLOBS]
+        if len(fields) < 3 or fields[1] != b"blob":
+            continue  # non-blob object, or a blob line without its size
+        try:
+            size = int(fields[2])
+        except ValueError:
+            truncated = True  # unsizeable blob cannot be bounded: fail closed
+            continue
+        blobs.append((fields[0], size))
+    if len(blobs) > LEDGER_HISTORY_MAX_BLOBS:
+        blobs = blobs[:LEDGER_HISTORY_MAX_BLOBS]
         truncated = True
-    if not blob_ids:
+    # Bound the content pass BEFORE requesting anything: sizes from
+    # --batch-check select only the blobs that fit LEDGER_HISTORY_MAX_BYTES,
+    # so the captured --batch response can never allocate beyond the bound.
+    # Every skipped blob makes the scan partial.
+    selected: list[bytes] = []
+    selected_bytes = 0
+    for oid, size in blobs:
+        if selected_bytes + size > LEDGER_HISTORY_MAX_BYTES:
+            truncated = True
+            break
+        selected.append(oid)
+        selected_bytes += size
+    if not selected:
+        if truncated:
+            _report_ledger_history_partial(issues, ledger_dir, root)
         return
     reported: set[tuple[str, str]] = set()
     total_bytes = 0
     try:
         batch_proc = subprocess.run(
             [git_exe, "--git-dir", str(ledger_dir), "cat-file", "--batch"],
-            input=b"\n".join(blob_ids) + b"\n",
+            input=b"\n".join(selected) + b"\n",
             capture_output=True, timeout=LEDGER_HISTORY_GIT_TIMEOUT,
             env=_git_env_for_ledger(), cwd=str(root))
     except (OSError, subprocess.SubprocessError) as exc:
@@ -1056,7 +1094,7 @@ def _scan_ledger_history_secrets(root: Path, brain: Path, ledger_dir: Path,
         pos = content_start + size + 1  # skip the trailing newline
         total_bytes += size
         if total_bytes > LEDGER_HISTORY_MAX_BYTES:
-            truncated = True
+            truncated = True  # defense in depth: batch size != batch-check size
             break
         text = content.decode("utf-8", errors="replace")
         for label, pattern in SECRET_PATTERNS:
@@ -1082,10 +1120,7 @@ def _scan_ledger_history_secrets(root: Path, brain: Path, ledger_dir: Path,
                 "history (delete .brain/state/wiki.git and re-snapshot)",
                 text.count("\n", 0, m.start()) + 1)
     if truncated:
-        add(issues, "warn", "brain_secret_scan_partial", ledger_dir, root,
-            f"wiki ledger history exceeded the scan bound "
-            f"({LEDGER_HISTORY_MAX_BLOBS} objects / {LEDGER_HISTORY_MAX_BYTES} bytes) — "
-            "retained secrets beyond the bound were not checked")
+        _report_ledger_history_partial(issues, ledger_dir, root)
 
 
 def check_brain_secrets(root: Path, brain: Path, issues: list[dict]) -> None:

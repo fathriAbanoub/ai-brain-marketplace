@@ -2,21 +2,134 @@
 """Health-check a project brain.
 
 Usage:
-    lint_brain.py <project-root> [--json]
+    lint_brain.py <project-root> [--json] [--reindex] [--verify]
+
+--verify re-checks every inline citation and records SHA-256 stamps for cited
+files in .brain/verification.json (clean pages only). Stamps are the ground
+truth for stale_citation detection; no other code path writes them.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import os
 import re
+import shutil
+import subprocess
 import sys
 from datetime import datetime, date, timezone
 from pathlib import Path
 
 WIKILINK_RE = re.compile(r"\[\[([^\]|#]+)(?:[|#][^\]]*)?\]\]")
+# Hybrid markdown-wikilink `[[target](path)]`: no closing ]] survives, so the
+# plain wikilink regex is blind to it. Observed live in a real session.
+HYBRID_WIKILINK_RE = re.compile(r"\[\[([^\]]+?)\]\(")
 FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 SEVERITIES = ("error", "warn", "suggest", "info")
+# Inline code spans: one or more backticks, content without backticks or
+# newlines, closed by the same number of backticks (any closing run accepts
+# the common single/double-backtick cases; nesting is not a thing).
+CODE_SPAN_RE = re.compile(r"`+[^`\n]*`+")
+# Fenced code block opener: 3+ backticks or tildes after indentation (an info
+# string may follow; it is masked with the fence). Indentation depth is not
+# checked against a bound: deeper-indented fence-like lines are indented code
+# either way, so masking them is correct too.
+FENCE_OPEN_RE = re.compile(r"(?:`{3,}|~{3,})")
+
+
+def strip_code_regions(text: str) -> str:
+    """Mask fenced code blocks and inline code spans with same-length
+    whitespace, so wikilink scanners skip code (`` `[[ghost]]` `` in docs is
+    documentation, not a link) while every match position still indexes the
+    original text: each masked line keeps its exact length, so character
+    offsets and line_for() line numbers are valid against the unmasked text.
+    An unclosed fence masks to the end of the text."""
+    out: list[str] = []
+    fence: tuple[str, int] | None = None  # (fence char, minimum closer length)
+    for line in text.split("\n"):
+        stripped = line.lstrip(" \t")
+        if fence is not None:
+            out.append(" " * len(line))
+            closer = stripped.rstrip()
+            if set(closer) == {fence[0]} and len(closer) >= fence[1]:
+                fence = None
+            continue
+        opener = FENCE_OPEN_RE.match(stripped)
+        if opener:
+            fence = (opener.group(0)[0], len(opener.group(0)))
+            out.append(" " * len(line))
+            continue
+        # ponytail: inline spans are matched per line, so a backtick pair
+        # spanning two lines is not masked; upgrade path: a cross-line span
+        # pass if such pages are ever observed in practice.
+        out.append(CODE_SPAN_RE.sub(lambda m: " " * len(m.group()), line))
+    return "\n".join(out)
+
+# Fix commands printed inside rule messages. Every message that names a
+# mechanical fix names the SAME command for every instance of that rule
+# (KD-05: an agent that fixes one instance by hand-editing generated files
+# created new duplicates — the fix must be script-shaped, not per-file).
+REINDEX_HINT = "regenerate with `project-brain-lint <root> --reindex`; never hand-edit index.md"
+VERIFY_HINT = "then run `project-brain-lint <root> --verify`"
+INIT_HINT = 'run `project-brain-init <root> "<Project Name>"`'
+
+# --- WP4: citations, staleness, provenance (KD-01, KD-02, KD-07, KD-14) ---
+# Inline citation syntax (documented in skills/brain/references/wiki-schema.md):
+#     {{src path/to/file.ts:10-20 "anchorText"}}
+# Paths containing spaces use a quoted path form; the quote goes around the
+# path only, the anchor keeps its own quotes:
+#     {{src "my docs/page.md":3 "anchorText"}}
+CITATION_RE = re.compile(
+    r'\{\{src\s+(?:"([^"]+)"|([^:\s]+)):(\d+)(?:-(\d+))?\s+"([^"]*)"\}\}'
+)
+CITATION_ANCHOR_WINDOW_LINES = 5  # anchor must appear within this many lines after the cited range (mission constant)
+# ponytail: heuristic warn for bare `file.ext:NNN` refs (closed pattern); it
+# cannot catch prose claims with no line ref at all. Upgrade path: extend the
+# pattern, never special-case files.
+UNANCHORED_REF_RE = re.compile(r"(?<![\w/.:@-])([A-Za-z0-9_][\w.+@/~-]*\.[A-Za-z0-9]{1,8}):(\d{1,5})\b")
+RATIONALE_COMMIT_RE = re.compile(r"^commit:([0-9a-f]{7,40})$")
+RATIONALE_SCALARS = ("user-confirmed", "inferred", "unknown")
+# ponytail: closed phrase list for forbidden all-clear claims; every pattern
+# lives here and nowhere else. Upgrade path: extend this tuple.
+ALL_CLEAR_PHRASES = ("no contradictions", "no conflicts", "no inconsistencies", "no discrepancies", "no mismatches")
+# ponytail: closed word list for volatile-count detection (counts/versions
+# drift); misses e.g. "~1k LOC". Upgrade path: extend the alternation.
+VOLATILE_COUNT_RE = re.compile(r"\b\d+\s+(?:tests?|files?|modules?|packages?|components?|pages?|commits?|nodes?|edges?|dependencies|users?|routes?)\b", re.IGNORECASE)
+VERIFICATION_FILE = "verification.json"
+CROSSREFS_RECEIPT = "audit/crossrefs-report.json"
+# Consecutive failing gate runs (a nonzero `project-brain-lint` exit or a
+# `project-brain-doctor --strict` run that is not all-passed) before the agent
+# must stop and write the honest report. Used by BOTH scripts via
+# record_repair_round(); the count lives on disk so it survives compaction.
+MAX_REPAIR_ROUNDS = 3
+REPAIR_ROUNDS_REL = Path(".brain") / "state" / "repair-rounds"
+# 0.10.0: the counter is keyed PER GATE. A shared counter reset by any
+# passing run let a loop alternating lint-pass / doctor-strict-fail repair
+# forever without ever reaching the limit.
+GATE_LINT = "lint"
+GATE_DOCTOR_STRICT = "doctor-strict"
+GATES = (GATE_LINT, GATE_DOCTOR_STRICT)
+# A `sources:` entry that is not a plain path string — flow-style {path: …}
+# objects split on commas into bogus half-entries.
+SOURCES_OBJECT_MARKERS = ("{", "}", ": ")
+# ponytail: closed secret-pattern list — literal signatures only, no entropy
+# analysis, no context awareness (a quoted example key also trips it).
+# Upgrade path: extend the tuples; do not loosen lightly.
+SECRET_PATTERNS: tuple[tuple[str, "re.Pattern[str]"], ...] = (
+    ("private key header", re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----")),
+    ("aws access key id", re.compile(r"\bAKIA[0-9A-Z]{16}\b")),
+    ("github token", re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}\b")),
+    ("openai-style key", re.compile(r"\bsk-[A-Za-z0-9]{20,}\b")),
+    ("slack token", re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b")),
+)
+SECRET_NAME_VALUE_RE = re.compile(
+    r"(?m)^[ \t]*([A-Za-z0-9_]*(?:SECRET|TOKEN|PASSWORD|API_KEY)[A-Za-z0-9_]*)[ \t]*=[ \t]*\S")
+
+
+class VerificationCorruptError(Exception):
+    """.brain/verification.json exists but is not usable — fail closed."""
 
 
 def rel(path: Path, root: Path) -> str:
@@ -32,6 +145,53 @@ def read(path: Path) -> str:
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def body_text(text: str) -> str:
+    m = FRONTMATTER_RE.match(text)
+    return text[m.end():] if m else text
+
+
+def norm_ws(s: str) -> str:
+    """Whitespace-normalize for anchor matching: collapse runs, honor literal
+    \\n / \\t escapes that single-line citation anchors must use, drop CR."""
+    return " ".join(s.replace("\\n", " ").replace("\\t", " ").replace("\r", " ").split())
+
+
+def sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def git_head(root: Path) -> str | None:
+    try:
+        proc = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"],
+                              capture_output=True, text=True, timeout=15)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    sha = proc.stdout.strip() if proc.returncode == 0 else ""
+    return sha if re.fullmatch(r"[0-9a-f]{40}", sha) else None
+
+
+def has_git(root: Path) -> bool:
+    try:
+        proc = subprocess.run(["git", "-C", str(root), "rev-parse", "--git-dir"],
+                              capture_output=True, text=True, timeout=15)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return proc.returncode == 0
+
+
+def git_commit_exists(root: Path, sha: str) -> bool:
+    try:
+        proc = subprocess.run(["git", "-C", str(root), "cat-file", "-e", sha + "^{commit}"],
+                              capture_output=True, text=True, timeout=15)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return proc.returncode == 0
 
 
 def add(issues: list[dict], severity: str, category: str, file: Path | None, root: Path, message: str, line: int | None = None) -> None:
@@ -116,7 +276,18 @@ def check_required(root: Path, brain: Path, issues: list[dict]) -> None:
     ]
     for p in required:
         if not p.exists():
-            add(issues, "error", "missing_required_path", p, root, f"missing required path: {rel(p, root)}")
+            add(issues, "error", "missing_required_path", p, root,
+                f"missing required path: {rel(p, root)} — re-run scaffold ({INIT_HINT}) to regenerate template files")
+
+
+def _is_non_wiki_file(target: str, root: Path) -> bool:
+    """True when a failed wikilink target names a real repo file outside the
+    wiki (e.g. `[[graphify-out/GRAPH_REPORT.md]]`) — those are cited as
+    code-span paths, not wikilinks."""
+    t = target.strip().replace("\\", "/").removeprefix("/")
+    if not t or t.startswith(".."):
+        return False
+    return (root / t).is_file() or (root / f"{t}.md").is_file()
 
 
 def check_wikilinks(root: Path, brain: Path, issues: list[dict]) -> None:
@@ -124,26 +295,70 @@ def check_wikilinks(root: Path, brain: Path, issues: list[dict]) -> None:
     keys, pages = collect_wiki_keys(wiki)
     for p in pages:
         text = read(p)
-        for m in WIKILINK_RE.finditer(text):
+        # Code is documentation, not links: skip fenced blocks and inline
+        # code spans (positions preserved, so line numbers stay exact).
+        scan = strip_code_regions(text)
+        for m in WIKILINK_RE.finditer(scan):
             target = m.group(1).strip()
             if not resolve_wikilink(target, keys):
+                if _is_non_wiki_file(target, root):
+                    fix = (f"non-wiki files are referenced as a code-span path (`{target}`), "
+                           "not as a [[wikilink]] — or create a wiki page for it")
+                else:
+                    fix = "create the target page or fix the link (wiki page names, no .md suffix)"
                 add(
                     issues,
                     "error",
                     "broken_wikilink",
                     p,
                     root,
-                    f"[[{target}]] — target not found in wiki",
-                    line_for(text, m.start()),
+                    f"[[{target}]] — target not found in wiki: {fix}",
+                    line_for(scan, m.start()),
                 )
+        # Hybrid markdown-wikilinks `[[target](path)]` (observed live) have no
+        # closing `]]`, so the plain wikilink regex cannot see them — they
+        # render broken everywhere and used to sail through lint unnoticed.
+        for m in HYBRID_WIKILINK_RE.finditer(scan):
+            target = m.group(1).strip()
+            if _is_non_wiki_file(target, root):
+                fix = (f"non-wiki files are referenced as a code-span path (`{target}`), "
+                       "not as a [[wikilink]] — or create a wiki page for it")
+            else:
+                fix = "create the target page or fix the link (wiki page names, no .md suffix)"
+            add(
+                issues,
+                "error",
+                "broken_wikilink",
+                p,
+                root,
+                f"hybrid markdown-wikilink [[{target}](…)]] — target not found in wiki: {fix}",
+                line_for(scan, m.start()),
+            )
 
 
 def source_path_exists(src: str, root: Path, file: Path) -> bool:
+    """Resolve a `sources:` frontmatter entry.
+
+    Documented convention (skills/brain/references/wiki-schema.md):
+    - a path to raw evidence, resolved from the project root (e.g.
+      `.brain/raw/notes/x.md` or a repo file),
+    - or a wiki source-summary page, written as `sources/<name>.md` and
+      resolved against `.brain/wiki/` (the summaries' home directory),
+    - or a page-relative path from the wiki page's own directory.
+    An absolute path is used as-is.
+    """
     src = src.strip().strip('"\'')
     if not src:
         return True
     candidate = Path(src).expanduser()
-    candidates = [candidate] if candidate.is_absolute() else [root / candidate, file.parent / candidate]
+    if candidate.is_absolute():
+        return candidate.exists()
+    wiki_dir = root / ".brain" / "wiki"
+    candidates = [
+        root / candidate,               # project-root relative (raw evidence, repo files)
+        file.parent / candidate,        # page relative
+        wiki_dir / candidate,           # wiki relative (source-summary pages: sources/<name>.md)
+    ]
     return any(c.exists() for c in candidates)
 
 
@@ -156,8 +371,25 @@ def check_sources(root: Path, brain: Path, issues: list[dict]) -> None:
             sources = [sources]
         if not isinstance(sources, list):
             continue
+        # Flow-style {path: …} objects are split on commas by the frontmatter
+        # reader into bogus half-entries, which then fail path resolution and
+        # report a misleading "fix the path" hint (one issue per page instead).
+        objects = [s for s in sources if any(m in str(s) for m in SOURCES_OBJECT_MARKERS)]
+        if objects:
+            add(
+                issues,
+                "error",
+                "invalid_sources_entry",
+                p,
+                root,
+                "sources entries must be plain root-relative path strings, not {path: …} objects; "
+                "reliability belongs only in the frontmatter of wiki/sources/* pages",
+                None,
+            )
         for src in sources:
             if not src or str(src).strip() in ("[]", ""):
+                continue
+            if src in objects:
                 continue
             if not source_path_exists(str(src), root, p):
                 add(
@@ -166,23 +398,56 @@ def check_sources(root: Path, brain: Path, issues: list[dict]) -> None:
                     "missing_source_path",
                     p,
                     root,
-                    f"source path not found: {src}",
+                    f"source path not found: {src} — fix the path or create the file it names (a source-summary page lives at .brain/wiki/sources/<name>.md)",
                     None,
                 )
 
 
 def check_index(root: Path, brain: Path, issues: list[dict]) -> None:
+    """KD-05: verify index invariants that the old substring check could not see.
+
+    - every eligible wiki page is listed exactly once (missing → warn,
+      listed more than once / under multiple sections → error)
+    - every index entry resolves to an existing page (dangling → error)
+    """
     wiki = brain / "wiki"
     index = wiki / "index.md"
     if not index.exists():
         return
-    text = read(index).lower()
-    for p in wiki.rglob("*.md") if wiki.exists() else []:
-        if p == index:
+    index_text = read(index)
+    # Index entries are wikilink list items; prose mentions do not count, and
+    # fenced code blocks in the index are not entries either.
+    index_scan = strip_code_regions(index_text)
+    entry_re = re.compile(r"^\s*-\s*\[\[([^\]|#]+)(?:[|#][^\]]*)?\]\]", re.MULTILINE)
+    entries = [(normalize_link(m.group(1)), line_for(index_scan, m.start()))
+               for m in entry_re.finditer(index_scan)]
+
+    pages = [p for p in (wiki.rglob("*.md") if wiki.exists() else []) if p != index]
+    for p in pages:
+        rel_no_ext = str(p.relative_to(wiki).with_suffix("")).lower()
+        stem = p.stem.lower()
+        # An entry references this page when its target equals the page's
+        # relative key, its stem, or a path suffix of the key.
+        hits = [ln for needle, ln in entries
+                if needle in (rel_no_ext, stem) or rel_no_ext.endswith("/" + needle)]
+        if len(hits) == 0:
+            add(issues, "warn", "missing_index_entry", p, root,
+                f"page missing from index: {rel(p, root)} (run `project-brain-lint <root> --reindex`)")
+        elif len(hits) > 1:
+            add(issues, "error", "duplicate_index_entry", p, root,
+                f"page listed {len(hits)} times in index (lines {', '.join(str(h) for h in hits)}): {rel(p, root)} — every page must appear exactly once; {REINDEX_HINT}")
+
+    page_keys = set()
+    for p in pages:
+        rel_no_ext = str(p.relative_to(wiki).with_suffix("")).lower()
+        page_keys.add(rel_no_ext)
+        page_keys.add(p.stem.lower())
+    for needle, ln in entries:
+        if not needle:
             continue
-        no_ext = str(p.relative_to(wiki).with_suffix(""))
-        if f"[[{p.stem.lower()}]]" not in text and f"[[{no_ext.lower()}]]" not in text and no_ext.lower() not in text:
-            add(issues, "warn", "missing_index_entry", p, root, f"page missing from index: {rel(p, root)}")
+        if not any(key == needle or key.endswith("/" + needle) for key in page_keys):
+            add(issues, "error", "index_entry_target_missing", index, root,
+                f"index entry points at no wiki page: [[{needle}]] — {REINDEX_HINT}; if the page itself is missing, create it", ln)
 
 
 def parse_updated_line(path: Path) -> datetime | None:
@@ -211,7 +476,41 @@ def check_session_brief_staleness(root: Path, brain: Path, issues: list[dict]) -
         return
     days = (datetime.now() - updated).days
     if days > 7:
-        add(issues, "warn", "stale_session_brief", brief, root, f"session-brief.md has not been updated in {days} days")
+        add(issues, "warn", "stale_session_brief", brief, root,
+            f"session-brief.md has not been updated in {days} days — update .brain/state/session-brief.md (its Updated line) now")
+
+
+def check_brief_task_checklist(root: Path, brain: Path, issues: list[dict]) -> None:
+    """KD-06: task checklists live in tasks/next-actions.md ONLY.
+
+    A checklist in the session brief is how the earlier run ended up with a
+    brief saying items were done while next-actions.md said the same items
+    were open. Deterministic rule: one task file, the brief links to it.
+    """
+    brief = brain / "state" / "session-brief.md"
+    if not brief.exists():
+        return
+    for ln, line in enumerate(read(brief).splitlines(), start=1):
+        if re.match(r"^\s*[-*]\s+\[[ xX]\]", line):
+            add(issues, "error", "task_checklist_in_brief", brief, root,
+                f"task checklist in session brief (line {ln}) — tasks belong in tasks/next-actions.md only", ln)
+            return
+
+
+def check_nested_graphify_output(root: Path, issues: list[dict]) -> None:
+    """KD-08: detect a nested graphify-out/graphify-out/ stale cache copy.
+
+    Cause: invoking graphify with the output directory itself as the target
+    path (e.g. `graphify extract graphify-out`) makes it nest a fresh output
+    tree inside the output. The skill text forbids passing graphify-out as
+    the path; this detector catches it when it happens anyway.
+    """
+    nested = root / "graphify-out" / "graphify-out"
+    if nested.exists():
+        add(issues, "error", "nested_graphify_output", nested, root,
+            "nested graphify-out/graphify-out/ detected (stale cache copy): delete the nested "
+            "graphify-out/graphify-out/ directory and rebuild with `graphify .` from the project root — "
+            "never pass graphify-out itself as the graphify path")
 
 
 def check_audit(root: Path, brain: Path, issues: list[dict]) -> None:
@@ -223,7 +522,8 @@ def check_audit(root: Path, brain: Path, issues: list[dict]) -> None:
             continue
         text = read(p)
         if "status: open" not in text:
-            add(issues, "warn", "audit_shape", p, root, f"open audit may be malformed or missing status: {rel(p, root)}")
+            add(issues, "warn", "audit_shape", p, root,
+                f"open audit may be malformed or missing status: {rel(p, root)} — add a `status: open` line, or move the file to .brain/audit/resolved/")
 
 
 def check_evidence_aging(root: Path, brain: Path, issues: list[dict]) -> None:
@@ -269,13 +569,14 @@ def check_short_wiki_pages(root: Path, brain: Path, issues: list[dict]) -> None:
         body_chars = len(re.sub(r"\s+", "", body))
         if body_chars < MIN_WIKI_PAGE_CHARS:
             add(issues, "warn", "short_wiki_page", p, root,
-                f"page body is only {body_chars} chars (min {MIN_WIKI_PAGE_CHARS}); stub pages below this are not mined to MemPalace")
+                f"page body is only {body_chars} chars (min {MIN_WIKI_PAGE_CHARS}); expand the page from real sources or delete the stub — stub pages below this are not mined to MemPalace")
 
 
 def check_graph_report(root: Path, issues: list[dict]) -> None:
     report = root / "graphify-out" / "GRAPH_REPORT.md"
     if not report.exists():
-        add(issues, "info", "missing_graph_report", report, root, "graphify-out/GRAPH_REPORT.md not found; run `/graphify .` when a relationship map is needed")
+        add(issues, "info", "missing_graph_report", report, root,
+            "graphify-out/GRAPH_REPORT.md not found; rebuild via the /graphify skill (primary) when a relationship map is needed — CLI fallback: `graphify .`")
 
 
 def page_updated_date(path: Path) -> datetime | None:
@@ -340,6 +641,7 @@ def first_date_in_text(text: str) -> datetime | None:
 
 
 def target_from_conflict_block(block: str, lookup: dict[str, Path]) -> Path | None:
+    block = strip_code_regions(block)  # code samples are not links
     for line in block.splitlines():
         if line.lower().startswith(("target:", "page:", "wiki page:")):
             target = line.split(":", 1)[1].strip().strip("'\"")
@@ -374,7 +676,8 @@ def check_frontmatter_schema(root: Path, brain: Path, issues: list[dict]) -> Non
             continue
         fm = extract_frontmatter(read(p))
         if not fm:
-            add(issues, "warn", "missing_frontmatter", p, root, f"no frontmatter found in wiki page")
+            add(issues, "warn", "missing_frontmatter", p, root,
+                "no frontmatter found in wiki page — add title/type/created/updated/status/sources/tags per the plugin's wiki-schema reference")
             continue
         # Check for deprecated `name:` instead of `title:`
         if "name" in fm and "title" not in fm:
@@ -414,7 +717,8 @@ def check_contradictions(root: Path, brain: Path, issues: list[dict]) -> None:
             superseded_pages.add(page)
             lines = index_lines_for_page(index_text_value, page, wiki)
             if any("superseded" not in line.lower() for line in lines):
-                add(issues, "warn", "contradiction_superseded_active", index, root, f"superseded page still listed as active in index: {rel(page, root)}")
+                add(issues, "warn", "contradiction_superseded_active", index, root,
+                    f"superseded page still listed as active in index: {rel(page, root)} — mark the entry superseded in wiki/index.md, or clear the page's superseded status")
 
     decisions = wiki / "decisions"
     superseded_decisions = {p for p in superseded_pages if decisions in p.parents}
@@ -423,13 +727,15 @@ def check_contradictions(root: Path, brain: Path, issues: list[dict]) -> None:
             if page in superseded_decisions:
                 continue
             text = read(page)
-            for m in WIKILINK_RE.finditer(text):
+            scan = strip_code_regions(text)  # code samples are not links
+            for m in WIKILINK_RE.finditer(scan):
                 target = resolve_wikilink_path(m.group(1), lookup)
                 if target in superseded_decisions:
-                    line_no = line_for(text, m.start())
+                    line_no = line_for(scan, m.start())
                     line_text = text.splitlines()[line_no - 1] if line_no - 1 < len(text.splitlines()) else ""
                     if "superseded" not in line_text.lower():
-                        add(issues, "suggest", "decision_links_superseded", page, root, f"decision wikilink may point to superseded page: {rel(page, root)} → [[{m.group(1)}]]", line_no)
+                        add(issues, "suggest", "decision_links_superseded", page, root,
+                            f"decision wikilink may point to superseded page: {rel(page, root)} → [[{m.group(1)}]] — mark the link line superseded (e.g. `- [[{m.group(1)}]] (superseded by [[<new page>]])`)", line_no)
 
     open_questions = wiki / "open-questions.md"
     if not open_questions.exists():
@@ -449,17 +755,504 @@ def check_contradictions(root: Path, brain: Path, issues: list[dict]) -> None:
             add(issues, "suggest", "resolved_conflict_not_reflected", open_questions, root, f"resolved conflict in open-questions.md but target page may not reflect resolution: {rel(target, root)}")
 
 
-def build_report(root: Path) -> tuple[int, dict]:
+def load_verification(brain: Path) -> dict | None:
+    """Load .brain/verification.json; fail closed when corrupt (KD-02)."""
+    path = brain / VERIFICATION_FILE
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(read(path))
+    except ValueError as exc:
+        raise VerificationCorruptError(f"{VERIFICATION_FILE} is corrupt: {exc}") from exc
+    if not isinstance(data, dict) or not isinstance(data.get("pages", {}), dict):
+        raise VerificationCorruptError(
+            f"{VERIFICATION_FILE} is corrupt: expected an object with a 'pages' object")
+    return data
+
+
+def write_verification(root: Path, citation_state: dict) -> None:
+    """--verify: stamp clean pages with SHA-256 hashes of their cited files.
+
+    A page is stamped only when it cites at least one file and every citation
+    passes the drift checks. Stamps are the staleness ground truth; nothing
+    else may write this file (agents never hand-write verification.json).
+    """
+    brain = root / ".brain"
+    pages = {
+        page_rel: {"verified_at": now_iso(), "files": info["files"]}
+        for page_rel, info in citation_state.items()
+        if info["has_citations"] and not info["drift"]
+    }
+    data = {"version": 1, "generated_at": now_iso(), "commit": git_head(root), "pages": pages}
+    path = brain / VERIFICATION_FILE
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    os.replace(tmp, path)  # atomic: no half-written stamp set
+    print(f"verification: stamped {len(pages)} page(s) -> {rel(path, root)}", file=sys.stderr)
+
+
+def check_citations(root: Path, brain: Path, issues: list[dict], citation_state: dict) -> None:
+    """KD-01/KD-02: validate {{src path:a-b "anchor"}} citations on every page.
+
+    Citations are prose evidence: a {{src ...}} example inside a fenced code
+    block or inline code span is documentation of the syntax, not a citation,
+    so it neither validates nor counts toward coverage (brain_inventory's
+    covered status builds on citation_state here).
+
+    citation_drift (error): cited file missing, range outside the file, or
+    anchor text not found (whitespace-normalized) within
+    CITATION_ANCHOR_WINDOW_LINES lines after the range. Bare `file.ext:NNN`
+    refs without an anchor warn (unanchored_line_ref).
+    """
+    wiki = brain / "wiki"
+    if not wiki.exists():
+        return
+    for p in wiki.rglob("*.md"):
+        if p.name == "index.md":
+            continue
+        text = read(p)
+        body = body_text(text)
+        offset = len(text) - len(body)
+        # Citations are matched in the ORIGINAL body so anchors keep inline
+        # code spans (backticks) verbatim — masking them would mangle the
+        # anchor and falsely report citation_drift. strip_code_regions
+        # preserves offsets, so the masked body only decides whether a
+        # citation starts inside a code region (masked positions are spaces,
+        # never the '{' that opens a citation), and every position here
+        # indexes the original body for line numbers and messages.
+        scan = strip_code_regions(body)
+        info = {"has_citations": False, "drift": False, "files": {}}
+        spans: list[tuple[int, int]] = []
+        for m in CITATION_RE.finditer(body):
+            if scan[m.start()] != "{":  # starts inside a masked code region
+                continue
+            spans.append((m.start(), m.end()))
+            info["has_citations"] = True
+            quoted_s, path_s, start_s, end_s, anchor = m.groups()
+            if quoted_s is not None:
+                path_s = quoted_s
+            line_no = text.count("\n", 0, offset + m.start()) + 1
+            target = root / path_s
+            if not target.is_file():
+                add(issues, "error", "citation_drift", p, root,
+                    f'cited file not found: {path_s} — cite a real project-root-relative path; find the right file and locate the real lines with `grep -n "<anchor>" <file>` (or a bounded Read) before re-citing, {VERIFY_HINT}', line_no)
+                info["drift"] = True
+                continue
+            start = int(start_s)
+            end = int(end_s) if end_s else start
+            lines = read(target).splitlines()
+            if start < 1 or end < start or end > len(lines):
+                add(issues, "error", "citation_drift", p, root,
+                    f'cited range {start}-{end} outside {path_s} ({len(lines)} lines) — locate the real lines with `grep -n "{anchor}" {path_s}` (or a bounded Read), never copy line numbers from docs or summaries, {VERIFY_HINT}', line_no)
+                info["drift"] = True
+                continue
+            window = "\n".join(lines[start - 1:end + CITATION_ANCHOR_WINDOW_LINES])
+            if not norm_ws(anchor) or norm_ws(anchor) not in norm_ws(window):
+                add(issues, "error", "citation_drift", p, root,
+                    f'anchor text not found within {CITATION_ANCHOR_WINDOW_LINES} lines of {path_s}:{start}-{end} — locate the real lines with `grep -n "{anchor}" {path_s}` and re-cite the range they actually appear in, {VERIFY_HINT}', line_no)
+                info["drift"] = True
+                continue
+            info["files"][path_s] = sha256_file(target)
+        for m in UNANCHORED_REF_RE.finditer(body):
+            if any(s <= m.start() < e for s, e in spans):
+                continue
+            line_no = text.count("\n", 0, offset + m.start()) + 1
+            add(issues, "warn", "unanchored_line_ref", p, root,
+                f'bare file:line reference {m.group(0)!r} — use {{{{src {m.group(1)}:{m.group(2)} "anchorText"}}}} so it can be verified',
+                line_no)
+        citation_state[rel(p, brain)] = info
+
+
+def check_stale_citations(root: Path, brain: Path, issues: list[dict],
+                          citation_state: dict, verification: dict | None) -> None:
+    """KD-02: a stamped page whose cited file's SHA-256 changed (or vanished) is stale."""
+    if not verification:
+        return
+    stamps = verification.get("pages", {})
+    for page_rel, info in citation_state.items():
+        stamp = stamps.get(page_rel)
+        if not isinstance(stamp, dict):
+            continue
+        page = brain / page_rel
+        for cited, old_hash in (stamp.get("files") or {}).items():
+            target = root / cited
+            if not target.is_file():
+                add(issues, "error", "stale_citation", page, root,
+                    f"cited file no longer exists (was verified): {cited}")
+            elif sha256_file(target) != str(old_hash):
+                add(issues, "error", "stale_citation", page, root,
+                    f"cited file changed since verification: {cited} — re-check the page, then run --verify")
+
+
+def check_rationale_sources(root: Path, brain: Path, issues: list[dict]) -> None:
+    """KD-07/KD-14: decision pages must state where their rationale comes from.
+
+    rationale_source: commit:<sha> (must exist in git when git is available) |
+    doc:<path> (must exist) | user-confirmed | inferred (body must carry an
+    [inferred] tag) | unknown. Missing → warn; invalid → error.
+    ponytail: commit: is skipped when the project has no git repo — cannot
+    verify there; upgrade path: add an explicit unverifiable warning once
+    brains routinely live outside git.
+    """
+    wiki = brain / "wiki"
+    if not wiki.exists():
+        return
+    git_ok = has_git(root)
+    for p in wiki.rglob("*.md"):
+        if p.name == "index.md":
+            continue
+        text = read(p)
+        fm = extract_frontmatter(text)
+        if str(fm.get("type", "")).strip().lower() != "decision":
+            continue
+        raw = fm.get("rationale_source")
+        if not raw or raw == []:
+            add(issues, "warn", "missing_rationale_source", p, root,
+                "decision page has no rationale_source: commit:<sha> | doc:<path> | user-confirmed | inferred | unknown")
+            continue
+        value = str(raw).strip()
+        m = RATIONALE_COMMIT_RE.match(value)
+        if m:
+            if git_ok and not git_commit_exists(root, m.group(1)):
+                add(issues, "error", "rationale_commit_missing", p, root,
+                    f"rationale_source commit not found in repository: {value} — verify the sha (`git log --oneline`) or change rationale_source to doc:<path> or user-confirmed")
+            continue
+        if value.startswith("doc:"):
+            doc = value[len("doc:"):].strip()
+            if not doc:
+                add(issues, "error", "invalid_rationale_source", p, root,
+                    f"invalid rationale_source value: {value!r} (doc: needs a path)")
+            elif not (root / doc).exists():
+                add(issues, "error", "rationale_doc_missing", p, root,
+                    f"rationale_source doc not found: {doc}")
+            continue
+        if value in RATIONALE_SCALARS:
+            if value == "inferred" and "[inferred]" not in body_text(text):
+                add(issues, "warn", "inferred_untagged", p, root,
+                    "rationale_source is inferred — tag the claim [inferred] in the page body")
+            continue
+        add(issues, "error", "invalid_rationale_source", p, root,
+            f"invalid rationale_source value: {value!r} (expected commit:<sha> | doc:<path> | user-confirmed | inferred | unknown)")
+
+
+def check_all_clear_claims(root: Path, brain: Path, issues: list[dict], verification: dict | None) -> None:
+    """KD-01: forbid unevidenced all-clear claims.
+
+    A page may claim e.g. "no contradictions" only when (a) it has a current
+    citation-verification stamp and (b) .brain/audit/crossrefs-report.json
+    records a completed cross-reference check with zero missing targets.
+    """
+    wiki = brain / "wiki"
+    if not wiki.exists():
+        return
+    receipt_ok = False
+    receipt = brain / CROSSREFS_RECEIPT
+    if receipt.is_file():
+        try:
+            rdata = json.loads(read(receipt))
+        except ValueError:
+            rdata = None
+        receipt_ok = isinstance(rdata, dict) and rdata.get("missing") == []
+    stamped = set((verification or {}).get("pages", {}))
+    for p in wiki.rglob("*.md"):
+        if p.name == "index.md":
+            continue
+        low = body_text(read(p)).lower()
+        if not any(phrase in low for phrase in ALL_CLEAR_PHRASES):
+            continue
+        if rel(p, brain) in stamped and receipt_ok:
+            continue
+        add(issues, "error", "forbidden_all_clear", p, root,
+            "all-clear claim without evidence: needs a current --verify stamp for this page AND "
+            f"{CROSSREFS_RECEIPT} with zero missing cross-refs — run `project-brain-inventory <root> crossrefs` "
+            f"and `project-brain-lint <root> --verify`, or drop the claim")
+
+
+# Wiki ledger history scan bounds (KD-15): the object enumeration is one git
+# call that also prints each blob's size (--batch-check); the content pass
+# requests only the blobs that fit the byte budget, through one cat-file
+# --batch call, so its captured response can never exceed the bound.
+LEDGER_HISTORY_GIT_TIMEOUT = 60.0
+LEDGER_HISTORY_MAX_BLOBS = 20000
+LEDGER_HISTORY_MAX_BYTES = 64 * 1024 * 1024
+
+
+def _git_env_for_ledger() -> dict:
+    """Environment for the ledger's git calls: strip GIT_* redirector
+    variables so the scan always addresses exactly the brain's own ledger
+    (same contract as wiki_ledger.build_git_env, without importing it — lint
+    must not depend on the ledger module)."""
+    return {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+
+
+def _report_ledger_history_partial(issues: list[dict], ledger_dir: Path,
+                                   root: Path) -> None:
+    """The history scan skipped content at a named bound: report the gap."""
+    add(issues, "warn", "brain_secret_scan_partial", ledger_dir, root,
+        f"wiki ledger history exceeded the scan bound "
+        f"({LEDGER_HISTORY_MAX_BLOBS} objects / {LEDGER_HISTORY_MAX_BYTES} bytes) — "
+        "retained secrets beyond the bound were not checked")
+
+
+def _scan_ledger_history_secrets(root: Path, brain: Path, ledger_dir: Path,
+                                 issues: list[dict]) -> None:
+    """KD-15: scan historical wiki content in the ledger's git database.
+
+    A wiki edit enters .brain/state/wiki.git through an automatic snapshot; if
+    a secret was later removed from the current page, the historical snapshot
+    still holds it. Packfiles are binary noise for a text scan, so the history
+    is read THROUGH Git: enumerate every object with its size (cat-file
+    --batch-check --batch-all-objects), then request the content of the blobs
+    that fit the byte budget (cat-file --batch) and scan it with the same
+    patterns as current files. A retained secret is an error and requires
+    rotating the credential AND purging the ledger history — deleting the
+    page is not enough.
+    """
+    git_exe = shutil.which("git")
+    if not git_exe:
+        add(issues, "warn", "brain_secret_scan_skipped", ledger_dir, root,
+            "wiki ledger history exists but git is unavailable — cannot check "
+            "historical wiki snapshots for retained secrets")
+        return
+    try:
+        check_proc = subprocess.run(
+            [git_exe, "--git-dir", str(ledger_dir),
+             "cat-file", "--batch-check", "--batch-all-objects"],
+            capture_output=True, timeout=LEDGER_HISTORY_GIT_TIMEOUT,
+            env=_git_env_for_ledger(), cwd=str(root))
+    except (OSError, subprocess.SubprocessError) as exc:
+        add(issues, "warn", "brain_secret_scan_skipped", ledger_dir, root,
+            f"could not enumerate wiki ledger history for secrets: {exc}")
+        return
+    if check_proc.returncode != 0:
+        add(issues, "warn", "brain_secret_scan_skipped", ledger_dir, root,
+            "could not enumerate wiki ledger history for secrets: "
+            f"{(check_proc.stderr or b'').decode('utf-8', errors='replace').strip()}")
+        return
+    blobs: list[tuple[bytes, int]] = []
+    truncated = False
+    for line in check_proc.stdout.splitlines():
+        fields = line.split()
+        if len(fields) < 3 or fields[1] != b"blob":
+            continue  # non-blob object, or a blob line without its size
+        try:
+            size = int(fields[2])
+        except ValueError:
+            truncated = True  # unsizeable blob cannot be bounded: fail closed
+            continue
+        blobs.append((fields[0], size))
+    if len(blobs) > LEDGER_HISTORY_MAX_BLOBS:
+        blobs = blobs[:LEDGER_HISTORY_MAX_BLOBS]
+        truncated = True
+    # Bound the content pass BEFORE requesting anything: sizes from
+    # --batch-check select only the blobs that fit LEDGER_HISTORY_MAX_BYTES,
+    # so the captured --batch response can never allocate beyond the bound.
+    # Every skipped blob makes the scan partial.
+    selected: list[bytes] = []
+    selected_bytes = 0
+    for oid, size in blobs:
+        if selected_bytes + size > LEDGER_HISTORY_MAX_BYTES:
+            truncated = True
+            break
+        selected.append(oid)
+        selected_bytes += size
+    if not selected:
+        if truncated:
+            _report_ledger_history_partial(issues, ledger_dir, root)
+        return
+    reported: set[tuple[str, str]] = set()
+    total_bytes = 0
+    try:
+        batch_proc = subprocess.run(
+            [git_exe, "--git-dir", str(ledger_dir), "cat-file", "--batch"],
+            input=b"\n".join(selected) + b"\n",
+            capture_output=True, timeout=LEDGER_HISTORY_GIT_TIMEOUT,
+            env=_git_env_for_ledger(), cwd=str(root))
+    except (OSError, subprocess.SubprocessError) as exc:
+        add(issues, "warn", "brain_secret_scan_skipped", ledger_dir, root,
+            f"could not read wiki ledger history for secrets: {exc}")
+        return
+    if batch_proc.returncode != 0:
+        add(issues, "warn", "brain_secret_scan_skipped", ledger_dir, root,
+            "could not read wiki ledger history for secrets: "
+            f"{(batch_proc.stderr or b'').decode('utf-8', errors='replace').strip()}")
+        return
+    stream = batch_proc.stdout
+    pos = 0
+    while pos < len(stream):
+        nl = stream.find(b"\n", pos)
+        if nl == -1:
+            break
+        sha, _, rest = stream[pos:nl].partition(b" ")
+        _otype, _, size_field = rest.partition(b" ")
+        try:
+            size = int(size_field)
+        except ValueError:
+            break  # malformed stream: stop scanning rather than mis-slice
+        content_start = nl + 1
+        content = stream[content_start:content_start + size]
+        pos = content_start + size + 1  # skip the trailing newline
+        total_bytes += size
+        if total_bytes > LEDGER_HISTORY_MAX_BYTES:
+            truncated = True  # defense in depth: batch size != batch-check size
+            break
+        text = content.decode("utf-8", errors="replace")
+        for label, pattern in SECRET_PATTERNS:
+            m = pattern.search(text)
+            if m and (label, m.group(0)) not in reported:
+                reported.add((label, m.group(0)))
+                add(issues, "error", "brain_secret", ledger_dir, root,
+                    f"possible {label} retained in wiki ledger history (object "
+                    f"{sha.decode('utf-8', errors='replace')[:12]}) — remove it from the "
+                    "wiki page, rotate the credential, AND purge the ledger history "
+                    "(delete .brain/state/wiki.git and re-snapshot); the current page "
+                    "being clean does not clean the history",
+                    text.count("\n", 0, m.start()) + 1)
+        for m in SECRET_NAME_VALUE_RE.finditer(text):
+            key = (m.group(1), m.group(0))
+            if key in reported:
+                continue
+            reported.add(key)
+            add(issues, "error", "brain_secret", ledger_dir, root,
+                f"possible secret assignment '{m.group(1)}=…' retained in wiki ledger "
+                f"history (object {sha.decode('utf-8', errors='replace')[:12]}) — remove "
+                "it from the wiki page, rotate the credential, AND purge the ledger "
+                "history (delete .brain/state/wiki.git and re-snapshot)",
+                text.count("\n", 0, m.start()) + 1)
+    if truncated:
+        _report_ledger_history_partial(issues, ledger_dir, root)
+
+
+def check_brain_secrets(root: Path, brain: Path, issues: list[dict]) -> None:
+    """KD-15: secrets must never live inside .brain/ (error; fails --strict).
+
+    The wiki ledger's own object store (.brain/state/wiki.git) is skipped as
+    raw files — its packfiles are a bare git database, not user-authored
+    content, and scanning them as text produces noise, not findings — but the
+    wiki snapshots INSIDE it are checked through Git by
+    _scan_ledger_history_secrets, so a secret removed from the current page
+    is still reported while it survives in history."""
+    ledger_dir = brain / "state" / "wiki.git"
+    for p in sorted(brain.rglob("*")):
+        if not p.is_file() or p.name == ".gitkeep":
+            continue
+        if ledger_dir in p.parents:
+            continue
+        text = read(p)
+        for label, pattern in SECRET_PATTERNS:
+            m = pattern.search(text)
+            if m:
+                add(issues, "error", "brain_secret", p, root,
+                    f"possible {label} inside .brain/ — remove it and rotate the credential",
+                    text.count("\n", 0, m.start()) + 1)
+        for m in SECRET_NAME_VALUE_RE.finditer(text):
+            add(issues, "error", "brain_secret", p, root,
+                f"possible secret assignment '{m.group(1)}=…' inside .brain/ — remove it and rotate the credential",
+                text.count("\n", 0, m.start()) + 1)
+    if ledger_dir.is_dir():
+        _scan_ledger_history_secrets(root, brain, ledger_dir, issues)
+
+
+def check_volatile_numbers(root: Path, brain: Path, issues: list[dict]) -> None:
+    """KD-02: counts/versions drift — warn unless the line carries [unverified]."""
+    wiki = brain / "wiki"
+    if not wiki.exists():
+        return
+    for p in wiki.rglob("*.md"):
+        if p.name == "index.md":
+            continue
+        text = read(p)
+        body = body_text(text)
+        fm_lines = text.count("\n", 0, len(text) - len(body))
+        for ln, line in enumerate(body.splitlines(), start=1):
+            if "[unverified]" in line:
+                continue
+            if VOLATILE_COUNT_RE.search(line):
+                add(issues, "warn", "volatile_number", p, root,
+                    f"volatile count needs a command+date or [unverified]: {line.strip()[:100]}", fm_lines + ln)
+
+
+def read_repair_rounds(path: Path) -> dict[str, int]:
+    """Parse .brain/state/repair-rounds. Current format: one `<gate>=<n>`
+    line per gate. Legacy single-integer files (written before the per-gate
+    fix) are tolerated: the count applies to both gates, so an over-limit
+    legacy count still stops. Anything unreadable starts at zero."""
+    counts = {gate: 0 for gate in GATES}
+    try:
+        text = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return counts
+    if not text:
+        return counts
+    if "=" not in text:
+        try:
+            legacy = max(0, int(text.splitlines()[0].strip()))
+        except ValueError:
+            return counts
+        return {gate: legacy for gate in GATES}
+    for line in text.splitlines():
+        gate, _, raw = line.partition("=")
+        gate = gate.strip()
+        if gate in counts:
+            try:
+                counts[gate] = max(0, int(raw.strip() or "0"))
+            except ValueError:
+                pass
+    return counts
+
+
+def record_repair_round(root: Path, passed: bool, gate: str = GATE_LINT) -> str | None:
+    """Count consecutive failing runs PER GATE; return the message to print.
+
+    The old skill rule counted `doctor --strict` receipts, which missed the
+    observed failure loop (`lint --verify` writes no receipt) and died at
+    compaction with the in-memory count. This counter lives on disk at
+    .brain/state/repair-rounds. Since the per-gate fix, a passing run resets
+    only its own gate and each gate stops at its own MAX_REPAIR_ROUNDS — the
+    old shared counter never reached the limit when a lint pass alternated
+    with a doctor-strict failure. Both scripts call this one helper so the
+    limit exists exactly once.
+
+    ponytail: single-file counter, no history — it cannot answer "which runs
+    failed"; the receipts under .brain/audit/runs/ still hold per-run detail
+    for --strict. Upgrade path: a JSONL log beside the counter there.
+    """
+    brain = root / ".brain"
+    if not brain.is_dir():
+        return None  # no brain to repair; the loop has not started
+    path = root / REPAIR_ROUNDS_REL
+    counts = read_repair_rounds(path)
+    rounds = 0 if passed else counts.get(gate, 0) + 1
+    counts[gate] = rounds
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("".join(f"{g}={counts[g]}\n" for g in GATES), encoding="utf-8")
+    except OSError:
+        pass  # best effort: an unwritable state dir restarts the count at 0
+    if passed:
+        return None
+    if rounds > MAX_REPAIR_ROUNDS:
+        return (f"repair limit exceeded ({rounds} > {MAX_REPAIR_ROUNDS}) — "
+                "STOP and write the honest report")
+    if rounds == MAX_REPAIR_ROUNDS:
+        return f"repair round {rounds}/{MAX_REPAIR_ROUNDS} — STOP and write the honest report"
+    return f"repair round {rounds}/{MAX_REPAIR_ROUNDS}"
+
+
+def build_report(root: Path, citation_state: dict | None = None) -> tuple[int, dict]:
     root = root.expanduser().resolve()
     brain = root / ".brain"
     issues: list[dict] = []
     if not brain.exists():
-        add(issues, "error", "missing_brain", brain, root, f"no .brain directory at {brain}")
+        add(issues, "error", "missing_brain", brain, root,
+            f"no .brain directory at {brain} — {INIT_HINT}")
     else:
         check_required(root, brain, issues)
         check_wikilinks(root, brain, issues)
         check_sources(root, brain, issues)
         check_index(root, brain, issues)
+        check_brief_task_checklist(root, brain, issues)
+        check_nested_graphify_output(root, issues)
         check_session_brief_staleness(root, brain, issues)
         check_audit(root, brain, issues)
         check_evidence_aging(root, brain, issues)
@@ -467,6 +1260,14 @@ def build_report(root: Path) -> tuple[int, dict]:
         check_graph_report(root, issues)
         check_frontmatter_schema(root, brain, issues)
         check_contradictions(root, brain, issues)
+        verification = load_verification(brain)
+        state = citation_state if citation_state is not None else {}
+        check_citations(root, brain, issues, state)
+        check_stale_citations(root, brain, issues, state, verification)
+        check_rationale_sources(root, brain, issues)
+        check_all_clear_claims(root, brain, issues, verification)
+        check_volatile_numbers(root, brain, issues)
+        check_brain_secrets(root, brain, issues)
 
     summary = {sev: 0 for sev in SEVERITIES}
     for issue in issues:
@@ -500,20 +1301,55 @@ def print_human(report: dict) -> None:
             print(f"  - [{i['category']}] {loc} — {i['message']}")
 
 
+def reindex(root: Path) -> None:
+    """Regenerate wiki/index.md from the real page tree (KD-05 fix path)."""
+    from scaffold_brain import generate_wiki_index, INDEX_HEADER_PREFIX  # type: ignore
+
+    index = root / ".brain" / "wiki" / "index.md"
+    title = ""
+    if index.exists():
+        first = read(index).splitlines()[:1]
+        if first and first[0].startswith(INDEX_HEADER_PREFIX + " - "):
+            title = first[0][len(INDEX_HEADER_PREFIX) + 3:]
+    index.parent.mkdir(parents=True, exist_ok=True)
+    index.write_text(generate_wiki_index(root / ".brain" / "wiki", title), encoding="utf-8")
+    print(f"reindexed: {rel(index, root)}")
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Lint a project brain.")
     parser.add_argument("project_root")
     parser.add_argument("--json", action="store_true", dest="as_json", help="print machine-readable JSON")
+    parser.add_argument("--reindex", action="store_true",
+                        help="regenerate wiki/index.md from the real page list before linting")
+    parser.add_argument("--verify", action="store_true",
+                        help="re-check citations and record SHA-256 stamps in .brain/verification.json (clean pages only)")
     return parser.parse_args(argv[1:])
 
 
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
-    code, report = build_report(Path(args.project_root))
+    root = Path(args.project_root).expanduser().resolve()
+    if args.reindex:
+        if not (root / ".brain").exists():
+            print(f"no .brain directory at {root}", file=sys.stderr)
+            return 2
+        reindex(root)
+    citation_state: dict = {}
+    try:
+        code, report = build_report(root, citation_state=citation_state)
+    except VerificationCorruptError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 3
+    if args.verify and (root / ".brain").exists():
+        write_verification(root, citation_state)
     if args.as_json:
         print(json.dumps(report, indent=2))
     else:
         print_human(report)
+    note = record_repair_round(root, passed=code == 0, gate=GATE_LINT)
+    if note:
+        print(note, file=sys.stderr)
     return code
 
 

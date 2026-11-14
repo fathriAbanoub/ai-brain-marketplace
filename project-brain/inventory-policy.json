@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "weights": {"core": 5, "important": 3, "reference": 1},
+  "deny_globs": [
+    ".env*",
+    "**/.env*",
+    "**/*.pem",
+    "**/*.key",
+    "**/*.p12",
+    "**/id_rsa*",
+    "**/node_modules/**",
+    "**/vendor/**",
+    "**/dist/**",
+    "**/build/**",
+    "**/__pycache__/**",
+    "**/.venv/**",
+    "**/*.min.js",
+    "**/*.min.css",
+    "**/*.map",
+    "**/package-lock.json",
+    "**/pnpm-lock.yaml",
+    "**/uv.lock",
+    "**/poetry.lock",
+    ".brain/**",
+    "graphify-out/**",
+    ".git/**"
+  ],
+  "rules": [
+    {"kind": "manifest", "tier": "core"},
+    {"kind": "entry", "tier": "core"},
+    {"kind": "source", "tier": "core"},
+    {"kind": "git-history", "tier": "core"},
+    {"kind": "tests", "tier": "important"},
+    {"kind": "ci", "tier": "important"},
+    {"kind": "docs", "tier": "reference"},
+    {"glob": "**", "tier": "reference"}
+  ]
+}

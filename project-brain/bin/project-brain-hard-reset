@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+project-brain-hard-reset — database-level deletion of confirmed MemPalace wings
+
+Usage:
+  project-brain-hard-reset --wing <exact-wing-name> [--wing <name2> ...] [options]
+
+This is the hard reset command ("mempalace hard reset" in the plugin docs):
+a SEPARATE destructive operation for the exceptional case where the normal
+MCP reset cannot complete. It is NOT a routine substitute for
+mempalace_delete_drawers.
+
+Options:
+  --db-path <file>   Palace database file (default: resolved from MEMPAL_DIR;
+                     refuses to guess when neither is available)
+  --confirm          Execute deletion; requires --plan-hash from the dry run
+  --plan-hash <hash> Hash of the exact dry-run plan being confirmed
+  --allow-live       Proceed even when WAL/SHM suggest MemPalace is running
+  --help             Show this message
+
+Safety:
+  - Dry run by default; prints the full plan and its hash.
+  - Creates a timestamped backup of the database (and revision sidecars).
+  - Single transaction with rollback on failure; integrity check after.
+  - Only rows of the exact confirmed wings are touched; unrelated wings are
+    verified untouched.
+  - Refuses unsupported backends/layouts, ambiguous wings, and live servers.
+
+After a successful run, reconnect MemPalace (mempalace_reconnect MCP tool)
+so its in-memory index matches the database.
+EOF
+}
+
+if [[ $# -eq 0 || "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+  usage
+  exit 0
+fi
+
+ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
+PYTHON_BIN="${PYTHON_BIN:-python3}"
+exec "$PYTHON_BIN" "$ROOT/scripts/hard_reset.py" "$@"

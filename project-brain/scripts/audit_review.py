@@ -72,8 +72,9 @@ def main(brain_root: str, mode: str) -> int:
     root_path = Path(brain_root)
     audit_dir = root_path / "audit"
     if not audit_dir.exists():
-        print(f"ERROR: audit/ not found at {audit_dir}", file=sys.stderr)
-        return 1
+        # audit/ is created lazily (KD-10): absence means no findings yet.
+        print(f"No audit directory at {audit_dir} (created lazily; no findings yet).")
+        return 0
 
     entries: list[dict] = []
     for p in load_files(root_path, mode):

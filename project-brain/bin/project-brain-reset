@@ -12,9 +12,14 @@ Arguments:
   path        Project root directory (default: current directory)
 
 Options:
-  --dry-run   Preview what would be deleted (default behavior)
-  --confirm   Execute deletion (irreversible)
-  --help      Show this message
+  --dry-run                      Preview what would be deleted (default behavior)
+  --confirm                      Execute deletion (irreversible)
+  --verify-reset-transcript WING Verify .brain/audit/reset-transcript.jsonl against
+                                 the reset contracts for WING (exit 0 = verified)
+  --classify-wings FILE          Classify a mempalace_list_wings result (JSON file,
+                                 or - for standard input) into wing classes and an
+                                 A/B/C outcome; evidence only, touches nothing
+  --help                         Show this message
 
 What gets deleted:
   - .brain/ directory (wiki, state, logs, raw refs)

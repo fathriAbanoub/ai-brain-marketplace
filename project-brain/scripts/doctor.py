@@ -3,13 +3,16 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import re
 import subprocess
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
+
+import lint_brain as lb
 
 FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 WIKILINK_RE = re.compile(r"\[\[([^\]|#]+)(?:[|#][^\]]*)?\]\]")
@@ -30,6 +33,49 @@ def rel(path: Path, root: Path) -> str:
         return str(path.relative_to(root))
     except ValueError:
         return str(path)
+
+
+def now_iso() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def inventory_state(root: Path) -> dict | None:
+    """Load .brain/inventory.json; None when absent, {"error": ...} when unusable."""
+    path = root / ".brain" / "inventory.json"
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except ValueError as exc:
+        return {"error": f"corrupt JSON: {exc}"}
+    if not isinstance(data, dict) or "completion" not in data or "summary" not in data:
+        return {"error": "missing completion/summary keys — rerun inventory"}
+    # Validate the nested fields coverage() and strict_gates() read, so a
+    # partial or hand-edited inventory reports an inventory error instead of
+    # raising KeyError mid-gate.
+    completion = data.get("completion")
+    summary = data.get("summary")
+    weighted = completion.get("weighted_coverage") if isinstance(completion, dict) else None
+    if (not isinstance(completion, dict)
+            or not isinstance(completion.get("complete"), bool)
+            or not isinstance(weighted, (int, float)) or isinstance(weighted, bool)
+            or not isinstance(completion.get("core_uncovered"), list)
+            or not isinstance(summary, dict)
+            or not isinstance(summary.get("covered"), int) or isinstance(summary.get("covered"), bool)
+            or not isinstance(summary.get("units"), int) or isinstance(summary.get("units"), bool)):
+        return {"error": ("completion/summary missing required fields (complete, weighted_coverage, "
+                          "core_uncovered, covered, units) — rerun `project-brain-inventory <root> inventory`")}
+    return data
+
+
+def page_sourced(fm: dict, text: str) -> bool:
+    """>=1 frontmatter source entry or >=1 inline citation."""
+    sources = fm.get("sources")
+    if isinstance(sources, list) and any(str(s).strip() for s in sources):
+        return True
+    if isinstance(sources, str) and sources.strip():
+        return True
+    return bool(lb.CITATION_RE.search(text))
 
 
 def extract_frontmatter(text: str) -> dict[str, object]:
@@ -115,6 +161,9 @@ COMMIT_LINE_RE = re.compile(r"Built from commit:\s*`([0-9a-fA-F]+)`")
 _DIRTY_EXCLUDES = [":(exclude).brain/", ":(exclude)graphify-out/"]
 MAX_DIRTY_LINES = 3  # How many porcelain lines to include in stale reason
 DIRTY_OMITTED_MARKER = "... (more paths omitted; run `git status` for the full list)"
+# Unit names shown per section when the inventory is stale (added/removed each
+# truncate at this many, with an ellipsis when more exist).
+INVENTORY_PREVIEW_UNITS = 5
 # git status -z uses NUL as the record separator (one record per modified file,
 # two consecutive records for renames: new path, then old path).
 STATUS_RECORD_SEP = "\0"
@@ -305,35 +354,39 @@ def completeness(root: Path) -> tuple[int, str]:
     if not pages:
         return 0, "0/0 pages fully formed"
     idx = index_text(root)
+    # Weights: title/heading=2, type=1, wikilink=1, indexed=2, status=1.
+    weights = [2, 1, 1, 2, 1]
     total_points = 0
     max_points = 0
-    # Weights: title/heading=2, type=1, wikilink=1, indexed=2, status=1 (sources optional — new pages start empty)
-    weights = [2, 1, 1, 2, 1]
+    full = 0
     for p in pages:
         text = read(p)
         fm = extract_frontmatter(text)
-        checks = [
+        structural = [
             bool(fm.get("title") or re.search(r"^#\s+", text, re.M)),
             bool(fm.get("type")),
             bool(WIKILINK_RE.search(text)),
             page_in_index(p, root, idx),
             bool(fm.get("status")),
         ]
-        page_points = sum(w for w, c in zip(weights, checks) if c)
-        total_points += page_points
+        total_points += sum(w for w, c in zip(weights, structural) if c)
         max_points += sum(weights)
-    score = round(total_points / max_points * 100) if max_points else 0
-    full = sum(
-        1 for p in pages
-        if (lambda t, fm: all([
-            bool(fm.get("title") or re.search(r"^#\s+", t, re.M)),
-            bool(fm.get("type")),
-            bool(WIKILINK_RE.search(t)),
-            page_in_index(p, root, idx),
-            bool(fm.get("status")),
-        ]))(read(p), extract_frontmatter(read(p)))
-    )
-    return score, f"{full}/{len(pages)} pages fully formed (weighted score)"
+        if not all(structural):
+            continue
+        # KD-12 / brain-health-metrics: a page is complete only when an ACTIVE
+        # page also has >=1 source (frontmatter entry or inline citation);
+        # draft pages are exempt from the source requirement.
+        if str(fm.get("status", "")).lower() != "draft" and not page_sourced(fm, text):
+            continue
+        full += 1
+    # The health score is the documented metric: the percentage of pages that
+    # have every required field INCLUDING the source requirement. The weighted
+    # number is a structure-only measure and is reported separately in the
+    # note, so an active page without a source can never score as complete.
+    score = round(full / len(pages) * 100)
+    structural_pct = round(total_points / max_points * 100) if max_points else 0
+    return score, (f"{full}/{len(pages)} pages fully formed (active pages need a source "
+                   f"or citation; structure-only weighted score {structural_pct}%)")
 
 
 def freshness(root: Path) -> tuple[int, str]:
@@ -383,19 +436,17 @@ def freshness(root: Path) -> tuple[int, str]:
 
 
 def coverage(root: Path) -> tuple[int, str]:
-    raw = root / ".brain" / "raw"
-    summaries = root / ".brain" / "wiki" / "sources"
-    if not raw.exists():
-        return 100, "no raw source directory"
-    raw_files = [p for p in raw.rglob("*") if p.is_file() and p.name != ".gitkeep"]
-    if not raw_files:
-        return 100, "0/0 raw sources require summaries"
-    summary_text = "\n".join(read(p) for p in summaries.rglob("*.md")) if summaries.exists() else ""
-    covered = 0
-    for p in raw_files:
-        if rel(p, root) in summary_text or p.name in summary_text or p.stem in summary_text:
-            covered += 1
-    return round(covered / len(raw_files) * 100), f"{covered}/{len(raw_files)} raw sources have wiki summaries"
+    """KD-12: coverage comes from the script-derived inventory — never 100 on
+    absent data. No inventory → 0 with the command that produces it."""
+    inv = inventory_state(root)
+    if inv is None:
+        return 0, "no inventory — run `project-brain-inventory <root> inventory`"
+    if inv.get("error"):
+        return 0, f"inventory unreadable ({inv['error']})"
+    c, s = inv["completion"], inv["summary"]
+    pct = round(c["weighted_coverage"] * 100)
+    return pct, (f"{s['covered']}/{s['units']} units covered, weighted {pct}% "
+                 f"(core uncovered: {len(c['core_uncovered'])})")
 
 
 def memory_sync(root: Path) -> tuple[int, str]:
@@ -439,35 +490,43 @@ def mempalace_wing_check(root: Path) -> tuple[str, str]:
     if source == "derived":
         return "warning", f"wing={wing} (derived — .brain/CLAUDE.md missing mempalace_wing)"
 
-    # Check if both files declare mempalace_wing
+    # Cross-check the other declaration source: root CLAUDE.md and
+    # .brain/CLAUDE.md disagreeing on mempalace_wing is a conflict that no
+    # canonical prefix can paper over — report it before any "ok".
     root_claude = root / "CLAUDE.md"
     brain_claude = root / ".brain" / "CLAUDE.md"
     other_source = ".brain/CLAUDE.md" if source == "CLAUDE.md" else "CLAUDE.md"
     other_file = brain_claude if source == "CLAUDE.md" else root_claude
-    other_declares = False
+    other_wing: str | None = None
     if other_file.exists():
-        text = other_file.read_text(encoding="utf-8")
-        if re.search(r"mempalace_wing:\s*\S+", text):
-            other_declares = True
+        m2 = re.search(r"mempalace_wing:\s*(\S+)", other_file.read_text(encoding="utf-8"))
+        if m2:
+            other_wing = m2.group(1)
+    wing_conflict = other_wing is not None and other_wing != wing
 
     if wing.startswith(WIKI_WING_PREFIX):
+        if wing_conflict:
+            return "warning", (
+                f"wing conflict: {source} declares {wing!r} but {other_source} declares "
+                f"{other_wing!r} — mempalace_wing must be identical in both files; "
+                f"update {other_source} to match {source}"
+            )
         return "ok", f"wing={wing} ({source})"
+    other_declares = other_wing is not None
     if wing.startswith(LEGACY_WIKI_WING_PREFIX):
-        msg = (
-            f"wing={wing} ({source}) uses the legacy hyphenated convention; "
-            f"MemPalace normalizes '-' to '_', so directory-derived and diary "
-            f"wings use '{WIKI_WING_PREFIX}'-style underscore names instead. "
-            f"To migrate: use mempalace_update_drawer to move drawers to "
-            f"'{WIKI_WING_PREFIX}{normalize_wing_slug(wing[len(LEGACY_WIKI_WING_PREFIX):])}', "
-            f"then update mempalace_wing in {source}"
+        slug_part = normalize_wing_slug(wing[len(LEGACY_WIKI_WING_PREFIX):])
+        prefix_note = (
+            f"uses the legacy hyphenated convention; MemPalace normalizes '-' to '_', "
+            f"so directory-derived and diary wings use '{WIKI_WING_PREFIX}'-style "
+            "underscore names instead"
         )
-        if other_declares:
-            msg += f" and change {other_source} to match"
-        msg += " — re-scaffolding alone preserves the old wing name"
-        return "warning", msg
+        target = f"{WIKI_WING_PREFIX}{slug_part}"
+    else:
+        prefix_note = f"does not start with '{WIKI_WING_PREFIX}'"
+        target = f"a '{WIKI_WING_PREFIX}'-prefixed name"
     msg = (
-        f"wing={wing} ({source}) does not start with '{WIKI_WING_PREFIX}'; "
-        f"to migrate: use mempalace_update_drawer to move drawers to the new wing name, "
+        f"wing={wing} ({source}) {prefix_note}. "
+        f"To migrate: use mempalace_update_drawer to move drawers to {target}, "
         f"then update mempalace_wing in {source}"
     )
     if other_declares:
@@ -476,36 +535,205 @@ def mempalace_wing_check(root: Path) -> tuple[str, str]:
     return "warning", msg
 
 
-def print_health(root: Path) -> None:
+def health_data(root: Path) -> dict:
     c, c_note = completeness(root)
     f, f_note = freshness(root)
     cov, cov_note = coverage(root)
     mem, mem_note = memory_sync(root)
-    total = round((c + f + cov + mem) / 4)
+    return {
+        "Completeness": {"score": c, "note": c_note},
+        "Freshness": {"score": f, "note": f_note},
+        "Coverage": {"score": cov, "note": cov_note},
+        "Memory sync": {"score": mem, "note": mem_note, "estimated": True},
+    }
+
+
+def print_health(root: Path) -> dict:
+    data = health_data(root)
+    total = round(sum(item["score"] for item in data.values()) / len(data))
     print()
     print(f"Project Brain Health: {total}/100")
-    for label, score, note, estimated in (
-        ("Completeness", c, c_note, False),
-        ("Freshness", f, f_note, False),
-        ("Coverage", cov, cov_note, False),
-        ("Memory sync", mem, mem_note, True),
-    ):
+    for label, item in data.items():
         flag = (
             "  ⚠ BELOW REPAIR THRESHOLD — report or repair, do not summarize as success"
-            if score < HEALTH_REPAIR_THRESHOLD
+            if item["score"] < HEALTH_REPAIR_THRESHOLD
             else ""
         )
-        est = " [estimated from logs]" if estimated else ""
-        print(f"  {label:13}{score:4}/100  ({note}){est}{flag}")
+        est = " [estimated from logs]" if item.get("estimated") else ""
+        print(f"  {label:13}{item['score']:4}/100  ({item['note']}){est}{flag}")
     print(
         f"  (scores below {HEALTH_REPAIR_THRESHOLD} require repair or an explicit explanation; "
         "see Self-correction scan in the brain skill)"
     )
+    return data
+
+
+def parse_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Print project-brain status, availability checks, and health metrics.")
+    parser.add_argument("project_root", nargs="?", default=None)
+    parser.add_argument("--strict", action="store_true",
+                        help="hard gate: exit nonzero unless every gate passes (lint errors 0, "
+                             "inventory complete); writes one receipt per run to .brain/audit/runs/")
+    parser.add_argument("--json", action="store_true", dest="as_json",
+                        help="print machine-readable JSON instead of human text")
+    return parser.parse_args(argv[1:])
+
+
+def strict_status(gates: dict) -> str:
+    if any(g["status"] == "could-not-run" for g in gates.values()):
+        return "partial"
+    if any(g["status"] == "failed" for g in gates.values()):
+        return "completed-with-findings"
+    return "passed-for-scope"
+
+
+def inventory_fresh(root: Path, inv: dict) -> tuple[bool, str]:
+    """True when the saved inventory still certifies the current project.
+
+    completion.complete was computed for the unit set AND the wiki content at
+    inventory time. Two things can make the saved value stale:
+    - a core unit added or removed afterwards (unit-path set changes), or
+    - wiki page content edited with no path change (e.g. a page's only
+      citation removed): the saved completion must not certify coverage it
+      was not computed from, so the inventory binds itself to a wiki content
+      digest and any content change forces a rerun."""
+    import brain_inventory as bi  # local: spawns git subprocesses only when needed
+
+    saved = inv.get("units")
+    if not isinstance(saved, list) or not all(
+            isinstance(u, dict) and "path" in u for u in saved):
+        return False, ("inventory.json has no usable units list — "
+                       "rerun `project-brain-inventory <root> inventory`")
+    try:
+        policy, _policy_path = bi.load_policy()
+        current_units, _source, _commit = bi.list_units(root, policy)
+    except (OSError, ValueError, KeyError, subprocess.SubprocessError) as exc:
+        return False, f"cannot verify inventory freshness against current units: {exc}"
+    saved_paths = {str(u["path"]) for u in saved}
+    current_paths = {str(u["path"]) for u in current_units}
+    if saved_paths != current_paths:
+        added = sorted(current_paths - saved_paths)
+        removed = sorted(saved_paths - current_paths)
+        detail = (f"stale inventory: {len(added)} unit(s) added, {len(removed)} removed "
+                  "since the last inventory run — rerun "
+                  "`project-brain-inventory <root> inventory` and re-check coverage")
+        if added:
+            detail += ("; added: " + ", ".join(added[:INVENTORY_PREVIEW_UNITS])
+                       + ("…" if len(added) > INVENTORY_PREVIEW_UNITS else ""))
+        if removed:
+            detail += ("; removed: " + ", ".join(removed[:INVENTORY_PREVIEW_UNITS])
+                       + ("…" if len(removed) > INVENTORY_PREVIEW_UNITS else ""))
+        return False, detail
+    saved_wiki_sha = inv.get("wiki_content_sha256")
+    if not isinstance(saved_wiki_sha, str) or not saved_wiki_sha:
+        return False, ("inventory predates wiki-content binding — the saved completion "
+                       "cannot be tied to the current wiki pages; rerun "
+                       "`project-brain-inventory <root> inventory` and re-check coverage")
+    try:
+        current_wiki_sha = bi.wiki_content_sha256(root / ".brain")
+    except OSError as exc:
+        return False, f"cannot verify inventory freshness against current wiki content: {exc}"
+    if saved_wiki_sha != current_wiki_sha:
+        return False, ("wiki content changed since the inventory run (same unit paths, "
+                       "edited pages) — the saved completion no longer certifies the "
+                       "current coverage; rerun "
+                       "`project-brain-inventory <root> inventory` and re-check coverage")
+    return True, ""
+
+
+def strict_gates(root: Path) -> dict:
+    """KD-13: the hard gate. A gate is passed/failed/could-not-run; --strict
+    exits 0 only when every gate passed. Lint errors cover citation drift,
+    staleness, forbidden all-clears, secrets, and index dupes in one gate."""
+    gates: dict[str, dict] = {}
+    try:
+        code, report = lb.build_report(root)
+        error_categories = sorted({i["category"] for i in report["issues"] if i["severity"] == "error"})
+        gates["lint_errors"] = {
+            "status": "passed" if code == 0 else "failed",
+            "detail": report["summary"],
+            "error_categories": error_categories,
+        }
+    except lb.VerificationCorruptError as exc:
+        gates["lint_errors"] = {"status": "failed",
+                                "detail": f"verification.json corrupt: {exc}",
+                                "error_categories": ["verification_corrupt"]}
+    inv = inventory_state(root)
+    if inv is None:
+        gates["coverage"] = {"status": "could-not-run",
+                             "detail": "inventory.json missing — run `project-brain-inventory <root> inventory`"}
+    elif inv.get("error"):
+        gates["coverage"] = {"status": "could-not-run", "detail": inv["error"]}
+    else:
+        fresh, fresh_detail = inventory_fresh(root, inv)
+        if not fresh:
+            gates["coverage"] = {"status": "could-not-run", "detail": fresh_detail}
+        else:
+            gates["coverage"] = {"status": "passed" if inv["completion"]["complete"] else "failed",
+                                 "detail": inv["completion"]}
+    return gates
+
+
+def write_receipt(root: Path, brain: Path, gates: dict, health: dict) -> Path:
+    """KD-13: one receipt per --strict run at .brain/audit/runs/<UTC-ts>/run.json."""
+    inv = inventory_state(root)
+    from scaffold_brain import plugin_identity  # type: ignore
+    version, _plugin_root = plugin_identity()
+    receipt = {
+        "timestamp": now_iso(),
+        "strict": True,
+        "status": strict_status(gates),
+        "target_commit": lb.git_head(root),
+        "plugin": {"name": "project-brain", "version": version},
+        "inventory_policy": inv.get("policy") if isinstance(inv, dict) else None,
+        "unit_counts": inv.get("summary") if isinstance(inv, dict) else None,
+        "health": health,
+        "lint": gates.get("lint_errors", {}).get("detail"),
+        "gates": gates,
+    }
+    run_dir = brain / "audit" / "runs" / datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    run_dir.mkdir(parents=True, exist_ok=True)
+    path = run_dir / "run.json"
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
+    return path
+
+
+def run_json_mode(root: Path, brain: Path, strict: bool) -> int:
+    payload = {
+        "project_root": str(root),
+        "brain_exists": brain.exists(),
+        "health": health_data(root) if brain.exists() else None,
+        "inventory": inventory_state(root),
+    }
+    if strict:
+        if not brain.exists():
+            payload["gates"] = {
+                "lint_errors": {"status": "could-not-run", "detail": "no .brain directory"},
+                "coverage": {"status": "could-not-run", "detail": "no .brain directory"},
+            }
+        else:
+            payload["gates"] = strict_gates(root)
+            write_receipt(root, brain, payload["gates"], payload["health"] or {})
+            note = lb.record_repair_round(root, strict_status(payload["gates"]) == "passed-for-scope",
+                                          gate=lb.GATE_DOCTOR_STRICT)
+            if note:
+                print(note, file=sys.stderr)
+        payload["status"] = strict_status(payload["gates"])
+    print(json.dumps(payload, indent=2))
+    if strict:
+        return 0 if payload["status"] == "passed-for-scope" else 1
+    return 0
 
 
 def main(argv: list[str]) -> int:
-    root = Path(argv[1]).expanduser().resolve() if len(argv) > 1 else Path.cwd()
+    args = parse_args(argv)
+    root = Path(args.project_root).expanduser().resolve() if args.project_root else Path.cwd()
     brain = root / ".brain"
+    if args.as_json:
+        return run_json_mode(root, brain, args.strict)
     plugins = read_enabled_plugins()
 
     from scaffold_brain import plugin_identity  # type: ignore
@@ -537,7 +765,8 @@ def main(argv: list[str]) -> int:
     if ok:
         print(f"✓ graphify CLI available ({ver})")
     else:
-        print("✗ graphify not on PATH — run: uv tool install graphify && graphify install")
+        print("✗ graphify CLI not on PATH (only the fallback builder — primary is the /graphify skill)")
+        print('  CLI install: uv tool install graphifyy')
 
     if any("obsidian" in p.lower() for p in plugins):
         print("✓ Obsidian plugin enabled in settings.json")
@@ -555,31 +784,64 @@ def main(argv: list[str]) -> int:
     if freshness == "fresh":
         print(f"✓ graphify freshness: {freshness_note}")
     else:
-        print(f"⚠ graphify stale: {freshness_note} — run `/graphify .`")
+        print(f"⚠ graphify stale: {freshness_note} — rebuild via the /graphify skill (primary); "
+              "CLI fallback: `graphify .` (set GRAPHIFY_BACKEND=none when no API access)")
 
     if brain.exists():
         print_health(root)
         severity, wing_note = mempalace_wing_check(root)
         glyph = {"ok": "✓", "warning": "⚠", "info": "ℹ"}.get(severity, "-")
         print(f"{glyph} MemPalace wing: {wing_note}")
-        print(
-            "ℹ MemPalace note: its session stop hook re-mines MEMPAL_DIR without --wing "
-            "(mining the project root into the directory-derived wing), so a wing with the "
-            "project's normalized directory name can reappear after a reset. This is "
-            "MemPalace's own hook behavior; never point the wiki wing at that name and "
-            "never mine the project root into the wiki wing."
-        )
         mempal_dir = os.environ.get("MEMPAL_DIR", "")
+        mempal_points_here = False
         if mempal_dir:
             try:
-                same_project = Path(mempal_dir).expanduser().resolve() == root
+                mempal_points_here = Path(mempal_dir).expanduser().resolve() == root
             except OSError:
-                same_project = False
-            if same_project:
+                mempal_points_here = False
+        # The stop-hook note is printed when it is actually relevant (MEMPAL_DIR
+        # set, or the wing check just flagged something) rather than on every run.
+        if mempal_dir or severity != "ok":
+            print(
+                "ℹ MemPalace note: its session stop hook re-mines MEMPAL_DIR without --wing "
+                "(mining the project root into the directory-derived wing), so a wing with the "
+                "project's normalized directory name can reappear after a reset. This is "
+                "MemPalace's own hook behavior; never point the wiki wing at that name and "
+                "never mine the project root into the wiki wing."
+            )
+            if mempal_points_here:
                 print(
-                    f"⚠ MEMPAL_DIR is this project root — MemPalace's stop hook will mine it "
+                    "⚠ MEMPAL_DIR is this project root — MemPalace's stop hook will mine it "
                     "into the directory-derived wing (normalized project name) on every session stop."
                 )
+
+        # KD-04: doctor prints the coverage work list from the inventory
+        inv = inventory_state(root)
+        if inv and not inv.get("error"):
+            uncovered = [u for u in inv.get("units", [])
+                         if u.get("status") == "uncovered" and u.get("tier") in ("core", "important")]
+            if uncovered:
+                print()
+                print("Coverage work list (uncovered core/important units):")
+                for u in uncovered:
+                    print(f"  [{u['tier']}] {u['path']}")
+
+    if args.strict:
+        if not brain.exists():
+            print("strict: no .brain directory — gates could not run", file=sys.stderr)
+            return 1
+        gates = strict_gates(root)
+        path = write_receipt(root, brain, gates, health_data(root))
+        print()
+        for name, g in gates.items():
+            print(f"strict gate {name}: {g['status']}")
+        print(f"strict status: {strict_status(gates)}")
+        print(f"receipt: {rel(path, root)}")
+        passed = all(g["status"] == "passed" for g in gates.values())
+        note = lb.record_repair_round(root, passed, gate=lb.GATE_DOCTOR_STRICT)
+        if note:
+            print(note, file=sys.stderr)
+        return 0 if passed else 1
 
     return 0
 

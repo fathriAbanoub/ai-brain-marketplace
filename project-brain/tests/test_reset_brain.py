@@ -3,6 +3,8 @@
 All tests use --dry-run only – never test actual deletion.
 """
 
+import json
+
 import pytest
 from pathlib import Path
 
@@ -182,3 +184,61 @@ class TestResetBrain:
         assert result.returncode == 0
         # Should mention graphify-out
         assert "graphify-out" in result.stdout or "graphify" in result.stdout.lower()
+
+
+class TestVerifyResetTranscript:
+    """--verify-reset-transcript: contract checks over a recorded JSONL
+    transcript (offline — no MCP, no deletion)."""
+
+    def _write_transcript(self, root: Path, records: list) -> None:
+        audit_dir = root / ".brain" / "audit"
+        audit_dir.mkdir(parents=True)
+        lines = "\n".join(json.dumps(r) for r in records) + "\n"
+        (audit_dir / "reset-transcript.jsonl").write_text(lines, encoding="utf-8")
+
+    def test_deletes_without_post_delete_evidence_report_missing_evidence(
+            self, run_script, tmp_path: Path):
+        """A pre-delete taxonomy record is cross-check state, NOT wing-cleared
+        evidence: deletions with no evidence after the last delete fail with
+        the 'no wing-cleared evidence' message (every delete record resets the
+        evidence flag, so a pre-delete record can never stand in for the
+        post-delete verification)."""
+        self._write_transcript(tmp_path, [
+            {"tool": "mempalace_get_taxonomy", "wing": "w", "drawer_count": 2},
+            {"tool": "mempalace_list_drawers", "wing": "w", "limit": 100,
+             "returned_ids": ["d1", "d2"]},
+            {"tool": "mempalace_delete_drawers", "wing": "w",
+             "ids": ["d1", "d2"], "deleted_ids": ["d1", "d2"]},
+        ])
+        result = run_script("reset_brain.py",
+                            [str(tmp_path), "--verify-reset-transcript", "w"])
+        assert result.returncode == 1
+        assert "no wing-cleared evidence after the last delete" in result.stderr
+        assert "wing not cleared at end" not in result.stderr
+
+    def test_post_delete_taxonomy_zero_verifies(self, run_script, tmp_path: Path):
+        """The same transcript plus a final drawer_count-0 record verifies."""
+        self._write_transcript(tmp_path, [
+            {"tool": "mempalace_get_taxonomy", "wing": "w", "drawer_count": 2},
+            {"tool": "mempalace_list_drawers", "wing": "w", "limit": 100,
+             "returned_ids": ["d1", "d2"]},
+            {"tool": "mempalace_delete_drawers", "wing": "w",
+             "ids": ["d1", "d2"], "deleted_ids": ["d1", "d2"]},
+            {"tool": "mempalace_get_taxonomy", "wing": "w", "drawer_count": 0},
+        ])
+        result = run_script("reset_brain.py",
+                            [str(tmp_path), "--verify-reset-transcript", "w"])
+        assert result.returncode == 0, result.stderr
+
+    def test_noop_empty_wing_verifies_with_pre_delete_evidence_only(
+            self, run_script, tmp_path: Path):
+        """An already-empty wing (taxonomy drawer_count 0, nothing enumerated,
+        nothing deleted) verifies: with zero deletes, the pre-delete evidence
+        IS the clearing evidence — 'after the last delete' is vacuous."""
+        self._write_transcript(tmp_path, [
+            {"tool": "mempalace_list_wings", "wings": ["other"]},
+            {"tool": "mempalace_get_taxonomy", "wing": "w", "drawer_count": 0},
+        ])
+        result = run_script("reset_brain.py",
+                            [str(tmp_path), "--verify-reset-transcript", "w"])
+        assert result.returncode == 0, result.stderr

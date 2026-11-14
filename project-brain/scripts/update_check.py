@@ -34,27 +34,32 @@ def pypi_latest(package: str) -> str:
         return f"error: {exc}"
 
 
+def highest_version_name(names: list[str]) -> str | None:
+    """Highest dotted-numeric version name; numeric compare, so "0.10.0"
+    sorts above "0.9.4" (a string sort would put "0.10.0" first). Names that
+    are not fully dotted-numeric are ignored. None when nothing qualifies."""
+    best_name = None
+    best_key: tuple[int, ...] | None = None
+    for name in names:
+        parts = name.split(".")
+        if not parts or not all(p.isdigit() for p in parts):
+            continue
+        key = tuple(int(p) for p in parts)
+        if best_key is None or key > best_key:
+            best_key, best_name = key, name
+    return best_name
+
+
 def openclaude_plugin_version(plugin_key: str) -> str:
     """Return the highest semver installed in the OpenClaude plugin cache."""
-    import re
     cache = Path.home() / ".openclaude" / "plugins" / "cache"
     # plugin_key is e.g. "mempalace/mempalace"
     parts = plugin_key.split("/")
     plugin_dir = cache.joinpath(*parts)
     if not plugin_dir.exists():
         return "not installed"
-    versions = []
-    for d in plugin_dir.iterdir():
-        if d.is_dir():
-            try:
-                segments = tuple(int(x) for x in d.name.split("."))
-                versions.append((segments, d.name))
-            except ValueError:
-                pass
-    if not versions:
-        return "not installed"
-    versions.sort(reverse=True)
-    return versions[0][1]
+    highest = highest_version_name([d.name for d in plugin_dir.iterdir() if d.is_dir()])
+    return highest or "not installed"
 
 
 def plugin_brain_version() -> str:

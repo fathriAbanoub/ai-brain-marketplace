@@ -1,6 +1,7 @@
 """Tests for lint_brain.py script."""
 
 import json
+import sys
 import pytest
 from pathlib import Path
 
@@ -217,3 +218,186 @@ class TestLintBrain:
         
         # Should pass without errors (warnings may exist but exit 0)
         assert result.returncode == 0
+
+
+class TestSourcePathResolution:
+    """CodeRabbit #23B: `sources:` entries resolve root-relative (raw
+    evidence), page-relative, or wiki-relative (source-summary pages).
+    Missing paths stay errors — never silently converted to wikilinks."""
+
+    def _page_with_sources(self, brain: Path, rel: str, sources: str) -> Path:
+        page = brain / rel
+        page.parent.mkdir(parents=True, exist_ok=True)
+        page.write_text(
+            "---\ntitle: S\ntype: architecture\ncreated: 2024-01-01\nupdated: 2024-01-01\n"
+            f"status: active\nsources: [{sources}]\ntags: [t]\n---\n\n# S\n\nBody.\n",
+            encoding="utf-8",
+        )
+        return page
+
+    def test_wiki_relative_source_summary_resolves(self, run_script, scaffolded_project: Path):
+        """sources/package-json-primary-source.md resolves against .brain/wiki/."""
+        brain = scaffolded_project
+        summary = brain / "wiki" / "sources" / "package-json-primary-source.md"
+        summary.parent.mkdir(parents=True, exist_ok=True)
+        summary.write_text(
+            "---\ntitle: package.json primary\ntype: source\ncreated: 2024-01-01\n"
+            "updated: 2024-01-01\nstatus: active\nsources: []\nreliability: primary\ntags: []\n---\n\n# package.json primary\n",
+            encoding="utf-8",
+        )
+        page = self._page_with_sources(
+            brain, "wiki/architecture/System Overview.md", "sources/package-json-primary-source.md"
+        )
+        result = run_script("lint_brain.py", [str(brain.parent)])
+        issues = (result.stdout + result.stderr).lower()
+        assert "sources/package-json-primary-source.md" not in issues or result.returncode == 0
+
+    def test_missing_source_path_still_errors(self, run_script, scaffolded_project: Path):
+        """A sources entry pointing nowhere is an error in every resolution mode."""
+        brain = scaffolded_project
+        self._page_with_sources(
+            brain, "wiki/architecture/System Overview.md", "sources/does-not-exist.md"
+        )
+        result = run_script("lint_brain.py", [str(brain.parent)])
+        assert result.returncode != 0
+        assert "source path not found" in (result.stdout + result.stderr)
+
+    def test_root_relative_raw_evidence_resolves(self, run_script, scaffolded_project: Path):
+        brain = scaffolded_project
+        raw = brain / "raw" / "notes" / "evidence.md"
+        raw.parent.mkdir(parents=True, exist_ok=True)
+        raw.write_text("evidence\n", encoding="utf-8")
+        self._page_with_sources(brain, "wiki/concepts/Evidence.md", ".brain/raw/notes/evidence.md")
+        result = run_script("lint_brain.py", [str(brain.parent)])
+        assert result.returncode == 0
+
+    def test_page_relative_source_resolves(self, run_script, scaffolded_project: Path):
+        brain = scaffolded_project
+        sibling = brain / "wiki" / "architecture" / "sibling-src.md"
+        sibling.write_text("sibling\n", encoding="utf-8")
+        self._page_with_sources(brain, "wiki/architecture/System Overview.md", "sibling-src.md")
+        result = run_script("lint_brain.py", [str(brain.parent)])
+        assert result.returncode == 0
+
+
+class TestWikilinkCodeSkipping:
+    """0.10.1 D4: wikilink-shaped checks skip fenced code blocks and inline
+    code spans — the wiki documents code, so `` `[[ghost]]` `` is text, not a
+    broken link. Applies to the plain and hybrid detectors alike."""
+
+    FRONTMATTER = ("---\ntitle: Code Docs\ntype: concept\ncreated: 2024-01-01\n"
+                   "updated: 2024-01-01\nstatus: draft\nsources: []\ntags: [test]\n---\n")
+
+    def _lint_broken_wikilinks(self, run_script, project_dir: Path) -> list[dict]:
+        result = run_script("lint_brain.py", [str(project_dir), "--json"])
+        assert result.returncode in (0, 1)
+        issues = json.loads(result.stdout)["issues"]
+        return [i for i in issues if i["category"] == "broken_wikilink"]
+
+    def test_ghost_links_in_code_are_not_flagged(self, run_script, scaffolded_project: Path):
+        brain = scaffolded_project
+        page = brain / "wiki" / "concepts" / "CodeDocs.md"
+        page.write_text(self.FRONTMATTER + (
+            "\nInline `[[Ghost]]` and `arr[[1](2)]` spans are documentation.\n\n"
+            "```python\n# [[Ghost]] inside a fence\nx = arr[[1](2)]\n[[Ghost]]\n```\n\n"
+            "~~~\n[[Ghost]] and hybrid [[Ghost](somewhere.md)] inside tildes\n~~~\n"),
+            encoding="utf-8")
+        assert self._lint_broken_wikilinks(run_script, brain.parent) == []
+
+    def test_broken_link_outside_code_still_flagged_with_exact_line(self, run_script, scaffolded_project: Path):
+        brain = scaffolded_project
+        page = brain / "wiki" / "concepts" / "CodeDocs.md"
+        body = ("\nA fence first:\n\n```\n[[Ghost]] in code\n```\n\n"
+                "then a real [[Ghost]] in prose.\n")
+        page.write_text(self.FRONTMATTER + body, encoding="utf-8")
+        broken = self._lint_broken_wikilinks(run_script, brain.parent)
+        assert len(broken) == 1, broken
+        expected_line = (self.FRONTMATTER + body).count("\n", 0,
+                         (self.FRONTMATTER + body).index("real [[Ghost]]")) + 1
+        assert broken[0]["line"] == expected_line, broken[0]
+
+
+class TestLedgerHistorySecrets:
+    """KD-15 through Git: a secret removed from the current page is still
+    reported while it survives in the wiki ledger's snapshot history."""
+
+    def _lint_json(self, run_script, project: Path) -> dict:
+        result = run_script("lint_brain.py", [str(project), "--json"])
+        assert result.returncode in (0, 1), result.stderr
+        return json.loads(result.stdout)
+
+    def test_secret_removed_from_page_but_retained_in_history(self, run_script, scaffolded_project: Path):
+        brain = scaffolded_project
+        project = brain.parent
+        page = brain / "wiki" / "concepts" / "Creds.md"
+        page.parent.mkdir(parents=True, exist_ok=True)
+        fm = ("---\ntitle: Creds\ntype: concept\ncreated: 2026-01-01\nupdated: 2026-01-01\n"
+              "status: active\nsources: []\ntags: [t]\n---\n")
+        page.write_text(fm + "# Creds\n\naws key AKIAABCDEFGHIJKLMNOP was leaked here\n",
+                        encoding="utf-8")
+        # Snapshot the leak, then clean the current page and snapshot again.
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+        import wiki_ledger as wl
+        ledger = wl.WikiLedger(project)
+        ledger.snapshot("snapshot: leak")
+        page.write_text(fm + "# Creds\n\nthe credential was rotated and removed\n",
+                        encoding="utf-8")
+        ledger.snapshot("snapshot: cleaned")
+        report = self._lint_json(run_script, project)
+        history = [i for i in report["issues"]
+                   if i["category"] == "brain_secret" and "ledger history" in i["message"]]
+        assert history, "retained secret in ledger history was not reported"
+        assert any("aws access key id" in i["message"] for i in history)
+        assert any(i["file"].endswith("wiki.git") for i in history)
+        # Cleanup guidance is required in the message.
+        assert any("rotate" in i["message"] and "purge" in i["message"] for i in history)
+        # The current page is clean: no issue points at the page file.
+        assert not any(i["file"].endswith("Creds.md") for i in report["issues"]
+                       if i["category"] == "brain_secret")
+
+    def test_clean_history_produces_no_history_findings(self, run_script, scaffolded_project: Path):
+        brain = scaffolded_project
+        project = brain.parent
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+        import wiki_ledger as wl
+        wl.WikiLedger(project).snapshot("snapshot: clean")
+        report = self._lint_json(run_script, project)
+        assert not [i for i in report["issues"] if i["category"] == "brain_secret"]
+
+    def test_byte_budget_bounds_content_pass_and_reports_partial(self, scaffolded_project: Path,
+                                                                 monkeypatch):
+        """LEDGER_HISTORY_MAX_BYTES bounds the cat-file --batch request BEFORE
+        any content is captured: blobs beyond the budget are skipped (nothing
+        beyond the bound is reported) and the skipped content is reported as a
+        partial scan. Runs in-process so the module constant can be patched."""
+        import lint_brain as lb
+        brain = scaffolded_project
+        project = brain.parent
+        page = brain / "wiki" / "concepts" / "Creds.md"
+        page.parent.mkdir(parents=True, exist_ok=True)
+        fm = ("---\ntitle: Creds\ntype: concept\ncreated: 2026-01-01\nupdated: 2026-01-01\n"
+              "status: active\nsources: []\ntags: [t]\n---\n")
+        page.write_text(fm + "# Creds\n\naws key AKIAIOSFODNN7EXAMPLE was leaked here\n",
+                        encoding="utf-8")
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+        import wiki_ledger as wl
+        ledger = wl.WikiLedger(project)
+        ledger.snapshot("snapshot: leak")
+        page.write_text(fm + "# Creds\n\nthe credential was rotated and removed\n",
+                        encoding="utf-8")
+        ledger.snapshot("snapshot: cleaned")
+        ledger_dir = brain / "state" / "wiki.git"
+
+        def scan() -> list[str]:
+            issues: list[dict] = []
+            lb._scan_ledger_history_secrets(project, brain, ledger_dir, issues)
+            return [i["category"] for i in issues]
+
+        # Full budget: the retained secret is found (in-process control).
+        assert "brain_secret" in scan()
+        # One-byte budget: no blob fits, nothing is scanned, and the gap is
+        # reported as a partial scan instead of being silently ignored.
+        monkeypatch.setattr(lb, "LEDGER_HISTORY_MAX_BYTES", 1)
+        cats = scan()
+        assert "brain_secret" not in cats
+        assert "brain_secret_scan_partial" in cats

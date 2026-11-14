@@ -1,374 +1,302 @@
 ---
-description: Use when the user wants a persistent AI brain, project memory, LLM wiki, personal knowledge base, model handoff memory, architecture/codebase brain, source ingestion workflow, Obsidian vault mirror, cross-project brain coordination, or any workflow combining raw sources, wiki synthesis, MemPalace memory, graphify graphs, logs, audits, health metrics, and session handoffs. This skill initializes and maintains a layered brain where `.brain/raw/` stores immutable evidence, `.brain/wiki/` stores compiled markdown knowledge, MemPalace stores verbatim session memory and user preferences, graphify maps relationships across code/docs/sources, Obsidian MCP mirrors selected wiki pages to the user's vault, and `.brain/state/session-brief.md` lets a future model recover context after a reset or model change.
+description: Use when the user wants a persistent AI brain, project memory, LLM wiki, personal knowledge base, handoff memory, an architecture/codebase map, source ingestion, an Obsidian vault mirror, or cross-project brain coordination — or says "set up the brain", "remember this project", "continue from memory", or "prepare a handoff". Maintains the layered brain under `.brain/` (raw evidence, wiki, session brief) plus MemPalace memory, graphify graphs, and script health gates. NOT for one-off questions needing no persistence (just answer), for a code graph without a brain (use /graphify), or for MemPalace cleanup outside a brain reset (use the reset skill).
 ---
 
 # Project Brain
 
-Build and maintain a persistent AI brain for the current project. This skill is not only an LLM Wiki scaffold. The LLM Wiki is the compiled-knowledge layer; after wiki edits, run the post-wiki loop so the graph, memory, log, audit, health, vault, and handoff layers stay aligned and the next model can understand the project without this chat.
+Build and maintain a persistent brain for the current project so a future
+model can understand it without this chat. Six layers, kept aligned: evidence
+(`.brain/raw/`), synthesis (`.brain/wiki/`), memory (MemPalace), map
+(`graphify-out/`), handoff (`.brain/state/session-brief.md`), Obsidian vault
+(opt-in mirror). Depth: `references/brain-architecture.md`.
 
-## Core model
+## Harness facts (ignoring any of these wastes turns)
 
-The brain has six coordinated layers:
+- This skill is injected once and sits in context for every later turn; files
+  under `references/` do NOT — load one only on its trigger. Relative
+  `references/...` paths resolve against the "Base directory for this skill"
+  line the harness prints above this text.
+- A tool missing from the tool list may still be DEFERRED (named in the
+  deferred-tools list). Rules: `references/deferred-tools.md`.
+- Parallel tool calls in one turn do not see each other's results; shell
+  variables do not survive between Bash calls.
+- `Edit` requires a prior `Read` of the same file: `references/edit-discipline.md`.
+- After compaction only a summary survives; the run can be cut at any moment
+  and you cannot see the remaining budget — make progress durable in small
+  steps (Work loop step 5).
 
-1. **Evidence** — `.brain/raw/` and repository files. These are the source of truth.
-2. **Synthesis** — `.brain/wiki/`. These are small, linked markdown pages maintained by the agent.
-3. **Memory** — MemPalace. This preserves previous conversations, user preferences, diary entries, and verbatim recall.
-4. **Map** — graphify output in `graphify-out/`. This captures relationships, communities, paths, god nodes, and structural hints.
-5. **Handoff** — `.brain/state/session-brief.md`. This is the short briefing a future model should read first.
-6. **Vault** — Obsidian MCP. The wiki can be mirrored to the user's Obsidian vault for human browsing, graph view, and annotation. See `references/obsidian-workflow.md`.
+## Resolve the plugin root (before the first command of a session)
 
-Never treat one layer as the whole brain. A healthy project brain keeps the layers aligned.
-
-## Required first move
-
-At the start of any serious project-brain session:
-
-1. Identify the project root. If unsure, use the current working directory.
-2. If `.brain/CLAUDE.md` exists, read it first.
-3. If `.brain/CLAUDE.md` does not exist and the user asked to set up a brain, run:
-
-```bash
-project-brain-init <project-root> "<Project Name>"
-```
-
-If `project-brain-init` is not on PATH (exit code 127), find the plugin root and run the script directly. Prefer the harness-provided plugin root when available (`${CLAUDE_PLUGIN_ROOT}` — substituted by OpenClaude/Claude Code in skill and command text). Resolve the fallback with standalone statements that cannot short-circuit (no `A && B` chains — a false `[ -z ]` in a chain silently exits 1 and wastes a turn):
+Never type a bare `project-brain-*` command: the wrappers are not on PATH in
+this harness, every bare attempt wastes a turn, and roughly three consecutive
+failed Bash calls abort the whole session. Every `project-brain-<tool> …` in
+this skill means `"$PLUGIN_ROOT/bin/project-brain-<tool>" …`, with PLUGIN_ROOT
+read from `.brain/state/plugin-root.txt` (written by init) or resolved by the
+fallback:
 
 ```bash
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-}"
+# A stale CLAUDE_PLUGIN_ROOT (moved/foreign copy) must not skip discovery:
+# validate it against bin/ and clear it when invalid; a valid one is kept.
+if [ -n "$PLUGIN_ROOT" ] && [ ! -d "$PLUGIN_ROOT/bin" ]; then
+  PLUGIN_ROOT=""
+fi
+# If still empty: the harness prints "Base directory for this skill: <path>"
+# directly above this skill's text. Do NOT count dirname levels by hand — a
+# wrong depth guess ends on a foreign copy of the plugin. Take the first
+# candidate that actually contains the plugin's bin/.
+if [ -z "$PLUGIN_ROOT" ]; then
+  BASE_DIR='<path-from-that-line>'
+  for _c in "$BASE_DIR" "$(dirname "$BASE_DIR")" "$(dirname "$(dirname "$BASE_DIR")")"; do
+    if [ -d "$_c/bin" ]; then PLUGIN_ROOT="$_c"; break; fi
+  done
+fi
+# Verify before use: ls "$PLUGIN_ROOT/bin" must list the project-brain-* wrappers.
 : "${PLUGIN_ROOT:=$(ls -d ~/.openclaude/plugins/cache/ai-brain-marketplace/project-brain/*/ 2>/dev/null | sort -V | tail -1)}"
 : "${PLUGIN_ROOT:=$HOME/.openclaude/plugins/marketplaces/ai-brain-marketplace/project-brain}"
-"$PLUGIN_ROOT/bin/project-brain-init" <project-root> "<Project Name>"
+"$PLUGIN_ROOT/bin/project-brain-doctor" <project-root> --strict
 ```
 
-The same fallback applies to all `project-brain-*` commands: replace the bare command with `$PLUGIN_ROOT/bin/<command>` or the full marketplace path.
-
-Version skew warning: the installed `skills/` text can be older than the installed `scripts/` (the plugin-cache resolver prefers `cache/` over `marketplaces/`). `project-brain-init` and `project-brain-doctor` print the resolved plugin root and version from `plugin.json` — check that line matches the plugin version you expect before trusting mixed output.
-
-4. Read `.brain/state/session-brief.md` if present.
-5. Read `.brain/wiki/index.md` if present.
-6. Read `graphify-out/GRAPH_REPORT.md` before architecture, code navigation, or broad relationship questions if it exists.
-7. Check MemPalace before making claims about previous decisions, user preferences, or past work. Before any MemPalace call, read `references/mempalace-tools.md` for the 47-tool reference, policy table, and call recipes. Call `mempalace_status` when the tool is available (preflight). If `.brain/CLAUDE.md` is missing or does not define a non-empty `mempalace_wing`, skip the MemPalace search and diary read, tell the user the brain is not initialized or configured and to run project-brain-init (or fix the file), and never infer a wing or search without one. For claims about wiki knowledge (decisions, architecture, project facts), use `mempalace_search` with the wiki wing from `.brain/CLAUDE.md`; for claims about what happened in earlier sessions (continuity, what was done last time, open threads), use `mempalace_diary_read` with the agent from `mempalace_diary_agent` in `.brain/CLAUDE.md` (for an older brain without that field, from the agent named in the diary sentence of that file; if neither exists, skip the diary and tell the user) — see the recipe in mempalace-tools.md, "Read Diary at Wake-up"; the wiki search does not read the diary and the diary read does not search wiki pages, so use the one that fits the claim, or both. **Never call `mempalace_sync` against the wiki wing** — sync prunes drawers whose source files are gitignored or deleted, and may be used on other wings only with a dry run first and explicit user confirmation. Use Recipe 3 (`mine .brain/wiki`) for normal wiki updates.
-8. If Obsidian MCP tools are available, note that the brain wiki can be mirrored to the vault (vault mirror). Do not mirror automatically — wait for the user to request it.
-9. If a tool is not available in the current session, say exactly which layer is unavailable and continue from the remaining layers.
-10. When a wing seems missing or empty, never conclude from one tool result: MemPalace normalizes wing names (lowercase, `-` and space → `_`), so call `mempalace_list_wings` and compare normalized names before acting. An empty `mempalace_list_rooms` result is not proof the wing is empty.
-
-## Behavioral Contracts
-
-### Contract 1: Never claim MemPalace is unavailable without checking
-
-Before saying "MemPalace is unavailable", call `mempalace_status`. If the MCP tool is present, MemPalace is available. The plugin is installed. There is no fallback scenario unless the tool call itself fails.
-
-### Contract 2: Never reinvent graphify
-
-Do not write Python scripts to parse code structure, extract relationships, or build knowledge graphs. That is graphify's job. If a relationship question requires graph traversal, use `/graphify query` or `graphify query "<question>"`. If graphify output is missing, rebuild it with `/graphify .` — do not substitute manual file scanning.
-
-### Contract 3: Never let wiki edits be the last step
-
-Every wiki edit must be followed by the post-wiki checklist. No exceptions. The checklist is not optional friction — it is what makes the brain durable.
-
-### Contract 4: The session brief must be readable in under 2 minutes
-
-If the session brief exceeds 400 words, trim it. Depth belongs in wiki pages, not the brief. The brief is a map to the wiki, not a replacement for it.
-
-### Contract 5: Obsidian vault mirror is opt-in
-
-Never push to the Obsidian vault without the user asking. The vault is the user's personal space. The brain writes to `.brain/wiki/` first; the vault is a view layer the user controls.
-
-### Contract 6: Route to the right layer first
-
-Before answering any question from the brain, identify the question type and consult `references/retrieval-strategy.md` or the routing table in `references/agent-playbook.md`. Do not default to reading the wiki index for every question. Code navigation questions go to graphify first. Decision questions go to MemPalace first. Status questions go to the session brief first. Using the wrong layer first wastes turns and risks stale answers.
-
-### Contract 7: Primary source verification
-
-> **PRIMARY SOURCE VERIFICATION RULE**: Before documenting any claim about a file's status, purpose, imports, or behavior — you MUST read that file directly using the Read tool. Secondary sources (GEMINI.md, critic reports, README files, any AI-generated analysis) are opinions, not evidence. If a secondary source makes a claim about a specific file (e.g. "this file is unused", "this function does X"), you must verify it by reading the actual file. If the secondary source contradicts the primary source code, document the contradiction explicitly in `sources/<filename>.md` under a `## Known Inaccuracies in This Source` section. Never copy a claim from a secondary source into the wiki architecture pages without primary verification.
-
-**Orphaned file check**: Before marking any file as "orphaned", "unused", or "not imported": search the entire codebase for import statements, require() calls, script tags, and dynamic references to that file. Only label a file orphaned after this search returns zero results.
-
-### Contract 8: No speculative language in architecture pages
-
-Words like "likely", "probably", "appears to", "seems to", and "may" are banned from wiki architecture pages unless explicitly marked as a hypothesis under an open question. If you do not know how two components interact, do not guess — write "Integration method not yet verified. See [[open-questions#integration-question]]" and add the question to open-questions.md. If you do know, state it definitively and cite the file and line number.
-
-## Canonical lifecycle
-
-Use `references/brain-lifecycle.md` as the primary runbook. The short version:
-
-1. **Orient** from schema, session brief, wiki index, graph report, and MemPalace.
-2. **Ingest** new evidence into `.brain/raw/` or pointer files.
-3. **Compile** durable knowledge into `.brain/wiki/`.
-4. **Graph** with graphify and promote stable graph findings into the wiki.
-5. **Remember** with MemPalace diary/preferences/decision context.
-6. **Mirror** selected wiki pages to Obsidian only when requested.
-7. **Audit** with linting, open questions, contradiction tracking, and feedback files.
-8. **Handoff** by updating session brief, log, and next actions.
-
-If the user asks "what should the AI do after LLM Wiki?", the answer is: run the post-wiki loop in `references/post-wiki-checklist.md`.
-
-
-## Brain Reset
-
-Use brain reset only when the user explicitly requests deletion or a clean slate, when the project source code was significantly refactored and the wiki is now structurally stale, when the brain was built from inaccurate secondary sources and must be rebuilt from primary source code, or when the project has been archived and its project brain should be removed.
-
-Do **not** reset the entire brain when a smaller repair is enough:
-
-- If the wiki only needs normal updating, re-compile the affected wiki pages from primary sources instead.
-- If MemPalace only needs to be regenerated from a still-valid wiki, delete the wing's drawers yourself with the MCP tools (see the `/project-brain:reset` skill, Step 2), then re-mine. Leave `.brain/` alone.
-- If a single wiki page is wrong, fix that page and run the post-wiki loop; do not delete the whole brain.
-
-Brain reset is irreversible. `.brain/`, `graphify-out/`, and MemPalace drawer deletions cannot be undone. The project source code must never be deleted or modified by a reset.
-
-Correct sequence when a user requests brain deletion (full procedure in the `/project-brain:reset` skill):
-
-1. Read the wing name and diary agent from `.brain/CLAUDE.md` (`mempalace_wing`, `mempalace_diary_agent`), before any file deletion.
-2. Resolve the real wings: call `mempalace_list_wings` and match, using MemPalace's normalize rule (lowercase, `-` and space → `_`), the recorded wing, the directory-derived wing (`normalize(<project-root dirname>)`), and the diary wing (`wing_<diary-agent>` and its normalized form). Show every candidate with its drawer count and ask the user which wings to delete. An empty `mempalace_list_rooms` result is never proof a wing is empty.
-3. For each user-confirmed wing: `mempalace_list_rooms` → `mempalace_list_drawers` → `mempalace_delete_drawer`. Report how many were deleted per wing. The diary wing must be included — no other flow ever clears it.
-4. Run `project-brain-reset <project-root> --dry-run` and show the output.
-5. Only after explicit user confirmation, run `project-brain-reset <project-root> --confirm`.
-6. After reset completes, offer to immediately run `project-brain-init <project-root> "<Project Name>"` to start fresh.
-
-The reset script handles local files only (`.brain/`, `graphify-out/`, the injected `CLAUDE.md` block, and the snippet). It has no MemPalace access — MCP tools exist in the agent session, not in a subprocess. If the MCP tools are missing, stop and say so; never report drawers as deleted when they were not. Never run local deletion while a candidate wing is unresolved or unconfirmed, and preserve `.brain/CLAUDE.md` until the MemPalace side is settled.
-
-Re-creation hazard: MemPalace's own session stop hook re-mines `MEMPAL_DIR` without `--wing` when that variable is set (verified in MemPalace 3.11.0 `hooks_cli.py`), so the directory-derived wing can reappear after a reset with mined project files inside. That wing belongs to MemPalace's project mining, not to the brain — do not treat its reappearance as a failed reset and do not delete it as part of a brain reset.
-
-See the `/project-brain:reset` skill for the full procedure.
-
-## Operation modes
-
-### Initialize
-
-Use when the project has no brain yet or the user asks to create/install/set up the brain. Initialize is autonomous: it continues through the lifecycle on its own and ends with a final report of what was done and what could not be done and why — never with a to-do list for the user. The agent may pause to ask the user only when a decision (e.g. which wing to delete, whether to run a destructive operation) or an access (missing tool, missing file permission) is genuinely missing.
-
-Steps:
-
-1. Run `project-brain-init <project-root> "<Project Name>"`.
-2. Read the files it created (`.brain/CLAUDE.md`, `.brain/state/session-brief.md`, `.brain/wiki/index.md`).
-3. **Read `references/mempalace-tools.md` now** — the full 47-tool reference, policy table, and call recipes. This must happen before the first MemPalace call of this mode; do not call `mempalace_status` or any other MemPalace tool before reading it.
-4. Run `project-brain-doctor <project-root>` and read all four sub-scores, not just the total. The doctor flags any sub-score below the repair threshold (70) with `BELOW REPAIR THRESHOLD`. For each flagged sub-score, either run the matching repair from `references/brain-lifecycle.md` → Self-correction scan now (e.g. the diary entry in step 11 raises Memory sync), or state explicitly in the final report why it was not repaired. Never summarize a flagged sub-score as success.
-5. Report the current availability of MemPalace MCP, graphify CLI, and Obsidian MCP. Do not give install instructions unless the user asks.
-6. **Leftover-wing check (new brains only — skip on re-init of an existing brain):** after `mempalace_status`, call `mempalace_list_wings`. If any existing wing normalizes (MemPalace rule: lowercase, `-` and space → `_`) to this project's slug, its directory-derived wing, or the diary wing, and the brain was just created, tell the user these wings predate the new brain and offer cleanup via the `/project-brain:reset` flow. Do not delete anything unasked.
-7. Ingest the project's own primary sources into the brain: read the project README, manifests (`package.json`, `pyproject.toml`, `Cargo.toml`, equivalents), and main entry points; store curated material or pointer files under `.brain/raw/` (per `references/evidence-lifecycle.md`).
-8. Compile wiki pages from those primary sources under Contracts 7 and 8: read the actual files; no speculative language; update `.brain/wiki/architecture/System Overview.md`, add source summaries under `.brain/wiki/sources/` with `reliability:` frontmatter, update `.brain/wiki/index.md`, and record contradictions (e.g. a README claim that contradicts the code) in the source page and `open-questions.md`.
-9. Mine `.brain/wiki` into the wiki wing with an explicit `--wing` from `mempalace_wing` in `.brain/CLAUDE.md` (Recipe 3 in mempalace-tools.md; dry run first). Never mine the project root into the wiki wing.
-10. Run graphify only if the doctor says stale (step 9 of the post-wiki loop decides the command from the doctor's reason). Skip graphify if the CLI is unavailable; say so in the final report.
-11. Write the diary entry (`mempalace_diary_write` with the agent from `mempalace_diary_agent`, diary format in `references/mempalace-workflow.md`).
-12. Update `.brain/state/session-brief.md` (under 400 words), append the log entry, and run `project-brain-lint <project-root>`; clear error-level issues.
-13. Final report: state what was done, what could not be done and why (e.g. graphify missing), and the doctor's sub-score status. It must not contain a to-do list for the user to execute.
-
-MemPalace is already installed as a plugin. graphify is already installed as a CLI tool and skill. Do not reinstall either.
-
-### Wake up / orient
-
-Use at the start of a new session, after a model change, or when the user says to continue from memory.
-
-Steps:
-
-1. Read `.brain/CLAUDE.md`.
-2. Read `.brain/state/session-brief.md`.
-3. Read `.brain/wiki/index.md`.
-4. Read `graphify-out/GRAPH_REPORT.md` if present.
-5. Follow the recall rule in step 7 below.
-6. Produce a short orientation: project purpose, current state, architecture map, decisions, risks, and next read targets.
-7. Update the session brief if it is stale.
-
-### Ingest
-
-Use when the user adds a source, explains something important, links docs, uploads notes, asks to process a codebase, or gives new project context.
-
-Steps:
-
-1. Store the material in `.brain/raw/` or create a pointer file in `.brain/raw/refs/` according to `references/evidence-lifecycle.md`.
-2. Extract claims, entities, relationships, decisions, uncertainties, and useful quotes.
-3. **Read the actual source files referenced by the material** before writing any wiki claims. Apply Contract 7 (Primary Source Verification) and Contract 8 (No Speculative Language).
-4. Create or update a source summary under `.brain/wiki/sources/` with a `reliability:` field in frontmatter set to `primary`, `secondary-verified`, or `secondary-unverified` (see Source reliability tagging below).
-5. If the source is `secondary-unverified` or `secondary-verified` and discrepancies were found, add a `## Known Inaccuracies in This Source` section listing each error with: the incorrect claim, the correct value verified from primary source, and the primary source file and line number.
-6. Update affected architecture, concept, entity, synthesis, and decision pages.
-7. Update `.brain/wiki/index.md`.
-8. Run the post-wiki checklist.
-
-**Source reliability tagging**: Every source summary page (`wiki/sources/<name>.md`) must include a `reliability:` field in its frontmatter set to one of:
-
-- `primary` — actual source code files (the canonical source of truth).
-- `secondary-verified` — AI/human analysis whose claims have been checked against primary sources.
-- `secondary-unverified` — AI/human analysis not yet cross-checked against primary sources.
-
-For any `secondary-unverified` or `secondary-verified` source where discrepancies were found, add a `## Known Inaccuracies in This Source` section listing each error with: the incorrect claim, the correct value verified from primary source, and the primary source file and line number that proves the correction.
-
-### Query
-
-Use when answering questions from the brain.
-
-Steps:
-
-1. Identify the question type and route to the right layer first using `references/retrieval-strategy.md` or the routing table in `references/agent-playbook.md`.
-2. Read only the relevant pages, graph reports, memories, logs, or raw sources needed for that question type.
-3. Use graphify first for relationship, architecture, path, dependency, or code-navigation questions.
-4. Follow the recall rule in step 7 below.
-5. Check raw sources first for high-stakes, uncertain, or contested evidence claims.
-6. Answer with clear citations/paths/wikilinks and state confidence when only one layer supports the answer.
-7. If the answer is durable, save it under `.brain/outputs/queries/` or promote it into `.brain/wiki/`.
-8. Log and update handoff state when project understanding changed.
-
-### Build or refresh graph
-
-Use when the user asks how pieces connect, when code/docs/raw sources changed, or after initial brain setup.
-
-Steps:
-
-1. Create or review `.graphifyignore` to exclude noisy or sensitive paths.
-2. Use `/graphify .` for the full skill pipeline, or `graphify <subcommand>` for targeted shell operations.
-3. Read `graphify-out/GRAPH_REPORT.md`.
-4. Extract god nodes, communities, surprising edges, and suggested questions.
-5. Update architecture/concept pages with stable findings.
-6. Add graph-derived leads to `.brain/wiki/open-questions.md` until verified.
-7. Log the graph refresh.
-
-### Consolidate memory
-
-Use after significant project conversations, decisions, preference changes, or handoffs.
-
-Steps:
-
-1. Call `mempalace_status`.
-2. Follow the recall rule in step 7 above.
-3. Write a concise diary entry with `mempalace_diary_write` after substantial work, decisions, or context changes. Follow the diary entry minimum standard in `references/mempalace-workflow.md`.
-4. Convert stable memory into wiki pages, decisions, or `.brain/CLAUDE.md` preferences.
-5. Never store secrets.
-
-### Mirror to Obsidian (vault mirror)
-
-Use when the user asks to view, browse, save, mirror, sync, or open brain content in Obsidian, or asks for the vault to reflect current brain state.
-
-Steps:
-
-1. Read `references/obsidian-workflow.md`.
-2. Identify which wiki pages have changed since last mirror by checking `.brain/log/` for the last mirror timestamp.
-3. Use Obsidian MCP write tools to mirror changed pages to `<vault>/project-brains/<project-name>/`.
-4. Preserve all wikilinks — they work natively in Obsidian.
-5. Do not mirror `.brain/raw/`, `.brain/log/`, `.brain/audit/`, or `.brain/state/` unless explicitly requested.
-6. Log the mirror.
-
-### Audit / lint
-
-Use periodically, after large updates, or when the user asks whether the brain is healthy.
-
-Steps:
-
-1. Run `project-brain-lint <project-root>` or `project-brain-lint <project-root> --json` when a tool needs machine-readable output.
-2. Run `project-brain-doctor <project-root>` for health scores.
-3. Process `.brain/audit/*.md` from highest severity to lowest.
-4. Find broken links, unindexed pages, orphan pages, stale claims, missing decisions, contradictions, vague summaries, missing source citations, and stale raw evidence.
-5. Use raw files, graphify, and MemPalace to resolve.
-6. Move resolved audit notes to `.brain/audit/resolved/` with a resolution.
-7. Log the audit.
-
-### Handoff
-
-Use before ending a large session, before compaction, after major work, or when the user asks for continuity.
-
-Steps:
-
-1. Update `.brain/state/session-brief.md`.
-2. Keep it under 400 words.
-3. Include current state, active workstream, recent decisions, files changed, brain pages changed, risks, and exact next read targets.
-4. Add next actions as checkboxes.
-5. Write a MemPalace diary entry if available.
-6. Append a log entry.
-
-### Cross-brain coordination
-
-Use when the user works across multiple projects or asks to connect one project brain to another.
-
-Steps:
-
-1. Read `references/cross-brain-workflow.md`.
-2. Create pointer files rather than duplicating pages across projects.
-3. MemPalace has no verified store for global preferences. Keep durable preferences in `.brain/CLAUDE.md` or the project wiki, and create pointer files instead of duplicating them across projects.
-4. Use graphify `merge-graphs` only when a cross-repo relationship map is needed.
-5. Write a multi-project session brief that names each project and its next read targets.
-
-### Self-correction scan
-
-Use when `project-brain-doctor` shows health below the repair threshold (70/100) or any single sub-score below the repair threshold, when the session brief is more than 7 days old, or when the user asks whether the brain is healthy or up to date.
-
-Steps:
-
-1. Run `project-brain-doctor <project-root>` and read all four sub-scores, not just the total. The doctor marks every sub-score below 70 with `BELOW REPAIR THRESHOLD`.
-2. For each sub-score below 70, run the matching repair from `references/brain-lifecycle.md` → Self-correction scan. Never summarize a flagged sub-score as success; if a repair is impossible, say which score, why, and what is needed.
-3. Run `project-brain-lint <project-root>` and clear all error-level issues.
-4. Log the scan result.
-5. Update session brief.
-
-## Non-negotiable post-wiki loop
-
-Every time wiki pages change, perform this loop unless impossible:
-
-1. Update index.
-2. Add cross-links and backlinks.
-3. Extract decisions.
-4. **Resolve open questions**: For each question in `open-questions.md`, make a genuine attempt to answer it from the files already read. If the answer exists in any file you have access to, document it in the relevant wiki page and remove the question from open-questions.md. Only leave a question open if: (a) the answer requires reading a file not yet ingested, OR (b) the answer genuinely does not exist anywhere in the codebase. For case (a), name the specific file that needs to be read next. Never leave a question open if the answer is visible in a file you have already read.
-5. **Run graphify only if the doctor says stale.** Run `project-brain-doctor <project-root>` and check the graphify freshness line. If it reports stale, choose the command based on the doctor's reason:
-   - Reason starts with `"graphify-out/GRAPH_REPORT.md missing"` OR `"graph built at"` → `/graphify .` (full build, API cost)
-   - Reason starts with `"uncommitted changes to source files:"` → check what changed. If the reason says more paths follow (marker contains "more paths omitted"), run `git status` first to see the full list. Then decide: code-only changes use `graphify update .` (AST-only, no API cost); docs/images/comments changes use `/graphify .`
-   - Any other stale reason → `/graphify .`
-   Skip graphify for wiki-only changes.
-6. Consolidate MemPalace memory (diary entry) if session context changed.
-7. Record contradictions/open questions.
-8. Update session brief.
-9. Append log entry.
-10. Run lint for large changes.
-
-The wiki is not the finish line; it is the compiled layer that must be wired back into the rest of the brain.
-
-## Known issues documentation standard
-
-When documenting security, validation, or correctness issues in wiki pages or open-questions.md, be precise about the severity and nature of the gap. Distinguish between three categories:
-
-- **Absent** — the feature does not exist at all. Example: "No authentication on the /render-video endpoint."
-- **Insufficient** — the feature exists but has exploitable gaps. Quote the specific gap. Example: "Duration validated as positive integer but no upper bound — allows arbitrarily long render requests (see `backend/renderVideo.js` line 42)."
-- **Misconfigured** — the feature exists but is set incorrectly. Example: "CORS allows all origins despite being meant for a single-domain deployment (see `backend/server.js` line 15)."
-
-Never write "no input validation" when validation exists but is insufficient. The distinction matters because "absent" tells a future agent to build from scratch, while "insufficient" tells them to extend what is already there.
-
-## Evidence hierarchy
-
-When layers disagree, trust evidence in this order:
-
-1. Raw sources and repository files.
-2. Decision pages with source links.
-3. Wiki synthesis.
-4. graphify extracted relationships.
-5. graphify inferred relationships.
-6. MemPalace recollections.
-7. Current chat claims.
-
-Do not erase disagreement. Record the conflict and update the stale layer after verification.
-
-## Supporting references
-
-Load these only when relevant:
-
-- `references/agent-playbook.md` — decision tree for what the agent should do next.
-- `references/audit-workflow.md` — how to process human feedback.
-- `references/brain-architecture.md` — detailed architecture of the six brain layers.
-- `references/brain-health-metrics.md` — measurable brain health scoring.
-- `references/brain-lifecycle.md` — full end-to-end workflow and definitions of done.
-- `references/cross-brain-workflow.md` — linking multiple project brains without duplication.
-- `references/evidence-lifecycle.md` — raw evidence intake, pointer files, aging, and contradictions.
-- `references/graphify-workflow.md` — how to use graphify as the relationship graph layer.
-- `references/handoff-protocol.md` — how to prepare a future model.
-- `references/install-and-integration.md` — actual dependency state, plugin layout, verification, and CLAUDE.md integration.
-- `references/mempalace-workflow.md` — how to use MemPalace MCP as the memory layer.
-- `references/obsidian-workflow.md` — how to mirror wiki pages to Obsidian via MCP.
-- `references/post-wiki-checklist.md` — exact checklist after wiki edits.
-- `references/wiki-schema.md` — page formats, frontmatter, index rules.
+After any shell resolves PLUGIN_ROOT, persist it — the variable dies with the
+shell, the file survives:
+
+```bash
+printf '%s' "$PLUGIN_ROOT" > .brain/state/plugin-root.txt
+```
+
+In every LATER shell, load it with a staleness check (a moved plugin must fall
+back to re-resolution, never be used blindly):
+
+```bash
+PLUGIN_ROOT="$(cat .brain/state/plugin-root.txt 2>/dev/null || true)"
+[ -n "$PLUGIN_ROOT" ] && [ -d "$PLUGIN_ROOT/bin" ] || PLUGIN_ROOT=""
+```
+
+If PLUGIN_ROOT still cannot be resolved, STOP and report exactly which paths
+you tried. NEVER write or modify `.brain/` files by hand as a substitute for
+the scripts — a brain the scripts did not build is unverifiable and counts as
+failure, not as a completed step. Version skew: installed `skills/` text can
+be older than installed `scripts/`; the scripts print their resolved root and
+version — check that line before trusting mixed output.
+
+## Session start (every session; also after a model change or compaction)
+
+1. Resolve PLUGIN_ROOT (above) if not already done this session.
+2. Read `.brain/CLAUDE.md` if present.
+3. Read `.brain/state/session-brief.md` if present.
+4. Read `.brain/wiki/index.md` if present.
+5. Read `graphify-out/GRAPH_REPORT.md` before architecture, code-navigation,
+   or relationship questions, if it exists.
+6. If `.brain/` does not exist and the user asked to set up a brain, run
+   Initialize (below). If `.brain/CLAUDE.md` is missing or incomplete, say so
+   and let Initialize repair it — never hand-write brain files.
+7. Check MemPalace before claims about previous decisions, preferences, or past work (wing-scoped recall; rules and recipes: `references/mempalace-tools.md`). If `.brain/CLAUDE.md` is missing or does not define a non-empty `mempalace_wing`, skip the search and diary read, say the brain is not initialized (run project-brain-init or fix the file), and never infer a wing. Otherwise: `mempalace_search` (wiki-knowledge claims, recorded wing) and `mempalace_diary_read` (earlier sessions, via `mempalace_diary_agent`) — the one that fits the claim, or both. Availability: Contract 1.
+8. If Obsidian MCP tools are available, note the vault mirror is possible;
+   do not mirror automatically (Contract 5).
+9. If a layer is unavailable, say exactly which one and continue from the
+   others — never fabricate a check to hide the gap.
+10. A wing that seems missing or empty is not proof: MemPalace normalizes wing names, so compare normalized forms (`mempalace_list_wings`) before concluding — `references/mempalace-tools.md` → "Empty-wing lookups".
+
+## Work loop (batch maintenance — the ONE procedure for every session that changes the brain)
+
+Every step below is script-gated. Run the script, read its output, fix what it
+names, re-run. Never claim a step is done without its script exiting 0.
+
+1. If `.brain/` does not exist: run Initialize (below) first.
+2. Build the work list: `project-brain-inventory <project-root> inventory`.
+   The UNCOVERED core/important units are your obligations; the git-history
+   unit is covered by citing the digest from step 3.
+3. Generate digests: `project-brain-inventory <project-root> git-digest`, and
+   (when `graphify-out/graph.json` exists) `graph-digest`. Build or refresh
+   the graph **at most once per session**, and only if the doctor says stale —
+   primary: the `/graphify` skill (Contract 2); fallback: the CLI.
+4. Cover units in a small batch (a few units per pass). **Before the first wiki write of this session, read `references/wiki-schema.md`** — pages written without it guess the schema and fail lint. Write or extend pages under `.brain/wiki/`; cite every claim inline as `{{src path/to/file.ts:10-20 "anchorText"}}`; decision pages need `rationale_source:`. Stub pages do not count as coverage.
+5. Make progress durable: after each batch run `project-brain-lint <project-root> --verify` (whenever citations changed), then — once the lint is clean — snapshot the wiki: `project-brain-wiki <project-root> snapshot`. Then update `.brain/state/session-brief.md` honestly — what changed, what is verified, what remains. The inventory on disk persists progress; the next session resumes from it, not from your memory of the transcript.
+6. Check doc cross-refs: `project-brain-inventory <project-root> crossrefs`
+   (exit 1 lists missing refs — create or fix them, then re-run).
+7. Gate: `project-brain-doctor <project-root> --strict`. Exit 0
+   (`passed-for-scope`) → done for this scope; the receipt is under
+   `.brain/audit/runs/`. Nonzero → fix the printed gate failures, re-run.
+8. Repair limit: the scripts count your rounds — every failing `project-brain-lint` or `project-brain-doctor <project-root> --strict` run prints `repair round N/3` (per-gate counter: `.brain/state/repair-rounds`; a passing run resets only its own gate). At `repair round 3/3 — STOP and write the honest report`, stop and report exactly which gates failed and what remains — an honest incomplete report is required; a hopeful "done" is forbidden.
+
+### Context discipline (the loop survives small context windows)
+
+- Read source files in a bounded slice (`sed -n '1,120p'` or Read with a
+  limit); widen only when the citation needs it — a whole-file read of a
+  large source can consume the remaining budget in one step.
+- Never re-run a generator or digest that already produced output this
+  session; re-read its result from disk.
+- Prefer `rg -n` over whole-file reads to find where something lives.
+- When the budget feels tight, finish the batch through step 5, then end the
+  session with an honest note in `.brain/state/session-brief.md`.
+
+## Wiki ledger (page history in `.brain/state/wiki.git`)
+
+Wiki edits are auto-snapshotted (a hook commits `auto: <tool> <page>`); the
+ledger is local to the brain and has nothing to do with the project's git.
+Four triggers: after compaction run `status` + `log 5` instead of re-reading
+pages (`status` separates `uncommitted:` pages from `recently snapshotted:`
+ones); before a large page rewrite run `snapshot`; verify any edit with
+`diff <page>` — it shows the page's most recent change (last two versions
+plus anything uncommitted); after a bad edit run `diff <page>`, then
+`restore <page>` — no rev needed, it targets the version before the page's
+latest change (dry run by default; `--rev <rev>` picks an older one from
+`history <page>`). Subcommands, bounds, and failure paths:
+`references/wiki-ledger.md`.
+
+## Initialize (first run only — owns first-run order)
+
+Autonomous: continues through the lifecycle and ends with a final report of
+what was done and what could not be done and why — never a user to-do list.
+Pause only when a decision or an access (tool, permission) is genuinely
+missing.
+
+1. Run `project-brain-init <project-root> "<Project Name>"`. A NEW brain
+   generates a timestamped wiki wing `wiki_<project-slug>_<UTC-timestamp>`;
+   verify it against the palace (`mempalace_list_wings` + tunnel/hallway
+   listings) before mining into it; on a collision re-run init with
+   `--wing <verified-unique-name>`. Existing brains keep their recorded wing.
+2. Read the files it created: `.brain/CLAUDE.md`, `.brain/state/session-brief.md`, `.brain/wiki/index.md`. Then immediately write an IN-PROGRESS `.brain/state/session-brief.md` (Current state: initialize running, plus the next step) — the run can be cut at any moment, you cannot see your turn budget, and this file is what a replacement session reads.
+3. **Read `references/mempalace-tools.md` now** — 47-tool reference, policy
+   table, call recipes — before the first MemPalace call of this mode.
+4. Load deferred MemPalace schemas in ONE ToolSearch call: query `select:<full name 1>,<full name 2>,…` (comma-separated exact full names; short names do not match), `max_results` at least the number of names. Load: `mempalace_status`, `mempalace_list_wings`, `mempalace_list_tunnels`, `mempalace_list_hallways`, `mempalace_get_taxonomy`, `mempalace_diary_write`. Success = the names appear in the returned `<functions>` block; then call `mempalace_status` as the preflight. If the tools are in neither list, say the memory layer is unavailable and continue from the others (`references/deferred-tools.md`).
+5. Doctor baseline: run `project-brain-doctor <project-root>` and read all four sub-scores, not just the total. Each below the repair threshold (70) is flagged `BELOW REPAIR THRESHOLD` — run the matching repair from `references/brain-lifecycle.md` → Self-correction scan now (the step 12 diary raises Memory sync), or state in the final report why not. Never summarize a flagged sub-score as success.
+6. Report the current availability of MemPalace MCP, the graphify skill/CLI,
+   and Obsidian MCP. No install instructions unless the user asks.
+7. **Leftover-wing check (new brains only — skip on re-init):** read the recorded `mempalace_wing` from the new `.brain/CLAUDE.md`, call `mempalace_status`, then `mempalace_list_wings`; report any match separately with its drawer count and offer cleanup via `/project-brain:reset` — never delete unasked (full procedure: `references/wing-ownership.md` → "Leftover-wing check").
+8. Ingest the project's primary sources (README, manifests, entry points)
+   into `.brain/raw/` or pointer files per `references/evidence-lifecycle.md`.
+9. Compile wiki pages from those primary sources under Contracts 7 and 8 (read `references/wiki-schema.md` before the first write): update System Overview, add source summaries under `.brain/wiki/sources/` with `reliability:` frontmatter, regenerate the index with `project-brain-lint <project-root> --reindex`, record contradictions in the source page and `open-questions.md`. Then run the Work loop (steps 2–7) until the gate passes — steps 2–3 come first on a fresh brain: no inventory or digests exist yet, and the step 7 coverage gate cannot run without them.
+10. Mine `.brain/wiki` into the wiki wing with an explicit `--wing` from
+    `mempalace_wing` (Recipe 3 in mempalace-tools.md; dry run first). Never
+    mine the project root into the wiki wing.
+11. Verify the mining landed before calling the memory layer done: confirm the recorded wing exists with drawers (`mempalace_get_taxonomy`, or `mempalace_list_rooms` for that exact wing). Init records the wing name before mining runs, so a silent failure leaves a recorded name for a wing that does not exist — which later confuses reset. No drawers → memory is NOT done: say so in the final report with the failing step and error, and the next action (re-run the recipe, dry run first).
+12. Write the diary entry (`mempalace_diary_write` with the agent from
+    `mempalace_diary_agent`; diary format in `references/mempalace-workflow.md`).
+13. Update `.brain/state/session-brief.md` (under 400 words), append the log
+    entry, run `project-brain-lint <project-root>`, and clear error-level
+    issues.
+14. Final report: what was done, what could not be done and why (e.g. graphify
+    missing), the doctor's sub-score status. No to-do list for the user.
+
+MemPalace is already installed as a plugin; so are the graphify skill and
+CLI. Do not reinstall either.
+
+## Other modes (detail lives in references — read the named file)
+
+| Mode | Use when | Authoritative steps |
+|---|---|---|
+| Ingest | a source, doc, or explanation arrives | `references/brain-lifecycle.md` → Ingest; intake rules: `references/evidence-lifecycle.md` |
+| Query | answering a question from the brain | routing table: `references/agent-playbook.md` (also `references/retrieval-strategy.md`) |
+| Build/refresh graph | code or docs changed; user asks how pieces connect | `references/brain-lifecycle.md` → Build or refresh graph; policy: `references/graphify-workflow.md` |
+| Consolidate memory | after significant conversations or decisions | `references/brain-lifecycle.md` → Consolidate memory |
+| Mirror to Obsidian | the user asks to view/sync the vault | `references/obsidian-workflow.md` |
+| Audit / lint | periodic health check | `references/brain-lifecycle.md` → Audit / lint |
+| Self-correction scan | doctor sub-score < 70, or brief > 7 days old | `references/brain-lifecycle.md` → Self-correction scan |
+| Handoff | before ending a large session or compaction | `references/handoff-protocol.md` |
+| Cross-brain | multi-project coordination | `references/cross-brain-workflow.md` |
+
+## Behavioral contracts
+
+**1. Verify before calling any tool unavailable.** A tool is unavailable only if it is in NEITHER the tool list NOR the deferred-tools list. A deferred tool exists — load its schema first with ONE ToolSearch call (query `select:<full name 1>,<full name 2>` — comma-separated exact full names — and `max_results` at least the number of names; success = the names appear in the returned `<functions>` block), then call it; for MemPalace the verification call is `mempalace_status`. Report a failing call as the real failure it is, with the tool and the error. Never probe with shell/node/pip, never write a check that always succeeds, never build a workaround client. Covers ANY tool (including `TaskCreate`). Details: `references/deferred-tools.md`.
+
+**2. Never reinvent graphify — keep its precedence straight.** Do not write scripts to parse code structure or extract relationships. Precedence: `/graphify` skill = PRIMARY builder (it runs the semantic pass through the session's own model — per this project's setup, reported, verify on first use); graphify MCP tools = query surface once a graph exists (deferred; reconnect the server after ANY change to graph.json — first build, full rebuild, or incremental `graphify update .` — it reads the graph at startup); CLI = FALLBACK (`graphify .` full build, `graphify update .` code-only; `GRAPHIFY_BACKEND=none` on BOTH `extract` and `cluster-only` when no API access, or you get "Community N" placeholders). Details: `references/graphify-workflow.md`.
+
+**3. Never let wiki edits be the last step.** Every wiki edit is followed by
+the post-wiki loop (below). No exceptions — the loop is what makes the brain
+durable.
+
+**4. The session brief must be readable in under 2 minutes.** Over 400 words,
+trim it. The brief is a map to the wiki, not a replacement for it; task
+checklists live in `.brain/tasks/next-actions.md` only.
+
+**5. Obsidian vault mirror is opt-in.** Never push without the user asking.
+
+**6. Route to the right layer first.** Code navigation → graphify; decisions → MemPalace; status → session brief. Routing: `references/retrieval-strategy.md`, `references/agent-playbook.md`.
+
+**7. Primary source verification.** Before documenting any claim about a file's status, purpose, imports, or behavior, read that file directly — secondary sources (READMEs, critic reports, AI analyses) are opinions, not evidence; document contradictions under `## Known Inaccuracies in This Source` on the source page. Before labeling a file orphaned, search the whole codebase for imports and dynamic references.
+
+**8. No speculative language in architecture pages.** "Likely", "probably",
+"appears to", "seems to" are banned unless tagged as a hypothesis under an
+open question. If you do not know, write "Integration method not yet verified"
+and add the question to `open-questions.md`.
+
+**9. Wiki authoring discipline.** Read `references/wiki-schema.md` before the first wiki write of a session; cite line numbers verified against the code (`grep -n` / bounded Read), never copied from docs; never hand-edit `.brain/wiki/index.md` (regenerate with `project-brain-lint <project-root> --reindex`); wikilinks target wiki pages only.
+
+**10. Edit discipline.** Read the page immediately before every Edit and again after compaction or any failed Edit; prefer Write for whole-page rewrites; never batch dependent edits to one file in a single parallel turn; retry an Edit once, then switch to Write. State only actions you actually emitted. Details: `references/edit-discipline.md`.
+
+**11. Durable progress and honest stops.** Update the session brief after
+each batch (Work loop step 5); 3 repair rounds then STOP (Work loop step 8);
+after compaction recover from `.brain/` files, not memory. Done without the
+script exit codes is a failure.
+
+## Post-wiki loop (after ANY wiki change)
+
+1. Regenerate the index with `project-brain-lint <project-root> --reindex`,
+   never by hand. Add cross-links and backlinks; extract decisions.
+2. Resolve open questions: for each question in `open-questions.md`, attempt
+   an answer from files already read; leave it open only if the answer needs
+   a file not yet ingested (name it) or genuinely does not exist.
+3. **Run graphify only if the doctor says stale.** Check the graphify
+   freshness line in `project-brain-doctor <project-root>` output; if stale,
+   choose the refresh path from its reason:
+   - Reason starts with `"graphify-out/GRAPH_REPORT.md missing"` OR
+     `"graph built at"` → full build via the `/graphify` skill (primary; CLI
+     fallback `graphify .`).
+   - Reason starts with `"uncommitted changes to source files:"` → check what
+     changed (marker contains "more paths omitted" → run `git status` for the
+     full list). Code-only changes: `graphify update .` (AST-only, no API
+     cost). Docs/images/comments: `/graphify .`.
+   - Any other stale reason → `/graphify .` via the skill.
+   Skip graphify for wiki-only changes. After ANY change to graph.json (full
+   build or incremental `graphify update .`), reconnect the graphify MCP
+   server before querying it.
+4. Consolidate MemPalace memory (diary entry) if session context changed;
+   record contradictions and open questions; update the session brief; append
+   a log entry; run lint for large changes.
+
+## Brain reset (only on an explicit user request to delete or start clean)
+
+Reset is irreversible (`.brain/`, `graphify-out/`, MemPalace drawers). Do not
+reset when a smaller repair suffices (re-compile affected pages; fix one
+page; delete one wing's drawers via MCP). The full procedure — identity-first
+wing resolution, batched drawer deletion, graph cleanup, dry run, explicit
+confirmation, the re-creation hazard — lives in the `/project-brain:reset`
+skill; follow it exactly. Hard rules: drawers only via
+`mempalace_delete_drawers`, batches of at most 500 IDs, never the
+single-drawer tool; the reset script has no MCP access, so unreachable tools
+mean stop and report, never claim deletion. When the normal route cannot
+complete safely, recommend `/project-brain:hard-reset` (its own dry run,
+backup, authorization) — never for an unresolved ownership question.
+
+## References (load only on the trigger)
+
+- `references/brain-lifecycle.md` — full per-mode procedures.
+- `references/agent-playbook.md` — decision tree + retrieval routing table.
+- `references/audit-workflow.md` — processing human feedback files.
+- `references/brain-architecture.md` — the six layers in depth.
+- `references/brain-health-metrics.md` — what the doctor scores mean.
+- `references/cross-brain-workflow.md` — multi-project brains.
+- `references/deferred-tools.md` — any tool unavailable or deferred.
+- `references/edit-discipline.md` — before page edits; after any failed Edit.
+- `references/evidence-lifecycle.md` — raw evidence intake and aging.
+- `references/wiki-ledger.md` — page history: status/snapshot/log/diff/restore.
+- `references/graphify-workflow.md` — graph builds, MCP tools, CLI fallback.
+- `references/handoff-protocol.md` — preparing a handoff brief.
+- `references/harness-detection.md` — harness detection; plugin-root edges.
+- `references/install-and-integration.md` — dependency state; CLAUDE.md
+  integration.
+- `references/mempalace-tools.md` — BEFORE any MemPalace call.
+- `references/mempalace-workflow.md` — diary format; palace lock; failures.
+- `references/obsidian-workflow.md` — vault mirror.
+- `references/post-wiki-checklist.md` — checklist form of the loop above.
+- `references/retrieval-strategy.md` — layer strengths and blind spots.
+- `references/wing-ownership.md` — which wings belong to the brain.
+- `references/wiki-schema.md` — BEFORE the first wiki write of a session.
 
 ## Completion standard
 
-A response or operation is not complete until the agent can answer:
-
-1. What changed?
-2. Why did it change?
-3. Which evidence supports it?
-4. Which relationships matter?
-5. What memory should survive?
-6. What should the next model read first?
-7. What should happen next?
+An operation is complete only when you can answer: what changed, why, which
+evidence supports it, which relationships matter, what memory should survive,
+what the next model should read first, and what should happen next — each
+backed by a script exit code or an honest "not done" statement.

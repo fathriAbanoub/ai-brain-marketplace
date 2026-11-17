@@ -94,15 +94,21 @@ After updating, run `graphify update .` in any active project to rebuild the gra
 
 ## Running project-brain-update-check
 
-The built-in update checker reports all three:
+The checker compares mempalace and graphify with PyPI; the project-brain
+plugin line reports only the installed version, with no latest-version check.
+Resolve PLUGIN_ROOT as in `../../update-check/SKILL.md`, then run:
 
 ```bash
-project-brain-update-check
+"$PLUGIN_ROOT/bin/project-brain-update-check"
 ```
 
-If the binary is not on PATH, find it via the plugin root (same fallback as all project-brain commands — see SKILL.md).
-
-The checker exits 0 if all current, 1 if any are outdated. It prints the exact `uv tool install` command for anything behind.
+Exit 0 = checked tools current or ahead of PyPI; exit 1 = any outdated,
+even if another check is incomplete; otherwise exit 2 = incomplete checks
+(tool missing, PyPI unreachable, or unparseable version). Report incomplete
+checks as **unknown**, never current or outdated. It prints the exact
+`uv tool install ... --upgrade` command only for tools behind PyPI.
+For a terminal re-run, substitute PLUGIN_ROOT's resolved value in the quoted
+path above; never give a bare command.
 
 ## Summary table
 

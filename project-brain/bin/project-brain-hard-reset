@@ -39,6 +39,10 @@ if [[ $# -eq 0 || "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
   exit 0
 fi
 
-ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
+ROOT="${CLAUDE_PLUGIN_ROOT:-}"
+# ponytail: ceiling nine inline copies; source a shared helper if a tenth wrapper appears.
+if [ -z "$ROOT" ] || [ ! -f "$ROOT/scripts/hard_reset.py" ]; then
+  ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+fi
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 exec "$PYTHON_BIN" "$ROOT/scripts/hard_reset.py" "$@"

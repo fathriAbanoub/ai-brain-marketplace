@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
-ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
+ROOT="${CLAUDE_PLUGIN_ROOT:-}"
+# ponytail: ceiling nine inline copies; source a shared helper if a tenth wrapper appears.
+if [ -z "$ROOT" ] || [ ! -f "$ROOT/scripts/audit_review.py" ]; then
+  ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+fi
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 if [ $# -lt 1 ]; then
   echo "usage: project-brain-audit-open <project-root>" >&2

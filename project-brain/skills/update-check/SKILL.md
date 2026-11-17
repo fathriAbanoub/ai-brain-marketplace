@@ -4,15 +4,11 @@ description: Use when the user wants to check for updates to project-brain tools
 
 # Project Brain Update Check
 
-Check whether mempalace, graphify, and the project-brain plugin are up to date.
+Compare the mempalace and graphify binaries with PyPI; report the installed plugin version only.
 
 ## Run the checker
 
-```bash
-project-brain-update-check
-```
-
-If not on PATH (exit 127):
+Resolve PLUGIN_ROOT before running, including when wrappers are not on PATH:
 
 ```bash
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-}"
@@ -76,12 +72,21 @@ PLUGIN_ROOT="$(cat .brain/state/plugin-root.txt 2>/dev/null || true)"
 
 | Tool | How checked |
 |------|-------------|
-| project-brain plugin | Reads version from plugin.json |
+| project-brain plugin | Installed version from plugin.json only; no latest-version check |
 | mempalace binary | `mempalace --version` vs PyPI latest |
 | mempalace plugin cache | `~/.openclaude/plugins/cache/mempalace/mempalace/` |
 | graphify binary | `graphify --version` vs PyPI latest (`graphifyy` package) |
 
-Exit code 0 = all current. Exit code 1 = something is outdated.
+Exit 0 = all checked tools current or ahead of PyPI; exit 1 = any outdated,
+even if another check is incomplete; otherwise exit 2 = some checks could
+not be completed (tool missing, PyPI unreachable, or unparseable version).
+Report each incomplete check as **unknown**, never current or outdated.
+An installed-newer version is **ahead of PyPI (pre-release or local build)**;
+do not advise upgrading or downgrading it.
+
+If asking the user to re-run in their own terminal, give the resolved
+`"$PLUGIN_ROOT/bin/project-brain-update-check"` path with PLUGIN_ROOT's actual
+value substituted, never a bare command.
 
 ## Updating outdated tools
 

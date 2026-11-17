@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # Same shim style as the other bin/project-brain-* wrappers.
 set -euo pipefail
-ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
+ROOT="${CLAUDE_PLUGIN_ROOT:-}"
+# ponytail: ceiling nine inline copies; source a shared helper if a tenth wrapper appears.
+if [ -z "$ROOT" ] || [ ! -f "$ROOT/scripts/wiki_ledger.py" ]; then
+  ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+fi
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 exec "$PYTHON_BIN" -S "$ROOT/scripts/wiki_ledger.py" "$@"

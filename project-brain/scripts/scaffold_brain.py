@@ -441,10 +441,9 @@ def scaffold(project_root: Path, title: str, force: bool = False, wing_override:
         # palace (list_wings + tunnels/hallways) before being passed here.
         wing_name = sanitize_wing_name(wing_override)
     else:
-        # New brain: timestamped unique name. The directory-derived wing and
-        # the diary wing are reserved here; the agent flow additionally
-        # verifies the generated name against live palace data (list_wings +
-        # tunnels/hallways) and re-runs with --wing on the rare collision.
+        # New brain: reserve directory-derived and diary wing names here.
+        # The agent checks live wings/tunnels/hallways before mining; a collision
+        # blocks mining because re-init preserves the recorded identity.
         wing_name = generate_wiki_wing_name(
             slug,
             taken={derived_wing, diary_wing_for_agent(diary_agent), FALLBACK_WING_NAME},

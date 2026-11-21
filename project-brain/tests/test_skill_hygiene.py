@@ -28,6 +28,9 @@ SCAFFOLD = PLUGIN_ROOT / "scripts" / "scaffold_brain.py"
 # sits just above the rewritten size so regressions are caught, and any
 # future addition must remove something else first.
 MAX_SKILL_MD_CHARS = 24000
+MIN_INITIALIZE_TUNNEL_CALLS = 2
+INITIALIZE_LEFTOVER_STEP = 7
+DIARY_FIELD_LABELS = ("Summary", "Key finding", "Contradictions", "Log", "Next")
 
 REFERENCE_NAME_RE = re.compile(r"references/([a-z0-9-]+\.md)")
 
@@ -180,10 +183,10 @@ class TestToolSearchContract:
             assert "one name per query" not in text, doc
             assert "one name per call" not in text, doc
 
-    def test_initialize_loads_the_six_tools_in_one_call(self):
+    def test_initialize_loads_the_eight_tools_in_one_call(self):
         text = BRAIN_SKILL.read_text(encoding="utf-8")
         init = text[text.index("## Initialize"):text.index("## Other modes")]
-        assert "ONE ToolSearch call" in init
+        batch = init[init.index("ONE ToolSearch call"):init.index("\n5. ")]
         for short in (
             "mempalace_status",
             "mempalace_list_wings",
@@ -191,8 +194,15 @@ class TestToolSearchContract:
             "mempalace_list_hallways",
             "mempalace_get_taxonomy",
             "mempalace_diary_write",
+            "mempalace_list_rooms",
+            "mempalace_mine",
         ):
-            assert short in init, f"Initialize must batch-load {short}"
+            assert short in batch, f"Initialize must batch-load {short}"
+
+    def test_initialize_lists_tunnels_after_loading(self):
+        text = BRAIN_SKILL.read_text(encoding="utf-8")
+        init = text[text.index("## Initialize"):text.index("## Other modes")]
+        assert init.count("mempalace_list_tunnels") >= MIN_INITIALIZE_TUNNEL_CALLS
 
     def test_batch_select_example_present(self):
         """The canonical example must show a comma-separated select: list."""
@@ -305,8 +315,64 @@ class TestWikiSchemaAuthoringRules:
         assert "grep -n" in text and "never copy line numbers" in text.lower()
 
 
+class TestInitializeGate:
+    def test_work_loop_precedes_strict_gate_and_final_report(self):
+        text = BRAIN_SKILL.read_text(encoding="utf-8")
+        init = text[text.index("## Initialize"):text.index("## Other modes")]
+        strict = re.search(r"--strict", init)
+        assert strict, "Initialize must invoke the strict gate"
+        assert re.search(r"project-brain-inventory|Work loop", init[:strict.start()])
+        report = re.search(r"^\d+\. Final report:", init, re.M)
+        assert report, "Initialize must have a final-report step"
+        assert strict.start() < report.start()
+        final_scores = init[strict.end():]
+        assert re.search(r"sub-scores.*last strict run", final_scores, re.S), (
+            "Initialize must report sub-scores from the last strict run"
+        )
+        assert "`project-brain-doctor <project-root>`" not in final_scores
+
+    def test_leftover_check_verifies_unique_wiki_wing(self):
+        text = BRAIN_SKILL.read_text(encoding="utf-8")
+        init = text[text.index("## Initialize"):text.index("## Other modes")]
+        match = re.search(rf"^{INITIALIZE_LEFTOVER_STEP}\. .*?(?=^\d+\. )", init, re.M | re.S)
+        assert match, "Initialize must retain the leftover-wing check"
+        step = match.group()
+        assert "mempalace_list_wings" in step and "tunnel" in step and "hallway" in step
+        assert "do NOT mine" in step
+        for doc in (BRAIN_SKILL, BRAIN_REFS / "brain-lifecycle.md", BRAIN_REFS / "wing-ownership.md"):
+            assert "--wing <verified-unique-name>" not in doc.read_text(encoding="utf-8")
+
+    def test_no_diary_format_pointer_to_tool_catalog(self):
+        # ponytail: same-line pointers only; extend to paragraphs if references wrap.
+        for doc in all_skill_docs():
+            for line in doc.read_text(encoding="utf-8").splitlines():
+                if "mempalace-tools.md" in line:
+                    assert not re.search(
+                        r"(?i)diary(?:\s+entry)?\s+(?:format|template)|(?:format|template)\s+(?:for\s+)?diar(?:y|ies)",
+                        line,
+                    ), f"{doc.relative_to(PLUGIN_ROOT)}: diary format points to the tool catalog"
+
+    def test_step_ranges_are_scoped_to_work_loop(self):
+        text = BRAIN_SKILL.read_text(encoding="utf-8")
+        init = text[text.index("## Initialize"):text.index("## Other modes")]
+        for match in re.finditer(r"\bsteps\s+\d+\s*[–—-]\s*\d+", init):
+            assert re.search(r"Work loop\s*\(?\s*$", init[:match.start()]), (
+                f"Unscoped Initialize range: {match.group()}"
+            )
+
+    def test_diary_field_labels_match_reference(self):
+        text = BRAIN_SKILL.read_text(encoding="utf-8")
+        init = text[text.index("## Initialize"):text.index("## Other modes")]
+        reference = (BRAIN_REFS / "mempalace-workflow.md").read_text(encoding="utf-8")
+        _, _, template = reference.partition("**Required diary entry format:**")
+        template, _, _ = template.partition("**Example:**")
+        label_pattern = r"^\s*([A-Za-z ]+): \["
+        assert tuple(re.findall(label_pattern, init, re.M)) == DIARY_FIELD_LABELS
+        assert tuple(re.findall(label_pattern, template, re.M)) == DIARY_FIELD_LABELS
+
+
 class TestResetSkillConfirmGuard:
-    """CodeRabbit fix: Step 2's classifier run and Step 3c's transcript
+    """Step 2's classifier run and Step 3c's transcript
     verification must never carry the confirmed deletion. --confirm is
     reserved for Step 5, after its dry run and the user's explicit yes."""
 

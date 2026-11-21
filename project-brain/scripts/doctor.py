@@ -22,6 +22,7 @@ WIKILINK_RE = re.compile(r"\[\[([^\]|#]+)(?:[|#][^\]]*)?\]\]")
 # same number — keep skills/brain/SKILL.md and references/brain-lifecycle.md
 # consistent when changing this value.
 HEALTH_REPAIR_THRESHOLD = 70
+MEMORY_SYNC_FIX_NOTE = "append a `.brain/log/<YYYYMMDD>.md` entry naming the MemPalace diary write"
 
 
 def read(path: Path) -> str:
@@ -452,10 +453,10 @@ def coverage(root: Path) -> tuple[int, str]:
 def memory_sync(root: Path) -> tuple[int, str]:
     log = root / ".brain" / "log"
     if not log.exists():
-        return 0, "no brain logs found"
+        return 0, f"no brain logs found — {MEMORY_SYNC_FIX_NOTE}"
     files = sorted([p for p in log.glob("*.md") if p.is_file()], key=lambda p: p.stat().st_mtime, reverse=True)
     if not files:
-        return 0, "no brain logs found"
+        return 0, f"no brain logs found — {MEMORY_SYNC_FIX_NOTE}"
     for idx, p in enumerate(files[:3], start=1):
         text = read(p).lower()
         if "mempalace" in text and any(word in text for word in ("diary", "preference", "preferences", "memory sync")):
@@ -464,7 +465,7 @@ def memory_sync(root: Path) -> tuple[int, str]:
     older = any("mempalace" in read(p).lower() for p in files[3:])
     if older:
         return 25, "MemPalace evidence exists but is older than 3 sessions"
-    return 0, "no evidence of recent MemPalace diary/preference write"
+    return 0, f"no evidence of recent MemPalace diary/preference write — {MEMORY_SYNC_FIX_NOTE}"
 
 
 def mempalace_wing_check(root: Path) -> tuple[str, str]:

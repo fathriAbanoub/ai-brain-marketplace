@@ -10,6 +10,8 @@ sys.path.insert(0, str(PLUGIN_ROOT / "scripts"))
 
 from scaffold_brain import scaffold  # noqa: E402
 
+SUCCESS_EXIT_CODE = 0
+
 
 class TestScaffoldBrain:
     """Test suite for scaffold_brain.py."""
@@ -133,6 +135,23 @@ class TestScaffoldBrain:
         # Verify sentinel is preserved
         new_content = claude_md.read_text(encoding="utf-8")
         assert "# SENTINEL_TEST_LINE_DO_NOT_REMOVE" in new_content
+
+    def test_reinit_wing_override_preserves_recorded_wing(self, run_script, tmp_path):
+        project = tmp_path / "wing-project"
+        project.mkdir()
+        title = "Wing Project"
+        result = run_script("scaffold_brain.py", [str(project), title])
+        assert result.returncode == SUCCESS_EXIT_CODE
+        claude_md = project / ".brain" / "CLAUDE.md"
+        recorded = next(line for line in claude_md.read_text(encoding="utf-8").splitlines()
+                        if line.startswith("mempalace_wing:"))
+        override = "wiki_different_wing"
+        assert recorded != f"mempalace_wing: {override}"
+        for flags in ([], ["--force"]):
+            result = run_script("scaffold_brain.py", [str(project), title, "--wing", override] + flags)
+            assert result.returncode == SUCCESS_EXIT_CODE
+            assert recorded in claude_md.read_text(encoding="utf-8").splitlines()
+            assert recorded.removeprefix("mempalace_wing:").strip() in result.stdout
 
     def test_scaffold_no_args_exits_nonzero(self, run_script, tmp_project: Path):
         """Running without arguments exits with non-zero code."""

@@ -41,6 +41,6 @@ Run right after a NEW brain's init (skip on re-init — an existing brain keeps 
 
 1. Read the recorded `mempalace_wing` (and `mempalace_diary_agent`) from the new `.brain/CLAUDE.md` first — the recorded identity drives the check, never a name pattern.
 2. Call `mempalace_status`, then `mempalace_list_wings` (status first: a failing memory layer ends the check honestly instead of half-reporting).
-3. If any wing matches the recorded identity — exact name, normalized legacy form, the brain diary wing, or the directory-derived wing — tell the user these predate the new brain and offer cleanup via `/project-brain:reset`. Show each matched wing separately with its exact name and drawer count: distinct names can normalize identically, so every actual wing stays its own row.
-4. Also check `mempalace_list_tunnels` / `mempalace_list_hallways` for records naming the recorded wing; report any found.
-5. Do not delete anything unasked. Ownership questions are decided by the user, per the classes above.
+3. Report matches on the recorded wiki wing (exact name or normalized legacy forms), brain diary wing, or orphan candidates with a cleanup offer via `/project-brain:reset`. Show each actual wing separately with its exact name and drawer count. A directory-derived wing is informational only: MemPalace re-creates it, so never offer cleanup for it.
+4. Check `mempalace_list_tunnels` / `mempalace_list_hallways` for records naming the recorded wiki wing; report any found. If the recorded wiki wing exists in `mempalace_list_wings` or is named by tunnel/hallway records, do NOT mine into it; report the exact colliding name and mark memory **not done** in the final report — init cannot rename a recorded wing.
+5. Report and continue Initialize without waiting for an answer. Never delete unasked; ownership confirmation belongs to a separately requested reset flow.

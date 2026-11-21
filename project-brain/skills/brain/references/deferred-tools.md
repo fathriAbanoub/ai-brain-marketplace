@@ -21,8 +21,8 @@ exact tools by name in ONE call — prefer it over keyword search whenever you
 know the names, and load every tool a step needs in that one call:
 
 ```text
-ToolSearch  query: select:mcp__plugin_mempalace_mempalace__mempalace_status,mcp__plugin_mempalace_mempalace__mempalace_list_wings
-            max_results: 5
+ToolSearch  query: select:mcp__plugin_mempalace_mempalace__mempalace_status,mcp__plugin_mempalace_mempalace__mempalace_list_wings,mcp__plugin_mempalace_mempalace__mempalace_list_tunnels,mcp__plugin_mempalace_mempalace__mempalace_list_hallways,mcp__plugin_mempalace_mempalace__mempalace_get_taxonomy,mcp__plugin_mempalace_mempalace__mempalace_diary_write,mcp__plugin_mempalace_mempalace__mempalace_list_rooms,mcp__plugin_mempalace_mempalace__mempalace_mine
+            max_results: <number of names in the query>
 ```
 
 - Full names carry a harness-specific prefix. For this plugin's MemPalace

@@ -1,17 +1,53 @@
 """Tests for doctor.py script."""
 
-import pytest
+import re
 import sys
 from pathlib import Path
 
 PLUGIN_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PLUGIN_ROOT / "scripts"))
 
-from doctor import graphify_freshness, print_health  # noqa: E402
+from doctor import graphify_freshness, memory_sync, print_health  # noqa: E402
+
+FULL_MEMORY_SYNC_SCORE = 100
+NO_MEMORY_SYNC_SCORE = 0
+DIARY_LOG_FILENAME = "20261121.md"
+BRAIN_SKILL = PLUGIN_ROOT / "skills" / "brain" / "SKILL.md"
+
+
+class TestMemorySync:
+    def test_documented_diary_log_returns_full_score(self, tmp_path):
+        text = BRAIN_SKILL.read_text(encoding="utf-8")
+        init = text[text.index("## Initialize"):text.index("## Other modes")]
+        heading = re.search(r"^\s*## \[HH:MM\] diary \| <title>$", init, re.M)
+        bullet = re.search(r"^\s*- MemPalace diary written \(agent <diary agent>\)$", init, re.M)
+        assert heading, "Initialize must document a diary log heading"
+        assert bullet, "Initialize must document the MemPalace diary-write bullet"
+        log = tmp_path / ".brain" / "log" / DIARY_LOG_FILENAME
+        log.parent.mkdir(parents=True)
+        log.write_text(
+            heading.group().strip() + "\n" + bullet.group().strip() + "\n",
+            encoding="utf-8",
+        )
+        score, _ = memory_sync(tmp_path)
+        assert score == FULL_MEMORY_SYNC_SCORE
+
+    def test_zero_score_note_explains_log_repair(self, tmp_path):
+        log = tmp_path / ".brain" / "log"
+        for state in ("missing", "empty", "without diary"):
+            if state == "empty":
+                log.mkdir(parents=True)
+            elif state == "without diary":
+                (log / DIARY_LOG_FILENAME).write_text("Initialized brain.\n", encoding="utf-8")
+            score, note = memory_sync(tmp_path)
+            assert score == NO_MEMORY_SYNC_SCORE
+            assert "append" in note.lower()
+            assert ".brain/log/<YYYYMMDD>.md" in note
+            assert "MemPalace diary write" in note
 
 
 class TestDoctorBoundary:
-    """CodeRabbit #14: a sub-score of exactly 70 must pass (the doctor flags
+    """A sub-score of exactly 70 must pass (the doctor flags
     strictly-below-70 only, and skill text says 'at or above 70' is done)."""
 
     def test_score_70_is_not_flagged(self, capsys, tmp_path):

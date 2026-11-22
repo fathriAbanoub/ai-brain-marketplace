@@ -13,6 +13,7 @@ Behavior/structure pins, not phrase trivia:
 """
 
 import re
+import sys
 from pathlib import Path
 
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent
@@ -20,6 +21,10 @@ SKILLS_DIR = PLUGIN_ROOT / "skills"
 BRAIN_SKILL = SKILLS_DIR / "brain" / "SKILL.md"
 BRAIN_REFS = SKILLS_DIR / "brain" / "references"
 SCAFFOLD = PLUGIN_ROOT / "scripts" / "scaffold_brain.py"
+SCRIPTS_PATH_INDEX = 0
+sys.path.insert(SCRIPTS_PATH_INDEX, str(PLUGIN_ROOT / "scripts"))
+
+from scaffold_brain import BLOCKED_WING_MARKER  # noqa: E402
 
 # ponytail: ceiling named constant — the 0.9.4 skill was 39,501 bytes with the
 # plugin-root fallback duplicated twice and per-mode detail duplicating
@@ -29,8 +34,38 @@ SCAFFOLD = PLUGIN_ROOT / "scripts" / "scaffold_brain.py"
 # future addition must remove something else first.
 MAX_SKILL_MD_CHARS = 24000
 MIN_INITIALIZE_TUNNEL_CALLS = 2
-INITIALIZE_LEFTOVER_STEP = 7
 DIARY_FIELD_LABELS = ("Summary", "Key finding", "Contradictions", "Log", "Next")
+INITIALIZE_HEADING = "## Initialize"
+OTHER_MODES_HEADING = "## Other modes"
+WORK_LOOP_HEADING = "## Work loop"
+WIKI_LEDGER_HEADING = "## Wiki ledger"
+STRICT_FLAG = "--strict"
+INVENTORY_COMMAND = "project-brain-inventory"
+BASELINE_DOCTOR_COMMAND = "`project-brain-doctor <project-root>`"
+NUMBERED_STEP_END = r"(?=^\d+\. |\Z)"
+INITIALIZE_WORK_LOOP_STEP_RE = re.compile(
+    rf"^\d+\. \*\*Run the `## Work loop` section.*?{NUMBERED_STEP_END}", re.M | re.S,
+)
+INITIALIZE_LEFTOVER_STEP_RE = re.compile(
+    rf"^\d+\. (?:\*\*)?Leftover-wing check.*?{NUMBERED_STEP_END}", re.M | re.S,
+)
+INITIALIZE_MINING_STEP_RE = re.compile(
+    rf"^\d+\. (?:Compile wiki pages|If the brief has).*?{NUMBERED_STEP_END}", re.M | re.S,
+)
+WORK_LOOP_BRIEF_STEP_RE = re.compile(
+    rf"^\d+\. Make progress durable:.*?{NUMBERED_STEP_END}", re.M | re.S,
+)
+# ponytail: final report is one line; extend the step matcher if it is wrapped.
+FINAL_REPORT_STEP_RE = re.compile(r"^\d+\. Final report:[^\n]*", re.M)
+FINAL_REPORT_TODO_RULE = "No next-session to-do list for runnable work."
+LAST_STRICT_SCORES_RE = re.compile(r"sub-scores.*last strict run", re.S)
+DIARY_FORMAT_POINTER_RE = re.compile(
+    r"(?i)diary(?:\s+entry)?\s+(?:format|template)|(?:format|template)\s+(?:for\s+)?diar(?:y|ies)",
+)
+STEP_RANGE_RE = re.compile(r"\bsteps\s+\d+\s*[–—-]\s*\d+")
+WORK_LOOP_RANGE_PREFIX_RE = re.compile(r"Work loop\s*\(?\s*$")
+DIARY_LABEL_RE = re.compile(r"^\s*([A-Za-z ]+): \[", re.M)
+WIKI_SYNC_RECIPE_RE = re.compile(r"^### \d+\. Sync the Wiki\b.*?(?=^### |\Z)", re.M | re.S)
 
 REFERENCE_NAME_RE = re.compile(r"references/([a-z0-9-]+\.md)")
 
@@ -185,7 +220,7 @@ class TestToolSearchContract:
 
     def test_initialize_loads_the_eight_tools_in_one_call(self):
         text = BRAIN_SKILL.read_text(encoding="utf-8")
-        init = text[text.index("## Initialize"):text.index("## Other modes")]
+        init = text[text.index(INITIALIZE_HEADING):text.index(OTHER_MODES_HEADING)]
         batch = init[init.index("ONE ToolSearch call"):init.index("\n5. ")]
         for short in (
             "mempalace_status",
@@ -201,7 +236,7 @@ class TestToolSearchContract:
 
     def test_initialize_lists_tunnels_after_loading(self):
         text = BRAIN_SKILL.read_text(encoding="utf-8")
-        init = text[text.index("## Initialize"):text.index("## Other modes")]
+        init = text[text.index(INITIALIZE_HEADING):text.index(OTHER_MODES_HEADING)]
         assert init.count("mempalace_list_tunnels") >= MIN_INITIALIZE_TUNNEL_CALLS
 
     def test_batch_select_example_present(self):
@@ -254,7 +289,7 @@ class TestGraphifySkillClaimLabeling:
 class TestInitializeInProgressBrief:
     def test_initialize_writes_in_progress_brief_after_step_2(self):
         text = BRAIN_SKILL.read_text(encoding="utf-8")
-        init = text[text.index("## Initialize"):text.index("## Other modes")]
+        init = text[text.index(INITIALIZE_HEADING):text.index(OTHER_MODES_HEADING)]
         step2 = init[init.index("2. Read the files it created"):init.index("\n3. ")]
         assert "IN-PROGRESS" in step2, (
             "Initialize must write an IN-PROGRESS session-brief.md right "
@@ -318,23 +353,37 @@ class TestWikiSchemaAuthoringRules:
 class TestInitializeGate:
     def test_work_loop_precedes_strict_gate_and_final_report(self):
         text = BRAIN_SKILL.read_text(encoding="utf-8")
-        init = text[text.index("## Initialize"):text.index("## Other modes")]
-        strict = re.search(r"--strict", init)
+        init = text[text.index(INITIALIZE_HEADING):text.index(OTHER_MODES_HEADING)]
+        work_loop = INITIALIZE_WORK_LOOP_STEP_RE.search(init)
+        assert work_loop, "Initialize must have an explicit Work loop invocation step"
+        assert INVENTORY_COMMAND in work_loop.group()
+        strict = re.search(STRICT_FLAG, init)
         assert strict, "Initialize must invoke the strict gate"
-        assert re.search(r"project-brain-inventory|Work loop", init[:strict.start()])
-        report = re.search(r"^\d+\. Final report:", init, re.M)
+        assert work_loop.start() < strict.start() < work_loop.end(), (
+            "The first strict gate must be inside the Work loop invocation step"
+        )
+        assert STRICT_FLAG in work_loop.group()
+        report = FINAL_REPORT_STEP_RE.search(init)
         assert report, "Initialize must have a final-report step"
         assert strict.start() < report.start()
-        final_scores = init[strict.end():]
-        assert re.search(r"sub-scores.*last strict run", final_scores, re.S), (
-            "Initialize must report sub-scores from the last strict run"
+        _, _, final_scores = work_loop.group().partition(STRICT_FLAG)
+        assert LAST_STRICT_SCORES_RE.search(final_scores), (
+            "Initialize must report sub-scores from the last strict run in the Work loop step"
         )
-        assert "`project-brain-doctor <project-root>`" not in final_scores
+        assert BASELINE_DOCTOR_COMMAND not in init[strict.end():]
+
+    def test_final_report_does_not_defer_runnable_work(self):
+        for doc in (BRAIN_SKILL, BRAIN_REFS / "brain-lifecycle.md"):
+            report = FINAL_REPORT_STEP_RE.search(doc.read_text(encoding="utf-8"))
+            assert report, f"{doc}: missing final-report step"
+            assert FINAL_REPORT_TODO_RULE in report.group(), (
+                f"{doc}: final report must not defer runnable work to a next-session to-do list"
+            )
 
     def test_leftover_check_verifies_unique_wiki_wing(self):
         text = BRAIN_SKILL.read_text(encoding="utf-8")
-        init = text[text.index("## Initialize"):text.index("## Other modes")]
-        match = re.search(rf"^{INITIALIZE_LEFTOVER_STEP}\. .*?(?=^\d+\. )", init, re.M | re.S)
+        init = text[text.index(INITIALIZE_HEADING):text.index(OTHER_MODES_HEADING)]
+        match = INITIALIZE_LEFTOVER_STEP_RE.search(init)
         assert match, "Initialize must retain the leftover-wing check"
         step = match.group()
         assert "mempalace_list_wings" in step and "tunnel" in step and "hallway" in step
@@ -342,33 +391,51 @@ class TestInitializeGate:
         for doc in (BRAIN_SKILL, BRAIN_REFS / "brain-lifecycle.md", BRAIN_REFS / "wing-ownership.md"):
             assert "--wing <verified-unique-name>" not in doc.read_text(encoding="utf-8")
 
+    def test_blocked_wing_guard_is_carried_through_mining_and_brief_updates(self):
+        text = BRAIN_SKILL.read_text(encoding="utf-8")
+        init = text[text.index(INITIALIZE_HEADING):text.index(OTHER_MODES_HEADING)]
+        work_loop = text[text.index(WORK_LOOP_HEADING):text.index(WIKI_LEDGER_HEADING)]
+        for pattern, section in (
+            (INITIALIZE_LEFTOVER_STEP_RE, init),
+            (INITIALIZE_MINING_STEP_RE, init),
+            (WORK_LOOP_BRIEF_STEP_RE, work_loop),
+        ):
+            step = pattern.search(section)
+            assert step, f"Missing guarded step: {pattern.pattern}"
+            assert BLOCKED_WING_MARKER in step.group()
+        lifecycle = (BRAIN_REFS / "brain-lifecycle.md").read_text(encoding="utf-8")
+        for pattern in (INITIALIZE_LEFTOVER_STEP_RE, INITIALIZE_MINING_STEP_RE):
+            step = pattern.search(lifecycle)
+            assert step and BLOCKED_WING_MARKER in step.group()
+        catalog = (BRAIN_REFS / "mempalace-tools.md").read_text(encoding="utf-8")
+        recipe = WIKI_SYNC_RECIPE_RE.search(catalog)
+        assert recipe and BLOCKED_WING_MARKER in recipe.group()
+
     def test_no_diary_format_pointer_to_tool_catalog(self):
         # ponytail: same-line pointers only; extend to paragraphs if references wrap.
         for doc in all_skill_docs():
             for line in doc.read_text(encoding="utf-8").splitlines():
                 if "mempalace-tools.md" in line:
-                    assert not re.search(
-                        r"(?i)diary(?:\s+entry)?\s+(?:format|template)|(?:format|template)\s+(?:for\s+)?diar(?:y|ies)",
-                        line,
-                    ), f"{doc.relative_to(PLUGIN_ROOT)}: diary format points to the tool catalog"
+                    assert not DIARY_FORMAT_POINTER_RE.search(line), (
+                        f"{doc.relative_to(PLUGIN_ROOT)}: diary format points to the tool catalog"
+                    )
 
     def test_step_ranges_are_scoped_to_work_loop(self):
         text = BRAIN_SKILL.read_text(encoding="utf-8")
-        init = text[text.index("## Initialize"):text.index("## Other modes")]
-        for match in re.finditer(r"\bsteps\s+\d+\s*[–—-]\s*\d+", init):
-            assert re.search(r"Work loop\s*\(?\s*$", init[:match.start()]), (
+        init = text[text.index(INITIALIZE_HEADING):text.index(OTHER_MODES_HEADING)]
+        for match in STEP_RANGE_RE.finditer(init):
+            assert WORK_LOOP_RANGE_PREFIX_RE.search(init[:match.start()]), (
                 f"Unscoped Initialize range: {match.group()}"
             )
 
     def test_diary_field_labels_match_reference(self):
         text = BRAIN_SKILL.read_text(encoding="utf-8")
-        init = text[text.index("## Initialize"):text.index("## Other modes")]
+        init = text[text.index(INITIALIZE_HEADING):text.index(OTHER_MODES_HEADING)]
         reference = (BRAIN_REFS / "mempalace-workflow.md").read_text(encoding="utf-8")
         _, _, template = reference.partition("**Required diary entry format:**")
         template, _, _ = template.partition("**Example:**")
-        label_pattern = r"^\s*([A-Za-z ]+): \["
-        assert tuple(re.findall(label_pattern, init, re.M)) == DIARY_FIELD_LABELS
-        assert tuple(re.findall(label_pattern, template, re.M)) == DIARY_FIELD_LABELS
+        assert tuple(DIARY_LABEL_RE.findall(init)) == DIARY_FIELD_LABELS
+        assert tuple(DIARY_LABEL_RE.findall(template)) == DIARY_FIELD_LABELS
 
 
 class TestResetSkillConfirmGuard:

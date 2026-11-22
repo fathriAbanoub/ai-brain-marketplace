@@ -8,9 +8,23 @@ import pytest
 PLUGIN_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PLUGIN_ROOT / "scripts"))
 
-from scaffold_brain import scaffold  # noqa: E402
+from scaffold_brain import (  # noqa: E402
+    BLOCKED_WING_MARKER,
+    BRIEF_LINE_SEPARATOR,
+    SESSION_BRIEF_PATH,
+    resolve_wing_name,
+    scaffold,
+)
 
 SUCCESS_EXIT_CODE = 0
+SCAFFOLD_SCRIPT = "scaffold_brain.py"
+PROJECT_TITLE = "Test Project"
+FORCE_FLAG = "--force"
+BRIEF_UPDATED_PREFIX = "Updated:"
+BRIEF_SENTINEL = "Obsolete brief content."
+OTHER_BLOCKED_WING = "wiki_previous_wing"
+BLOCKED_WING_NOTE = " — do not mine; resolve via /project-brain:reset"
+UNREADABLE_BRIEF_BYTES = b"\xff"
 
 
 class TestScaffoldBrain:
@@ -106,11 +120,54 @@ class TestScaffoldBrain:
     def test_scaffold_creates_session_brief(self, scaffolded_project: Path):
         """session-brief.md is non-empty."""
         brain = scaffolded_project
-        brief_path = brain / "state" / "session-brief.md"
-        
+        brief_path = brain / SESSION_BRIEF_PATH
+
         assert brief_path.exists()
         content = brief_path.read_text(encoding="utf-8")
-        assert len(content.strip()) > 0
+        assert content.strip()
+
+    def test_force_preserves_blocked_wing_lines_first(self, run_script, scaffolded_project):
+        root = scaffolded_project.parent
+        brief = scaffolded_project / SESSION_BRIEF_PATH
+        original = brief.read_text(encoding="utf-8")
+        wing, _ = resolve_wing_name(root)
+        marker_line, other_marker_line = (
+            f"{BLOCKED_WING_MARKER} {name}{BLOCKED_WING_NOTE}"
+            for name in (wing, OTHER_BLOCKED_WING)
+        )
+        marker_lines = [marker_line, other_marker_line]
+        brief.write_text(
+            BRIEF_LINE_SEPARATOR.join([marker_line, original, other_marker_line]),
+            encoding="utf-8",
+        )
+        result = run_script(SCAFFOLD_SCRIPT, [str(root), PROJECT_TITLE, FORCE_FLAG])
+        assert result.returncode == SUCCESS_EXIT_CODE
+        regenerated = brief.read_text(encoding="utf-8")
+        assert regenerated.startswith(BRIEF_LINE_SEPARATOR.join(marker_lines) + BRIEF_LINE_SEPARATOR)
+        old_updated = next(line for line in original.splitlines() if line.startswith(BRIEF_UPDATED_PREFIX))
+        new_updated = next(line for line in regenerated.splitlines() if line.startswith(BRIEF_UPDATED_PREFIX))
+        assert regenerated == (BRIEF_LINE_SEPARATOR.join(marker_lines) + BRIEF_LINE_SEPARATOR
+                               + original.replace(old_updated, new_updated))
+
+    def test_force_regenerates_unblocked_brief_unchanged(self, run_script, scaffolded_project):
+        root = scaffolded_project.parent
+        brief = scaffolded_project / SESSION_BRIEF_PATH
+        original = brief.read_text(encoding="utf-8")
+        brief.write_text(original + BRIEF_SENTINEL, encoding="utf-8")
+        result = run_script(SCAFFOLD_SCRIPT, [str(root), PROJECT_TITLE, FORCE_FLAG])
+        assert result.returncode == SUCCESS_EXIT_CODE
+        regenerated = brief.read_text(encoding="utf-8")
+        old_updated = next(line for line in original.splitlines() if line.startswith(BRIEF_UPDATED_PREFIX))
+        new_updated = next(line for line in regenerated.splitlines() if line.startswith(BRIEF_UPDATED_PREFIX))
+        assert regenerated == original.replace(old_updated, new_updated)
+
+    def test_force_does_not_erase_an_unreadable_brief(self, run_script, scaffolded_project):
+        root = scaffolded_project.parent
+        brief = scaffolded_project / SESSION_BRIEF_PATH
+        brief.write_bytes(UNREADABLE_BRIEF_BYTES)
+        result = run_script(SCAFFOLD_SCRIPT, [str(root), PROJECT_TITLE, FORCE_FLAG])
+        assert result.returncode != SUCCESS_EXIT_CODE
+        assert brief.read_bytes() == UNREADABLE_BRIEF_BYTES
 
     def test_scaffold_idempotent_does_not_overwrite(self, run_script, tmp_project: Path):
         """Second run preserves sentinel line added after first run."""

@@ -648,7 +648,7 @@ None recorded yet. A decision is only recorded on an evidence-backed decision pa
     brief_path = brain / SESSION_BRIEF_PATH
     if force and brief_path.exists():
         # ponytail: preserve marker lines only; upgrade to structured brief merging if needed.
-        blocked_lines = [line for line in brief_path.read_text(encoding="utf-8").splitlines()
+        blocked_lines = [line for line in brief_path.read_text(encoding="utf-8", errors="replace").splitlines()
                          if line.startswith(BLOCKED_WING_MARKER)]
         session_brief = BRIEF_LINE_SEPARATOR.join([*blocked_lines, session_brief])
     write_template(brief_path, session_brief, project_root, brain, force)

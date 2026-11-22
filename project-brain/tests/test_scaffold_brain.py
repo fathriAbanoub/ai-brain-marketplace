@@ -161,13 +161,16 @@ class TestScaffoldBrain:
         new_updated = next(line for line in regenerated.splitlines() if line.startswith(BRIEF_UPDATED_PREFIX))
         assert regenerated == original.replace(old_updated, new_updated)
 
-    def test_force_does_not_erase_an_unreadable_brief(self, run_script, scaffolded_project):
+    def test_force_preserves_marker_from_undecodable_brief(self, run_script, scaffolded_project):
         root = scaffolded_project.parent
         brief = scaffolded_project / SESSION_BRIEF_PATH
-        brief.write_bytes(UNREADABLE_BRIEF_BYTES)
+        wing, _ = resolve_wing_name(root)
+        marker_line = f"{BLOCKED_WING_MARKER} {wing}{BLOCKED_WING_NOTE}"
+        brief.write_bytes(UNREADABLE_BRIEF_BYTES + BRIEF_LINE_SEPARATOR.encode()
+                          + marker_line.encode() + BRIEF_LINE_SEPARATOR.encode())
         result = run_script(SCAFFOLD_SCRIPT, [str(root), PROJECT_TITLE, FORCE_FLAG])
-        assert result.returncode != SUCCESS_EXIT_CODE
-        assert brief.read_bytes() == UNREADABLE_BRIEF_BYTES
+        assert result.returncode == SUCCESS_EXIT_CODE
+        assert brief.read_text(encoding="utf-8").startswith(marker_line + BRIEF_LINE_SEPARATOR)
 
     def test_scaffold_idempotent_does_not_overwrite(self, run_script, tmp_project: Path):
         """Second run preserves sentinel line added after first run."""

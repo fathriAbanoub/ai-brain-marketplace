@@ -23,6 +23,11 @@ WIKILINK_RE = re.compile(r"\[\[([^\]|#]+)(?:[|#][^\]]*)?\]\]")
 # consistent when changing this value.
 HEALTH_REPAIR_THRESHOLD = 70
 MEMORY_SYNC_FIX_NOTE = "append a `.brain/log/<YYYYMMDD>.md` entry naming the MemPalace diary write"
+SESSION_BRIEF_REL = Path(".brain/state/session-brief.md")
+WING_NAME_TOKEN_COUNT = 1
+WING_NAME_CAPTURE_GROUP = 1
+WING_WARNING = "warning"
+WING_OK = "ok"
 
 
 def read(path: Path) -> str:
@@ -408,7 +413,7 @@ def freshness(root: Path) -> tuple[int, str]:
     notes: list[str] = [f"{fresh_pages}/{len(pages)} wiki pages updated in 30 days"]
     score = base
 
-    brief = root / ".brain" / "state" / "session-brief.md"
+    brief = root / SESSION_BRIEF_REL
     brief_dt = None
     if brief.exists():
         for line in read(brief).splitlines():
@@ -471,25 +476,38 @@ def memory_sync(root: Path) -> tuple[int, str]:
 def mempalace_wing_check(root: Path) -> tuple[str, str]:
     """Check the MemPalace wing name stored in .brain/CLAUDE.md.
 
-    Does not require MCP — reads the recorded wing name and validates that it
-    follows the canonical wiki_<slug> convention (MemPalace's own underscore
+    Does not require MCP — checks the brief's blocked-wing marker and validates
+    the recorded name against wiki_<slug> (MemPalace's own underscore
     normalization) introduced in 0.9.3. Hyphenated wiki-<slug> names from older
     versions are recognized as legacy and get a migration hint.
     """
-    # ponytail: file-based only; MCP drawer count requires the agent session
+    # ponytail: file-based marker only; live palace ownership is out of scope.
+    # Upgrade path: verify ownership and drawer counts via MCP in the agent session.
     try:
         from scaffold_brain import (  # type: ignore
+            BLOCKED_WING_MARKER,
             LEGACY_WIKI_WING_PREFIX,
             WIKI_WING_PREFIX,
             normalize_wing_slug,
             resolve_wing_name,
         )
     except Exception as exc:
-        return "warning", f"unable to load scaffold_brain: {exc}"
+        return WING_WARNING, f"unable to load scaffold_brain: {exc}"
 
     wing, source = resolve_wing_name(root)
     if source == "derived":
-        return "warning", f"wing={wing} (derived — .brain/CLAUDE.md missing mempalace_wing)"
+        return WING_WARNING, f"wing={wing} (derived — .brain/CLAUDE.md missing mempalace_wing)"
+
+    try:
+        brief_lines = read(root / SESSION_BRIEF_REL).splitlines()
+    except FileNotFoundError:
+        brief_lines = ()
+    except OSError as exc:
+        return WING_WARNING, f"wing={wing}: cannot read {SESSION_BRIEF_REL}: {exc}; do not mine"
+    if any(line.startswith(BLOCKED_WING_MARKER)
+           and line.removeprefix(BLOCKED_WING_MARKER).split()[:WING_NAME_TOKEN_COUNT] == [wing]
+           for line in brief_lines):
+        return WING_WARNING, f"wing={wing}: mining is blocked; do not mine; resolve via /project-brain:reset"
 
     # Cross-check the other declaration source: root CLAUDE.md and
     # .brain/CLAUDE.md disagreeing on mempalace_wing is a conflict that no
@@ -502,17 +520,17 @@ def mempalace_wing_check(root: Path) -> tuple[str, str]:
     if other_file.exists():
         m2 = re.search(r"mempalace_wing:\s*(\S+)", other_file.read_text(encoding="utf-8"))
         if m2:
-            other_wing = m2.group(1)
+            other_wing = m2.group(WING_NAME_CAPTURE_GROUP)
     wing_conflict = other_wing is not None and other_wing != wing
 
     if wing.startswith(WIKI_WING_PREFIX):
         if wing_conflict:
-            return "warning", (
+            return WING_WARNING, (
                 f"wing conflict: {source} declares {wing!r} but {other_source} declares "
                 f"{other_wing!r} — mempalace_wing must be identical in both files; "
                 f"update {other_source} to match {source}"
             )
-        return "ok", f"wing={wing} ({source})"
+        return WING_OK, f"wing={wing} ({source})"
     other_declares = other_wing is not None
     if wing.startswith(LEGACY_WIKI_WING_PREFIX):
         slug_part = normalize_wing_slug(wing[len(LEGACY_WIKI_WING_PREFIX):])
@@ -533,7 +551,7 @@ def mempalace_wing_check(root: Path) -> tuple[str, str]:
     if other_declares:
         msg += f" and change {other_source} to match"
     msg += " — re-scaffolding alone preserves the old wing name"
-    return "warning", msg
+    return WING_WARNING, msg
 
 
 def health_data(root: Path) -> dict:
@@ -751,7 +769,7 @@ def main(argv: list[str]) -> int:
         print("✗ .brain does not exist")
         print('  Run: project-brain-init . "My Project"')
 
-    for p in [brain / "wiki" / "index.md", brain / "state" / "session-brief.md"]:
+    for p in [brain / "wiki" / "index.md", root / SESSION_BRIEF_REL]:
         if p.exists():
             print(f"✓ {rel(p, root)} exists")
         else:
@@ -791,7 +809,7 @@ def main(argv: list[str]) -> int:
     if brain.exists():
         print_health(root)
         severity, wing_note = mempalace_wing_check(root)
-        glyph = {"ok": "✓", "warning": "⚠", "info": "ℹ"}.get(severity, "-")
+        glyph = {WING_OK: "✓", WING_WARNING: "⚠", "info": "ℹ"}.get(severity, "-")
         print(f"{glyph} MemPalace wing: {wing_note}")
         mempal_dir = os.environ.get("MEMPAL_DIR", "")
         mempal_points_here = False
@@ -802,7 +820,7 @@ def main(argv: list[str]) -> int:
                 mempal_points_here = False
         # The stop-hook note is printed when it is actually relevant (MEMPAL_DIR
         # set, or the wing check just flagged something) rather than on every run.
-        if mempal_dir or severity != "ok":
+        if mempal_dir or severity != WING_OK:
             print(
                 "ℹ MemPalace note: its session stop hook re-mines MEMPAL_DIR without --wing "
                 "(mining the project root into the directory-derived wing), so a wing with the "

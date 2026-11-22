@@ -7,12 +7,26 @@ from pathlib import Path
 PLUGIN_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PLUGIN_ROOT / "scripts"))
 
-from doctor import graphify_freshness, memory_sync, print_health  # noqa: E402
+from doctor import (  # noqa: E402
+    SESSION_BRIEF_REL,
+    WING_WARNING,
+    graphify_freshness,
+    mempalace_wing_check,
+    memory_sync,
+    print_health,
+)
+from scaffold_brain import BLOCKED_WING_MARKER, resolve_wing_name  # noqa: E402
 
 FULL_MEMORY_SYNC_SCORE = 100
 NO_MEMORY_SYNC_SCORE = 0
 DIARY_LOG_FILENAME = "20261121.md"
 BRAIN_SKILL = PLUGIN_ROOT / "skills" / "brain" / "SKILL.md"
+BLOCKED_WING_NOTE = " — do not mine; resolve via /project-brain:reset"
+DIFFERENT_WING_SUFFIX = "_other"
+BLOCKED_MINING_MESSAGE = "mining is blocked"
+RESET_COMMAND = "/project-brain:reset"
+UNREADABLE_BRIEF_MESSAGE = "cannot read"
+DO_NOT_MINE_MESSAGE = "do not mine"
 
 
 class TestMemorySync:
@@ -44,6 +58,46 @@ class TestMemorySync:
             assert "append" in note.lower()
             assert ".brain/log/<YYYYMMDD>.md" in note
             assert "MemPalace diary write" in note
+
+
+class TestBlockedWing:
+    def test_recorded_wing_marker_blocks_mining(self, scaffolded_project):
+        root = scaffolded_project.parent
+        wing, _ = resolve_wing_name(root)
+        brief = root / SESSION_BRIEF_REL
+        brief.write_text(f"{BLOCKED_WING_MARKER} {wing}{BLOCKED_WING_NOTE}\n", encoding="utf-8")
+        severity, note = mempalace_wing_check(root)
+        assert severity == WING_WARNING
+        assert wing in note
+        assert BLOCKED_MINING_MESSAGE in note.lower()
+        assert RESET_COMMAND in note
+
+    def test_different_wing_marker_leaves_result_unchanged(self, scaffolded_project):
+        root = scaffolded_project.parent
+        original = mempalace_wing_check(root)
+        wing, _ = resolve_wing_name(root)
+        (root / SESSION_BRIEF_REL).write_text(
+            f"{BLOCKED_WING_MARKER} {wing}{DIFFERENT_WING_SUFFIX}{BLOCKED_WING_NOTE}\n",
+            encoding="utf-8",
+        )
+        assert mempalace_wing_check(root) == original
+
+    def test_no_brief_leaves_result_unchanged(self, scaffolded_project):
+        root = scaffolded_project.parent
+        original = mempalace_wing_check(root)
+        (root / SESSION_BRIEF_REL).unlink()
+        assert mempalace_wing_check(root) == original
+
+    def test_unreadable_brief_warns_not_to_mine(self, scaffolded_project):
+        root = scaffolded_project.parent
+        brief = root / SESSION_BRIEF_REL
+        brief.unlink()
+        brief.mkdir()
+        severity, note = mempalace_wing_check(root)
+        assert severity == WING_WARNING
+        assert UNREADABLE_BRIEF_MESSAGE in note.lower()
+        assert str(SESSION_BRIEF_REL) in note
+        assert DO_NOT_MINE_MESSAGE in note.lower()
 
 
 class TestDoctorBoundary:
@@ -211,7 +265,7 @@ class TestDoctor:
         project_dir = brain.parent
         
         # Remove session-brief.md
-        brief_path = brain / "state" / "session-brief.md"
+        brief_path = project_dir / SESSION_BRIEF_REL
         brief_path.unlink()
         
         result = run_script("doctor.py", [str(project_dir)])

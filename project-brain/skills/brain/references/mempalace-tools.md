@@ -198,6 +198,8 @@ the WIKI wing — wiki mining and wiki search only).
 
 ### 3. Sync the Wiki (after wiki edits)
 
+Read `.brain/state/session-brief.md` first; if a `BLOCKED-WING:` line names this exact wing, do not mine; report memory **not done** and resolve via `/project-brain:reset`.
+
 Mine the wiki directory directly — gitignore does not apply when you name the path explicitly:
 
 ```
@@ -271,11 +273,11 @@ mempalace status
 
 - Wiki wing (NEW brains, 0.9.4+): `wiki_<project-slug>_<UTC-timestamp>` — e.g.
   `wiki_ambient_studio_20261026T164600Z` (format `%Y%m%dT%H%M%SZ`, UTC). The
-  timestamp is generated at creation time and the name is checked against the
-  actual palace (wings + tunnels + hallways) before it is committed; collisions
-  resolve by higher precision or a deterministic numeric suffix — an existing
-  identity is never silently reused. The exact generated name is recorded in
-  `mempalace_wing` in `.brain/CLAUDE.md` and never regenerated on re-init.
+  timestamped name is recorded in `mempalace_wing` in `.brain/CLAUDE.md` at
+  first init, before the live palace check. Init avoids locally reserved names;
+  the agent checks wings + tunnels + hallways before mining. A colliding
+  recorded wing blocks mining until `/project-brain:reset`; re-init never
+  regenerates the recorded name.
 - Wiki wing (legacy): bare `wiki_<project-slug>` (0.9.3) or hyphenated
   `wiki-<slug>` (pre-0.9.3), recorded in `mempalace_wing` in `.brain/CLAUDE.md`.
   Legacy names stay supported: they are never deleted, renamed, or treated as

@@ -111,7 +111,7 @@ names, re-run. Never claim a step is done without its script exiting 0.
    the graph **at most once per session**, and only if the doctor says stale —
    primary: the `/graphify` skill (Contract 2); fallback: the CLI.
 4. Cover units in a small batch (a few units per pass). **Before the first wiki write of this session, read `references/wiki-schema.md`** — pages written without it guess the schema and fail lint. Write or extend pages under `.brain/wiki/`; cite every claim inline as `{{src path/to/file.ts:10-20 "anchorText"}}`; decision pages need `rationale_source:`. Stub pages do not count as coverage.
-5. Make progress durable: after each batch run `project-brain-lint <project-root> --verify` (whenever citations changed), then — once the lint is clean — snapshot the wiki: `project-brain-wiki <project-root> snapshot`. Then update `.brain/state/session-brief.md` honestly — what changed, what is verified, what remains. The inventory on disk persists progress; the next session resumes from it, not from your memory of the transcript.
+5. Make progress durable: after each batch run `project-brain-lint <project-root> --verify` (whenever citations changed), then — once the lint is clean — snapshot the wiki: `project-brain-wiki <project-root> snapshot`. Then update `.brain/state/session-brief.md` honestly — what changed, what is verified, what remains; preserve any `BLOCKED-WING:` line in every brief rewrite until reset removes the brain. The inventory persists progress; resume from disk, not the transcript.
 6. Check doc cross-refs: `project-brain-inventory <project-root> crossrefs`
    (exit 1 lists missing refs — create or fix them, then re-run).
 7. Gate: `project-brain-doctor <project-root> --strict`. Exit 0
@@ -156,10 +156,10 @@ for a genuinely missing decision or access; the leftover-wing check never pauses
 5. Doctor baseline: run `project-brain-doctor <project-root>` and read all four sub-scores. Repair each `BELOW REPAIR THRESHOLD` score in the Work loop per `references/brain-lifecycle.md` → Self-correction scan; the diary and log below repair Memory sync. Skip only a repair requiring access you lack; name that access in the report.
 6. Report the current availability of MemPalace MCP, the graphify skill/CLI,
    and Obsidian MCP. No install instructions unless the user asks.
-7. **Leftover-wing check (new brains only — skip on re-init):** read `mempalace_wing` and `mempalace_diary_agent` from `.brain/CLAUDE.md`. Call `mempalace_status`, then `mempalace_list_wings`, `mempalace_list_tunnels`, `mempalace_list_hallways`. If the recorded wiki wing exists in `mempalace_list_wings` or tunnel/hallway records name it, do NOT mine into it; report the exact colliding name and memory layer **not done** in the final report — init cannot rename it. Report each match's exact name and drawer count, plus tunnel/hallway records. Offer `/project-brain:reset` for wiki/brain diary matches or orphan candidates (read `references/wing-ownership.md`); directory-derived wings are informational only (MemPalace re-creates them), no cleanup offer. Never delete unasked; report and continue Initialize without waiting.
+7. **Leftover-wing check (new brains only — skip on re-init):** read `mempalace_wing` and `mempalace_diary_agent` from `.brain/CLAUDE.md`. Call `mempalace_status`, then `mempalace_list_wings`, `mempalace_list_tunnels`, `mempalace_list_hallways`. If the recorded wiki wing exists there or in tunnel/hallway records, do NOT mine into it; prepend `BLOCKED-WING: <exact wing name> — do not mine; resolve via /project-brain:reset` (recorded name) to `.brain/state/session-brief.md`, preserving its content. Report the collision and memory layer **not done** — init cannot rename it. Report each match's exact name and drawer count, plus tunnel/hallway records. Offer `/project-brain:reset` for wiki/brain diary matches or orphan candidates (read `references/wing-ownership.md`); directory-derived wings are informational only (MemPalace re-creates them), no cleanup offer. Never delete unasked.
 8. Ingest the project's primary sources (README, manifests, entry points)
    into `.brain/raw/` or pointer files per `references/evidence-lifecycle.md`.
-9. Compile wiki pages under Contracts 7 and 8 (read `references/wiki-schema.md` before the first write): update System Overview, add `.brain/wiki/sources/` summaries with `reliability:` frontmatter, regenerate the index with `project-brain-lint <project-root> --reindex`, and record contradictions in the source page and `open-questions.md`. Mine `.brain/wiki` with explicit `--wing` from `mempalace_wing` (Recipe 3 in mempalace-tools.md; dry run first), never the project root.
+9. Compile wiki pages under Contracts 7 and 8 (read `references/wiki-schema.md` before the first write): update System Overview, add `.brain/wiki/sources/` summaries with `reliability:` frontmatter, regenerate the index with `project-brain-lint <project-root> --reindex`, and record contradictions in the source page and `open-questions.md`. If the brief has `BLOCKED-WING:` naming the recorded wing, skip mining, step 10's drawer check and step 13's re-mine; report memory **not done**. Otherwise mine `.brain/wiki` with explicit `--wing` from `mempalace_wing` (Recipe 3 in mempalace-tools.md; dry run first), never the project root.
 10. Verify with `mempalace_get_taxonomy` or `mempalace_list_rooms`: the recorded wing must have drawers. If empty, repair now (mining recipe, dry run first); if blocked, report the failing call, error and missing access, then continue.
 11. Update `.brain/state/session-brief.md` (under 400 words), run `project-brain-lint <project-root>`, and clear error-level issues.
 12. Write `mempalace_diary_write` with the agent from `mempalace_diary_agent` in `.brain/CLAUDE.md` using this exact format:
@@ -182,8 +182,8 @@ for a genuinely missing decision or access; the leftover-wing check never pauses
     ```
 
     Fill the placeholders with the date, time, title and recorded agent. Read `references/mempalace-workflow.md` before retrying a failed write; never log it as written if it failed.
-13. **Run the `## Work loop` section.** Fresh brain: `project-brain-inventory <project-root> inventory` and `project-brain-inventory <project-root> git-digest` first. Repair sub-scores and gates; re-mine wiki changes. Append a second diary entry and log entry only if the Work loop changed findings or contradictions; otherwise write none. Run `project-brain-doctor <project-root> --strict` until it exits 0 or the Work loop's repair cap is spent; report all four sub-scores from the last strict run's output.
-14. Final report: "complete" only if the strict gate exited 0 and no sub-score remains flagged. Otherwise say **INCOMPLETE** and list each failing gate or sub-score, its failing command, and any missing access under **not done**. A flagged sub-score is never "expected". No next-session to-do list for work you can run now.
+13. **Run the `## Work loop` section.** Fresh brain: `project-brain-inventory <project-root> inventory` and `project-brain-inventory <project-root> git-digest` first. Repair sub-scores and gates; re-mine wiki changes. Append a second diary and log entry only if the Work loop changed findings or contradictions. Run `project-brain-doctor <project-root> --strict` until it exits 0 or the Work loop's repair cap is spent; report all four sub-scores from the last strict run's output.
+14. Final report: "complete" only if the strict gate exited 0, no sub-score remains flagged and the recorded wing is not blocked. Otherwise say **INCOMPLETE** and list each failing gate or sub-score with its failing command, any blocked wing, and missing access under **not done**. A flagged sub-score is never "expected". No next-session to-do list for runnable work.
 
 MemPalace and graphify are pre-installed; do not reinstall.
 
@@ -207,9 +207,7 @@ MemPalace and graphify are pre-installed; do not reinstall.
 
 **2. Never reinvent graphify — keep its precedence straight.** Do not write scripts to parse code structure or extract relationships. Precedence: `/graphify` skill = PRIMARY builder (it runs the semantic pass through the session's own model — per this project's setup, reported, verify on first use); graphify MCP tools = query surface once a graph exists (deferred; reconnect the server after ANY change to graph.json — first build, full rebuild, or incremental `graphify update .` — it reads the graph at startup); CLI = FALLBACK (`graphify .` full build, `graphify update .` code-only; `GRAPHIFY_BACKEND=none` on BOTH `extract` and `cluster-only` when no API access, or you get "Community N" placeholders). Details: `references/graphify-workflow.md`.
 
-**3. Never let wiki edits be the last step.** Every wiki edit is followed by
-the post-wiki loop (below). No exceptions — the loop is what makes the brain
-durable.
+**3. Never let wiki edits be the last step.** Follow the post-wiki loop below.
 
 **4. The session brief must be readable in under 2 minutes.** Over 400 words,
 trim it. The brief is a map to the wiki, not a replacement for it; task
@@ -230,10 +228,7 @@ and add the question to `open-questions.md`.
 
 **10. Edit discipline.** Read the page immediately before every Edit and again after compaction or any failed Edit; prefer Write for whole-page rewrites; never batch dependent edits to one file in a single parallel turn; retry an Edit once, then switch to Write. State only actions you actually emitted. Details: `references/edit-discipline.md`.
 
-**11. Durable progress and honest stops.** Update the session brief after
-each batch (Work loop step 5); 3 repair rounds then STOP (Work loop step 8);
-after compaction recover from `.brain/` files, not memory. Done without the
-script exit codes is a failure.
+<!-- ponytail: skill-size ceiling; extend procedures, not repeated contracts. -->
 
 ## Post-wiki loop (after ANY wiki change)
 

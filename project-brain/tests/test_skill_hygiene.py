@@ -25,6 +25,7 @@ SCRIPTS_PATH_INDEX = 0
 sys.path.insert(SCRIPTS_PATH_INDEX, str(PLUGIN_ROOT / "scripts"))
 
 from scaffold_brain import BLOCKED_WING_MARKER  # noqa: E402
+from mempalace_reset import PAGE_LIMIT  # noqa: E402
 
 # ponytail: ceiling named constant — the 0.9.4 skill was 39,501 bytes with the
 # plugin-root fallback duplicated twice and per-mode detail duplicating
@@ -58,6 +59,13 @@ WORK_LOOP_BRIEF_STEP_RE = re.compile(
 # ponytail: final report is one line; extend the step matcher if it is wrapped.
 FINAL_REPORT_STEP_RE = re.compile(r"^\d+\. Final report:[^\n]*", re.M)
 FINAL_REPORT_TODO_RULE = "No next-session to-do list for runnable work."
+FINAL_REPORT_BLOCKED_WING_CLAUSE = "and the recorded wing is not blocked"
+HALLWAY_TOOL = "mempalace_list_hallways"
+HALLWAY_OFFSET_FIELD = "offset"
+HALLWAY_PAGE_LIMIT_RE = re.compile(rf"\blimit:\s*{PAGE_LIMIT}\b")
+OWNERSHIP_HALLWAY_STEP_RE = re.compile(
+    rf"^\d+\. Check `mempalace_list_tunnels`.*?{NUMBERED_STEP_END}", re.M | re.S,
+)
 LAST_STRICT_SCORES_RE = re.compile(r"sub-scores.*last strict run", re.S)
 DIARY_FORMAT_POINTER_RE = re.compile(
     r"(?i)diary(?:\s+entry)?\s+(?:format|template)|(?:format|template)\s+(?:for\s+)?diar(?:y|ies)",
@@ -391,6 +399,18 @@ class TestInitializeGate:
         for doc in (BRAIN_SKILL, BRAIN_REFS / "brain-lifecycle.md", BRAIN_REFS / "wing-ownership.md"):
             assert "--wing <verified-unique-name>" not in doc.read_text(encoding="utf-8")
 
+    def test_leftover_hallway_checks_page_every_record(self):
+        for doc, pattern in (
+            (BRAIN_SKILL, INITIALIZE_LEFTOVER_STEP_RE),
+            (BRAIN_REFS / "brain-lifecycle.md", INITIALIZE_LEFTOVER_STEP_RE),
+            (BRAIN_REFS / "wing-ownership.md", OWNERSHIP_HALLWAY_STEP_RE),
+        ):
+            step = pattern.search(doc.read_text(encoding="utf-8"))
+            assert step, f"{doc}: missing hallway-check step"
+            assert HALLWAY_TOOL in step.group()
+            assert HALLWAY_OFFSET_FIELD in step.group()
+            assert HALLWAY_PAGE_LIMIT_RE.search(step.group())
+
     def test_blocked_wing_guard_is_carried_through_mining_and_brief_updates(self):
         text = BRAIN_SKILL.read_text(encoding="utf-8")
         init = text[text.index(INITIALIZE_HEADING):text.index(OTHER_MODES_HEADING)]
@@ -407,6 +427,9 @@ class TestInitializeGate:
         for pattern in (INITIALIZE_LEFTOVER_STEP_RE, INITIALIZE_MINING_STEP_RE):
             step = pattern.search(lifecycle)
             assert step and BLOCKED_WING_MARKER in step.group()
+        for section in (init, lifecycle):
+            report = FINAL_REPORT_STEP_RE.search(section)
+            assert report and FINAL_REPORT_BLOCKED_WING_CLAUSE in report.group()
         catalog = (BRAIN_REFS / "mempalace-tools.md").read_text(encoding="utf-8")
         recipe = WIKI_SYNC_RECIPE_RE.search(catalog)
         assert recipe and BLOCKED_WING_MARKER in recipe.group()

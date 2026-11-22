@@ -4,6 +4,22 @@ import json
 import sys
 import pytest
 from pathlib import Path
+from unittest.mock import patch
+
+PLUGIN_ROOT = Path(__file__).parent.parent
+SCRIPTS_PATH_INDEX = 0
+sys.path.insert(SCRIPTS_PATH_INDEX, str(PLUGIN_ROOT / "scripts"))
+
+from scaffold_brain import SESSION_BRIEF_PATH  # noqa: E402
+import lint_brain as lb  # noqa: E402
+
+LINT_SCRIPT = "lint_brain.py"
+CLI_FAILURE = 1
+TRACEBACK_MARKER = "Traceback"
+UNREADABLE_BRIEF_CATEGORY = lb.UNREADABLE_BRIEF_CATEGORY
+READ_HELPER_NAME = "read"
+BRIEF_PERMISSION_ERROR = "brief access denied"
+BRIEF_READ_DENIALS = ((True, True, True), (False, True, True), (False, False, True))
 
 
 class TestLintBrain:
@@ -128,13 +144,40 @@ class TestLintBrain:
         output_lower = (result.stdout + result.stderr).lower()
         assert "source" in output_lower or "not found" in output_lower or "missing" in output_lower
 
+    def test_lint_directory_brief_reports_issue_without_traceback(self, run_script, scaffolded_project):
+        brief = scaffolded_project / SESSION_BRIEF_PATH
+        brief.unlink()
+        brief.mkdir()
+        result = run_script(LINT_SCRIPT, [str(scaffolded_project.parent)])
+        assert TRACEBACK_MARKER not in result.stderr
+        assert result.returncode == CLI_FAILURE
+        assert UNREADABLE_BRIEF_CATEGORY in result.stdout
+        assert str(SESSION_BRIEF_PATH) in result.stdout
+
+    def test_brief_permission_error_is_reported_by_all_readers(self, scaffolded_project):
+        brief = scaffolded_project / SESSION_BRIEF_PATH
+        original_read = lb.read
+
+        for failures in BRIEF_READ_DENIALS:
+            denied_reads = iter(failures)
+
+            def denied_brief(path):
+                if path == brief and next(denied_reads):
+                    raise PermissionError(BRIEF_PERMISSION_ERROR)
+                return original_read(path)
+
+            with patch.object(lb, READ_HELPER_NAME, side_effect=denied_brief):
+                code, report = lb.build_report(scaffolded_project.parent)
+            assert code == CLI_FAILURE
+            assert any(issue["category"] == UNREADABLE_BRIEF_CATEGORY for issue in report["issues"])
+
     def test_lint_stale_session_brief(self, run_script, scaffolded_project: Path):
         """Stale session brief is detected."""
         brain = scaffolded_project
         project_dir = brain.parent
         
         # Modify session-brief to have old date
-        brief_path = brain / "state" / "session-brief.md"
+        brief_path = brain / SESSION_BRIEF_PATH
         content = brief_path.read_text(encoding="utf-8")
         # Replace the entire Updated: metadata line with an old date using regex
         import re

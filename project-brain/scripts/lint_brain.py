@@ -22,6 +22,8 @@ import sys
 from datetime import datetime, date, timezone
 from pathlib import Path
 
+from scaffold_brain import SESSION_BRIEF_PATH
+
 WIKILINK_RE = re.compile(r"\[\[([^\]|#]+)(?:[|#][^\]]*)?\]\]")
 # Hybrid markdown-wikilink `[[target](path)]`: no closing ]] survives, so the
 # plain wikilink regex is blind to it. Observed live in a real session.
@@ -74,6 +76,9 @@ def strip_code_regions(text: str) -> str:
 REINDEX_HINT = "regenerate with `project-brain-lint <root> --reindex`; never hand-edit index.md"
 VERIFY_HINT = "then run `project-brain-lint <root> --verify`"
 INIT_HINT = 'run `project-brain-init <root> "<Project Name>"`'
+UNREADABLE_BRIEF_CATEGORY = "unreadable_session_brief"
+UNREADABLE_BRIEF_SEVERITY = "error"
+UNREADABLE_BRIEF_MESSAGE = "cannot read session brief; do not mine"
 
 # --- WP4: citations, staleness, provenance (KD-01, KD-02, KD-07, KD-14) ---
 # Inline citation syntax (documented in skills/brain/references/wiki-schema.md):
@@ -271,7 +276,7 @@ def check_required(root: Path, brain: Path, issues: list[dict]) -> None:
     required = [
         brain / "CLAUDE.md",
         brain / "wiki" / "index.md",
-        brain / "state" / "session-brief.md",
+        brain / SESSION_BRIEF_PATH,
         brain / "tasks" / "next-actions.md",
     ]
     for p in required:
@@ -469,7 +474,7 @@ def parse_updated_line(path: Path) -> datetime | None:
 
 
 def check_session_brief_staleness(root: Path, brain: Path, issues: list[dict]) -> None:
-    brief = brain / "state" / "session-brief.md"
+    brief = brain / SESSION_BRIEF_PATH
     updated = parse_updated_line(brief)
     if updated is None:
         add(issues, "warn", "stale_session_brief", brief, root, "session-brief.md has no parseable Updated line")
@@ -487,7 +492,7 @@ def check_brief_task_checklist(root: Path, brain: Path, issues: list[dict]) -> N
     brief saying items were done while next-actions.md said the same items
     were open. Deterministic rule: one task file, the brief links to it.
     """
-    brief = brain / "state" / "session-brief.md"
+    brief = brain / SESSION_BRIEF_PATH
     if not brief.exists():
         return
     for ln, line in enumerate(read(brief).splitlines(), start=1):
@@ -1138,7 +1143,16 @@ def check_brain_secrets(root: Path, brain: Path, issues: list[dict]) -> None:
             continue
         if ledger_dir in p.parents:
             continue
-        text = read(p)
+        try:
+            text = read(p)
+        except OSError as exc:
+            # ponytail: brief-only I/O gate; add separate rules for other unreadable files.
+            if p != brain / SESSION_BRIEF_PATH:
+                raise
+            if not any(issue["category"] == UNREADABLE_BRIEF_CATEGORY for issue in issues):
+                add(issues, UNREADABLE_BRIEF_SEVERITY, UNREADABLE_BRIEF_CATEGORY,
+                    p, root, f"{UNREADABLE_BRIEF_MESSAGE}: {exc}")
+            continue
         for label, pattern in SECRET_PATTERNS:
             m = pattern.search(text)
             if m:
@@ -1251,9 +1265,13 @@ def build_report(root: Path, citation_state: dict | None = None) -> tuple[int, d
         check_wikilinks(root, brain, issues)
         check_sources(root, brain, issues)
         check_index(root, brain, issues)
-        check_brief_task_checklist(root, brain, issues)
+        try:
+            check_brief_task_checklist(root, brain, issues)
+            check_session_brief_staleness(root, brain, issues)
+        except OSError as exc:
+            add(issues, UNREADABLE_BRIEF_SEVERITY, UNREADABLE_BRIEF_CATEGORY,
+                brain / SESSION_BRIEF_PATH, root, f"{UNREADABLE_BRIEF_MESSAGE}: {exc}")
         check_nested_graphify_output(root, issues)
-        check_session_brief_staleness(root, brain, issues)
         check_audit(root, brain, issues)
         check_evidence_aging(root, brain, issues)
         check_short_wiki_pages(root, brain, issues)

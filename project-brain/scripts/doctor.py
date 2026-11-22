@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import lint_brain as lb
+from scaffold_brain import SESSION_BRIEF_PATH
 
 FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 WIKILINK_RE = re.compile(r"\[\[([^\]|#]+)(?:[|#][^\]]*)?\]\]")
@@ -23,7 +24,8 @@ WIKILINK_RE = re.compile(r"\[\[([^\]|#]+)(?:[|#][^\]]*)?\]\]")
 # consistent when changing this value.
 HEALTH_REPAIR_THRESHOLD = 70
 MEMORY_SYNC_FIX_NOTE = "append a `.brain/log/<YYYYMMDD>.md` entry naming the MemPalace diary write"
-SESSION_BRIEF_REL = Path(".brain/state/session-brief.md")
+SESSION_BRIEF_REL = Path(".brain") / SESSION_BRIEF_PATH
+BRIEF_UPDATED_PREFIX = "updated:"
 WING_NAME_TOKEN_COUNT = 1
 WING_NAME_CAPTURE_GROUP = 1
 WING_WARNING = "warning"
@@ -415,11 +417,14 @@ def freshness(root: Path) -> tuple[int, str]:
 
     brief = root / SESSION_BRIEF_REL
     brief_dt = None
-    if brief.exists():
-        for line in read(brief).splitlines():
-            if line.lower().startswith("updated:"):
-                brief_dt = parse_date(line.split(":", 1)[1].strip())
-                break
+    try:
+        brief_lines = read(brief).splitlines()
+    except OSError:
+        brief_lines = ()
+    for line in brief_lines:
+        if line.lower().startswith(BRIEF_UPDATED_PREFIX):
+            brief_dt = parse_date(line[len(BRIEF_UPDATED_PREFIX):].strip())
+            break
     if brief_dt:
         days = (now - brief_dt).days
         if days > 7:

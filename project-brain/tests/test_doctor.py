@@ -27,6 +27,12 @@ BLOCKED_MINING_MESSAGE = "mining is blocked"
 RESET_COMMAND = "/project-brain:reset"
 UNREADABLE_BRIEF_MESSAGE = "cannot read"
 DO_NOT_MINE_MESSAGE = "do not mine"
+DOCTOR_SCRIPT = "doctor.py"
+STRICT_FLAG = "--strict"
+CLI_SUCCESS = 0
+CLI_FAILURE = 1
+TRACEBACK_MARKER = "Traceback"
+UNKNOWN_BRIEF_DATE_MESSAGE = "session brief date unknown"
 
 
 class TestMemorySync:
@@ -98,6 +104,20 @@ class TestBlockedWing:
         assert UNREADABLE_BRIEF_MESSAGE in note.lower()
         assert str(SESSION_BRIEF_REL) in note
         assert DO_NOT_MINE_MESSAGE in note.lower()
+
+    def test_directory_brief_warns_through_plain_and_strict_cli(self, run_script, scaffolded_project):
+        root = scaffolded_project.parent
+        brief = root / SESSION_BRIEF_REL
+        brief.unlink()
+        brief.mkdir()
+        for flags, expected_exit in (([], CLI_SUCCESS), ([STRICT_FLAG], CLI_FAILURE)):
+            result = run_script(DOCTOR_SCRIPT, [str(root), *flags])
+            assert TRACEBACK_MARKER not in result.stderr
+            assert result.returncode == expected_exit
+            assert UNREADABLE_BRIEF_MESSAGE in result.stdout.lower()
+            assert str(SESSION_BRIEF_REL) in result.stdout
+            assert DO_NOT_MINE_MESSAGE in result.stdout.lower()
+            assert UNKNOWN_BRIEF_DATE_MESSAGE in result.stdout
 
 
 class TestDoctorBoundary:

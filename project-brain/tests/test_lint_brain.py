@@ -20,6 +20,31 @@ UNREADABLE_BRIEF_CATEGORY = lb.UNREADABLE_BRIEF_CATEGORY
 READ_HELPER_NAME = "read"
 BRIEF_PERMISSION_ERROR = "brief access denied"
 BRIEF_READ_DENIALS = ((True, True, True), (False, True, True), (False, False, True))
+HASH_HELPER_NAME = "sha256_file"
+CITED_PAGE_NAME = "concepts/Unreadable.md"
+CITED_PAGE_STATE = "wiki/concepts/Unreadable.md"
+CITED_SOURCE_PATH = Path("cited-source.txt")
+CITED_RAW_SOURCE_PATH = Path("raw") / CITED_SOURCE_PATH
+CONFLICT_DATE_HELPER = "page_updated_date"
+RESOLVED_CONFLICT_BODY = (
+    '# Open Questions\n\n## Conflict\nstatus: resolved\ndate: 2026-11-22\n'
+    'target: [[concepts/Unreadable]]\n'
+)
+OPEN_QUESTIONS_PATH = Path("wiki/open-questions.md")
+CITED_SOURCE_ANCHOR = "# Session Brief"
+CITED_SOURCE_LINE = 1
+CITED_PAGE_FRONTMATTER = {"title": "Cited source", "type": "concept", "status": "active", "sources": []}
+CITED_PAGE_BODY = '# Cited source\n\n{{{{src {path}:{line} "{anchor}"}}}}\n'
+CITATION_DRIFT_CATEGORY = lb.CITATION_DRIFT_CATEGORY
+UNREADABLE_CITATION_MESSAGE = lb.UNREADABLE_CITATION_MESSAGE
+CITATION_PERMISSION_ERROR = "cited source access denied"
+EXPECTED_BRIEF_ISSUE_COUNT = 1
+CITATION_STATE_DRIFT = lb.CITATION_DRIFT_KEY
+CITATION_STATE_FILES = lb.CITATION_FILES_KEY
+VERIFICATION_PAGES_KEY = "pages"
+REPORT_ISSUES_KEY = "issues"
+ISSUE_CATEGORY_KEY = lb.ISSUE_CATEGORY_KEY
+ISSUE_MESSAGE_KEY = "message"
 
 
 class TestLintBrain:
@@ -261,6 +286,98 @@ class TestLintBrain:
         
         # Should pass without errors (warnings may exist but exit 0)
         assert result.returncode == 0
+
+
+class TestUnreadableCitations:
+    def test_live_citations_report_read_and_hash_failures(self, scaffolded_project, make_wiki_page):
+        root = scaffolded_project.parent
+        source = root / CITED_SOURCE_PATH
+        source.write_text(CITED_SOURCE_ANCHOR, encoding="utf-8")
+        raw_source = scaffolded_project / CITED_RAW_SOURCE_PATH
+        raw_source.parent.mkdir(parents=True, exist_ok=True)
+        raw_source.write_text(CITED_SOURCE_ANCHOR, encoding="utf-8")
+        for target in (scaffolded_project / SESSION_BRIEF_PATH, source, raw_source):
+            path_s = str(target.relative_to(root))
+            make_wiki_page(scaffolded_project, CITED_PAGE_NAME, CITED_PAGE_FRONTMATTER,
+                           CITED_PAGE_BODY.format(path=path_s, line=CITED_SOURCE_LINE,
+                                                  anchor=CITED_SOURCE_ANCHOR))
+            for helper_name in (READ_HELPER_NAME, HASH_HELPER_NAME):
+                original = getattr(lb, helper_name)
+
+                def denied_target(path):
+                    if path == target:
+                        raise PermissionError(CITATION_PERMISSION_ERROR)
+                    return original(path)
+
+                state = {}
+                with patch.object(lb, helper_name, side_effect=denied_target):
+                    code, report = lb.build_report(root, citation_state=state)
+                assert code == CLI_FAILURE
+                assert state[CITED_PAGE_STATE][CITATION_STATE_DRIFT]
+                assert path_s not in state[CITED_PAGE_STATE][CITATION_STATE_FILES]
+                issues = report[REPORT_ISSUES_KEY]
+                if target == scaffolded_project / SESSION_BRIEF_PATH:
+                    assert sum(issue[ISSUE_CATEGORY_KEY] == UNREADABLE_BRIEF_CATEGORY
+                               for issue in issues) == EXPECTED_BRIEF_ISSUE_COUNT
+                else:
+                    assert any(issue[ISSUE_CATEGORY_KEY] == CITATION_DRIFT_CATEGORY
+                               and UNREADABLE_CITATION_MESSAGE in issue[ISSUE_MESSAGE_KEY]
+                               for issue in issues)
+
+    def test_conflict_target_read_failure_is_reported(self, scaffolded_project, make_wiki_page):
+        page = make_wiki_page(scaffolded_project, CITED_PAGE_NAME, CITED_PAGE_FRONTMATTER,
+                              CITED_SOURCE_ANCHOR)
+        (scaffolded_project / OPEN_QUESTIONS_PATH).write_text(RESOLVED_CONFLICT_BODY, encoding="utf-8")
+        original_read = lb.read
+        original_date = lb.page_updated_date
+
+        def denied_target(path):
+            if path == page:
+                raise PermissionError(CITATION_PERMISSION_ERROR)
+            return original_read(path)
+
+        def check_target_date(path):
+            with patch.object(lb, READ_HELPER_NAME, side_effect=denied_target):
+                return original_date(path)
+
+        with patch.object(lb, CONFLICT_DATE_HELPER, side_effect=check_target_date):
+            code, report = lb.build_report(scaffolded_project.parent)
+        assert code == CLI_FAILURE
+        assert any(issue[ISSUE_CATEGORY_KEY] == CITATION_DRIFT_CATEGORY
+                   and UNREADABLE_CITATION_MESSAGE in issue[ISSUE_MESSAGE_KEY]
+                   for issue in report[REPORT_ISSUES_KEY])
+
+    def test_stored_citations_report_hash_failures(self, scaffolded_project, make_wiki_page):
+        root = scaffolded_project.parent
+        source = root / CITED_SOURCE_PATH
+        source.write_text(CITED_SOURCE_ANCHOR, encoding="utf-8")
+        make_wiki_page(scaffolded_project, CITED_PAGE_NAME, CITED_PAGE_FRONTMATTER, CITED_SOURCE_ANCHOR)
+        for target in (scaffolded_project / SESSION_BRIEF_PATH, source):
+            path_s = str(target.relative_to(root))
+            verification = {VERIFICATION_PAGES_KEY: {
+                CITED_PAGE_STATE: {CITATION_STATE_FILES: {path_s: lb.sha256_file(target)}},
+            }}
+            (scaffolded_project / lb.VERIFICATION_FILE).write_text(json.dumps(verification), encoding="utf-8")
+            original_hash = lb.sha256_file
+
+            def denied_target(path):
+                if path == target:
+                    raise PermissionError(CITATION_PERMISSION_ERROR)
+                return original_hash(path)
+
+            state = {}
+            with patch.object(lb, HASH_HELPER_NAME, side_effect=denied_target):
+                code, report = lb.build_report(root, citation_state=state)
+            assert code == CLI_FAILURE
+            assert state[CITED_PAGE_STATE][CITATION_STATE_DRIFT]
+            issues = report[REPORT_ISSUES_KEY]
+            if target == scaffolded_project / SESSION_BRIEF_PATH:
+                assert sum(issue[ISSUE_CATEGORY_KEY] == UNREADABLE_BRIEF_CATEGORY
+                           for issue in issues) == EXPECTED_BRIEF_ISSUE_COUNT
+            else:
+                assert any(issue[ISSUE_CATEGORY_KEY] == CITATION_DRIFT_CATEGORY
+                           and UNREADABLE_CITATION_MESSAGE in issue[ISSUE_MESSAGE_KEY]
+                           for issue in issues)
 
 
 class TestSourcePathResolution:

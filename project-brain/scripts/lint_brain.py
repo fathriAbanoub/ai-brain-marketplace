@@ -79,6 +79,15 @@ INIT_HINT = 'run `project-brain-init <root> "<Project Name>"`'
 UNREADABLE_BRIEF_CATEGORY = "unreadable_session_brief"
 UNREADABLE_BRIEF_SEVERITY = "error"
 UNREADABLE_BRIEF_MESSAGE = "cannot read session brief; do not mine"
+CITATION_DRIFT_CATEGORY = "citation_drift"
+UNREADABLE_CITATION_MESSAGE = "cited file is unreadable"
+UNREADABLE_BRAIN_FILE_CATEGORY = "unreadable_brain_file"
+UNREADABLE_BRAIN_FILE_MESSAGE = "cannot read brain file; secret check unverified"
+CITATION_DRIFT_KEY = "drift"
+CITATION_FILES_KEY = "files"
+CITATION_PRESENT_KEY = "has_citations"
+ISSUE_CATEGORY_KEY = "category"
+BRAIN_DIR_NAME = ".brain"
 
 # --- WP4: citations, staleness, provenance (KD-01, KD-02, KD-07, KD-14) ---
 # Inline citation syntax (documented in skills/brain/references/wiki-schema.md):
@@ -202,12 +211,23 @@ def git_commit_exists(root: Path, sha: str) -> bool:
 def add(issues: list[dict], severity: str, category: str, file: Path | None, root: Path, message: str, line: int | None = None) -> None:
     item = {
         "severity": severity,
-        "category": category,
+        ISSUE_CATEGORY_KEY: category,
         "file": rel(file, root) if file else None,
         "line": line,
         "message": message,
     }
     issues.append(item)
+
+
+def report_unreadable_file(root: Path, target: Path, issues: list[dict], exc: OSError,
+                           page: Path | None = None, line: int | None = None) -> None:
+    if target == root / BRAIN_DIR_NAME / SESSION_BRIEF_PATH:
+        if not any(issue[ISSUE_CATEGORY_KEY] == UNREADABLE_BRIEF_CATEGORY for issue in issues):
+            add(issues, UNREADABLE_BRIEF_SEVERITY, UNREADABLE_BRIEF_CATEGORY,
+                target, root, f"{UNREADABLE_BRIEF_MESSAGE}: {exc}")
+    else:
+        add(issues, UNREADABLE_BRIEF_SEVERITY, CITATION_DRIFT_CATEGORY, page or target, root,
+            f"{UNREADABLE_CITATION_MESSAGE}: {rel(target, root)} — {exc}; {VERIFY_HINT}", line)
 
 
 def extract_frontmatter(text: str) -> dict[str, object]:
@@ -755,7 +775,11 @@ def check_contradictions(root: Path, brain: Path, issues: list[dict]) -> None:
         target = target_from_conflict_block(block, lookup)
         if not resolved_dt or not target:
             continue
-        target_dt = page_updated_date(target)
+        try:
+            target_dt = page_updated_date(target)
+        except OSError as exc:
+            report_unreadable_file(root, target, issues, exc, open_questions)
+            continue
         if target_dt and target_dt.date() < resolved_dt.date():
             add(issues, "suggest", "resolved_conflict_not_reflected", open_questions, root, f"resolved conflict in open-questions.md but target page may not reflect resolution: {rel(target, root)}")
 
@@ -784,9 +808,9 @@ def write_verification(root: Path, citation_state: dict) -> None:
     """
     brain = root / ".brain"
     pages = {
-        page_rel: {"verified_at": now_iso(), "files": info["files"]}
+        page_rel: {"verified_at": now_iso(), CITATION_FILES_KEY: info[CITATION_FILES_KEY]}
         for page_rel, info in citation_state.items()
-        if info["has_citations"] and not info["drift"]
+        if info[CITATION_PRESENT_KEY] and not info[CITATION_DRIFT_KEY]
     }
     data = {"version": 1, "generated_at": now_iso(), "commit": git_head(root), "pages": pages}
     path = brain / VERIFICATION_FILE
@@ -826,38 +850,47 @@ def check_citations(root: Path, brain: Path, issues: list[dict], citation_state:
         # never the '{' that opens a citation), and every position here
         # indexes the original body for line numbers and messages.
         scan = strip_code_regions(body)
-        info = {"has_citations": False, "drift": False, "files": {}}
+        info = {CITATION_PRESENT_KEY: False, CITATION_DRIFT_KEY: False, CITATION_FILES_KEY: {}}
         spans: list[tuple[int, int]] = []
         for m in CITATION_RE.finditer(body):
             if scan[m.start()] != "{":  # starts inside a masked code region
                 continue
             spans.append((m.start(), m.end()))
-            info["has_citations"] = True
+            info[CITATION_PRESENT_KEY] = True
             quoted_s, path_s, start_s, end_s, anchor = m.groups()
             if quoted_s is not None:
                 path_s = quoted_s
             line_no = text.count("\n", 0, offset + m.start()) + 1
             target = root / path_s
             if not target.is_file():
-                add(issues, "error", "citation_drift", p, root,
+                add(issues, "error", CITATION_DRIFT_CATEGORY, p, root,
                     f'cited file not found: {path_s} — cite a real project-root-relative path; find the right file and locate the real lines with `grep -n "<anchor>" <file>` (or a bounded Read) before re-citing, {VERIFY_HINT}', line_no)
-                info["drift"] = True
+                info[CITATION_DRIFT_KEY] = True
                 continue
             start = int(start_s)
             end = int(end_s) if end_s else start
-            lines = read(target).splitlines()
+            try:
+                lines = read(target).splitlines()
+            except OSError as exc:
+                report_unreadable_file(root, target, issues, exc, p, line_no)
+                info[CITATION_DRIFT_KEY] = True
+                continue
             if start < 1 or end < start or end > len(lines):
-                add(issues, "error", "citation_drift", p, root,
+                add(issues, "error", CITATION_DRIFT_CATEGORY, p, root,
                     f'cited range {start}-{end} outside {path_s} ({len(lines)} lines) — locate the real lines with `grep -n "{anchor}" {path_s}` (or a bounded Read), never copy line numbers from docs or summaries, {VERIFY_HINT}', line_no)
-                info["drift"] = True
+                info[CITATION_DRIFT_KEY] = True
                 continue
             window = "\n".join(lines[start - 1:end + CITATION_ANCHOR_WINDOW_LINES])
             if not norm_ws(anchor) or norm_ws(anchor) not in norm_ws(window):
-                add(issues, "error", "citation_drift", p, root,
+                add(issues, "error", CITATION_DRIFT_CATEGORY, p, root,
                     f'anchor text not found within {CITATION_ANCHOR_WINDOW_LINES} lines of {path_s}:{start}-{end} — locate the real lines with `grep -n "{anchor}" {path_s}` and re-cite the range they actually appear in, {VERIFY_HINT}', line_no)
-                info["drift"] = True
+                info[CITATION_DRIFT_KEY] = True
                 continue
-            info["files"][path_s] = sha256_file(target)
+            try:
+                info[CITATION_FILES_KEY][path_s] = sha256_file(target)
+            except OSError as exc:
+                report_unreadable_file(root, target, issues, exc, p, line_no)
+                info[CITATION_DRIFT_KEY] = True
         for m in UNANCHORED_REF_RE.finditer(body):
             if any(s <= m.start() < e for s, e in spans):
                 continue
@@ -879,12 +912,19 @@ def check_stale_citations(root: Path, brain: Path, issues: list[dict],
         if not isinstance(stamp, dict):
             continue
         page = brain / page_rel
-        for cited, old_hash in (stamp.get("files") or {}).items():
+        for cited, old_hash in (stamp.get(CITATION_FILES_KEY) or {}).items():
             target = root / cited
             if not target.is_file():
                 add(issues, "error", "stale_citation", page, root,
                     f"cited file no longer exists (was verified): {cited}")
-            elif sha256_file(target) != str(old_hash):
+                continue
+            try:
+                current_hash = sha256_file(target)
+            except OSError as exc:
+                report_unreadable_file(root, target, issues, exc, page)
+                info[CITATION_DRIFT_KEY] = True
+                continue
+            if current_hash != str(old_hash):
                 add(issues, "error", "stale_citation", page, root,
                     f"cited file changed since verification: {cited} — re-check the page, then run --verify")
 
@@ -1146,12 +1186,11 @@ def check_brain_secrets(root: Path, brain: Path, issues: list[dict]) -> None:
         try:
             text = read(p)
         except OSError as exc:
-            # ponytail: brief-only I/O gate; add separate rules for other unreadable files.
-            if p != brain / SESSION_BRIEF_PATH:
-                raise
-            if not any(issue["category"] == UNREADABLE_BRIEF_CATEGORY for issue in issues):
-                add(issues, UNREADABLE_BRIEF_SEVERITY, UNREADABLE_BRIEF_CATEGORY,
-                    p, root, f"{UNREADABLE_BRIEF_MESSAGE}: {exc}")
+            if p == brain / SESSION_BRIEF_PATH:
+                report_unreadable_file(root, p, issues, exc)
+            else:
+                add(issues, UNREADABLE_BRIEF_SEVERITY, UNREADABLE_BRAIN_FILE_CATEGORY,
+                    p, root, f"{UNREADABLE_BRAIN_FILE_MESSAGE}: {exc}")
             continue
         for label, pattern in SECRET_PATTERNS:
             m = pattern.search(text)
@@ -1269,8 +1308,7 @@ def build_report(root: Path, citation_state: dict | None = None) -> tuple[int, d
             check_brief_task_checklist(root, brain, issues)
             check_session_brief_staleness(root, brain, issues)
         except OSError as exc:
-            add(issues, UNREADABLE_BRIEF_SEVERITY, UNREADABLE_BRIEF_CATEGORY,
-                brain / SESSION_BRIEF_PATH, root, f"{UNREADABLE_BRIEF_MESSAGE}: {exc}")
+            report_unreadable_file(root, brain / SESSION_BRIEF_PATH, issues, exc)
         check_nested_graphify_output(root, issues)
         check_audit(root, brain, issues)
         check_evidence_aging(root, brain, issues)

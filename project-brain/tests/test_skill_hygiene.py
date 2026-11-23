@@ -108,6 +108,11 @@ OWNERSHIP_NO_RECHECK_RULE = "no automatic re-check flow"
 OWNERSHIP_HALLWAY_STEP_RE = re.compile(
     rf"^\d+\. Check `mempalace_list_tunnels`.*?{NUMBERED_STEP_END}", re.M | re.S,
 )
+OWNERSHIP_MARKER_STEP_RE = re.compile(
+    rf"^\d+\. Immediately after reading.*?{NUMBERED_STEP_END}", re.M | re.S,
+)
+OWNERSHIP_BEFORE_API_RULE = "before calling any check API"
+OWNERSHIP_MARKER_STEP_APIS = ("mempalace_status", "mempalace_list_wings")
 LAST_STRICT_SCORES_RE = re.compile(r"sub-scores.*last strict run", re.S)
 DIARY_FORMAT_POINTER_RE = re.compile(
     r"(?i)diary(?:\s+entry)?\s+(?:format|template)|(?:format|template)\s+(?:for\s+)?diar(?:y|ies)",
@@ -517,6 +522,35 @@ class TestInitializeGate:
         step = OWNERSHIP_HALLWAY_STEP_RE.search(text)
         assert step and OWNERSHIP_RESET_ONLY_RULE in step.group()
         assert OWNERSHIP_NO_RECHECK_RULE in step.group()
+
+    def test_ownership_marker_written_before_first_api_calls(self):
+        """The in-progress BLOCKED-WING: marker must be written before
+        mempalace_status and mempalace_list_wings are called (step 2 precedes
+        step 3 in wing-ownership.md). Failure here means a crash during the
+        API calls leaves no marker and mining is unblocked."""
+        text = WING_OWNERSHIP.read_text(encoding=TEXT_ENCODING)
+        marker_step = OWNERSHIP_MARKER_STEP_RE.search(text)
+        assert marker_step, (
+            "wing-ownership.md must have a step that writes the in-progress "
+            "BLOCKED-WING: marker immediately after reading the recorded identity "
+            "and before calling any check API"
+        )
+        assert BLOCKED_WING_MARKER in marker_step.group()
+        assert OWNERSHIP_BEFORE_API_RULE in marker_step.group()
+        for api in OWNERSHIP_MARKER_STEP_APIS:
+            assert api not in marker_step.group(), (
+                f"wing-ownership.md: {api} must not appear in the marker-writing step — "
+                "it must appear in the subsequent API-call step"
+            )
+            api_position = text.find(api)
+            assert api_position > marker_step.end(), (
+                f"wing-ownership.md: {api} must come after the in-progress marker"
+            )
+        hallway_step = OWNERSHIP_HALLWAY_STEP_RE.search(text)
+        assert hallway_step, "wing-ownership.md: missing tunnel/hallway check step"
+        assert marker_step.start() < hallway_step.start(), (
+            "wing-ownership.md: marker-writing step must precede the tunnel/hallway check step"
+        )
 
     def test_blocked_wing_guard_is_carried_through_mining_and_brief_updates(self):
         text = BRAIN_SKILL.read_text(encoding=TEXT_ENCODING)

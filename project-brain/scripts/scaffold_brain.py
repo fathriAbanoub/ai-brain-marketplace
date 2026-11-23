@@ -39,6 +39,7 @@ WING_TS_FORMAT = "%Y%m%dT%H%M%SZ"
 BLOCKED_WING_MARKER = "BLOCKED-WING:"
 SESSION_BRIEF_PATH = Path("state/session-brief.md")
 BRIEF_LINE_SEPARATOR = "\n"
+FORCE_BRIEF_READ_ERROR = "cannot read existing session brief"
 
 
 def normalize_wing_slug(raw: str) -> str:
@@ -390,6 +391,18 @@ def scaffold(project_root: Path, title: str, force: bool = False, wing_override:
 
     project_root = project_root.resolve()
     brain = project_root / ".brain"
+    brief_path = brain / SESSION_BRIEF_PATH
+    blocked_lines = []
+    if force:
+        # Bad bytes are replaceable; failed I/O must stop before any forced writes.
+        # ponytail: preserve marker lines only; upgrade to structured brief merging if needed.
+        try:
+            blocked_lines = [line for line in brief_path.read_text(encoding="utf-8", errors="replace").splitlines()
+                             if line.startswith(BLOCKED_WING_MARKER)]
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            sys.exit(f"{FORCE_BRIEF_READ_ERROR}: {exc}")
     today = date.today().isoformat()
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
 
@@ -645,12 +658,7 @@ None recorded yet. A decision is only recorded on an evidence-backed decision pa
 3. `.brain/tasks/next-actions.md` (the ONLY task list)
 4. `graphify-out/GRAPH_REPORT.md` if present
 """
-    brief_path = brain / SESSION_BRIEF_PATH
-    if force and brief_path.exists():
-        # ponytail: preserve marker lines only; upgrade to structured brief merging if needed.
-        blocked_lines = [line for line in brief_path.read_text(encoding="utf-8", errors="replace").splitlines()
-                         if line.startswith(BLOCKED_WING_MARKER)]
-        session_brief = BRIEF_LINE_SEPARATOR.join([*blocked_lines, session_brief])
+    session_brief = BRIEF_LINE_SEPARATOR.join([*blocked_lines, session_brief])
     write_template(brief_path, session_brief, project_root, brain, force)
 
     # KD-22: persist the plugin root at init so later shells read it instead

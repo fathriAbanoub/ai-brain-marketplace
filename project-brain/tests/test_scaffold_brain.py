@@ -12,6 +12,7 @@ from scaffold_brain import (  # noqa: E402
     BLOCKED_WING_MARKER,
     BRIEF_LINE_SEPARATOR,
     SESSION_BRIEF_PATH,
+    FORCE_BRIEF_READ_ERROR,
     resolve_wing_name,
     scaffold,
 )
@@ -25,6 +26,10 @@ BRIEF_SENTINEL = "Obsolete brief content."
 OTHER_BLOCKED_WING = "wiki_previous_wing"
 BLOCKED_WING_NOTE = " — do not mine; resolve via /project-brain:reset"
 UNREADABLE_BRIEF_BYTES = b"\xff"
+FORCED_WIKI_PATH = Path("wiki/architecture/System Overview.md")
+FORCED_WIKI_SENTINEL = "Preserve this page on a failed forced init."
+TRACEBACK_MARKER = "Traceback"
+ERROR_MESSAGE_LINE_COUNT = 1
 
 
 class TestScaffoldBrain:
@@ -171,6 +176,21 @@ class TestScaffoldBrain:
         result = run_script(SCAFFOLD_SCRIPT, [str(root), PROJECT_TITLE, FORCE_FLAG])
         assert result.returncode == SUCCESS_EXIT_CODE
         assert brief.read_text(encoding="utf-8").startswith(marker_line + BRIEF_LINE_SEPARATOR)
+
+    def test_force_directory_brief_stops_before_overwriting_files(self, run_script, scaffolded_project):
+        root = scaffolded_project.parent
+        brief = scaffolded_project / SESSION_BRIEF_PATH
+        brief.unlink()
+        brief.mkdir()
+        page = scaffolded_project / FORCED_WIKI_PATH
+        page.write_text(FORCED_WIKI_SENTINEL, encoding="utf-8")
+        result = run_script(SCAFFOLD_SCRIPT, [str(root), PROJECT_TITLE, FORCE_FLAG])
+        assert result.returncode != SUCCESS_EXIT_CODE
+        assert TRACEBACK_MARKER not in result.stderr
+        assert FORCE_BRIEF_READ_ERROR in result.stderr
+        assert len(result.stderr.splitlines()) == ERROR_MESSAGE_LINE_COUNT
+        assert brief.is_dir()
+        assert page.read_text(encoding="utf-8") == FORCED_WIKI_SENTINEL
 
     def test_scaffold_idempotent_does_not_overwrite(self, run_script, tmp_project: Path):
         """Second run preserves sentinel line added after first run."""

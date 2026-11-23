@@ -1,17 +1,144 @@
 """Tests for doctor.py script."""
 
-import pytest
+import re
 import sys
 from pathlib import Path
 
 PLUGIN_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PLUGIN_ROOT / "scripts"))
 
-from doctor import graphify_freshness, print_health  # noqa: E402
+from doctor import (  # noqa: E402
+    SESSION_BRIEF_REL,
+    WING_WARNING,
+    graphify_freshness,
+    mempalace_wing_check,
+    memory_sync,
+    print_health,
+)
+from scaffold_brain import BLOCKED_WING_MARKER, BRIEF_LINE_SEPARATOR, resolve_wing_name  # noqa: E402
+
+FULL_MEMORY_SYNC_SCORE = 100
+NO_MEMORY_SYNC_SCORE = 0
+DIARY_LOG_FILENAME = "20261121.md"
+BRAIN_SKILL = PLUGIN_ROOT / "skills" / "brain" / "SKILL.md"
+BLOCKED_WING_NOTE = " — do not mine; resolve via /project-brain:reset"
+UNVERIFIED_WING_NOTE = " — collision or unverified check; do not mine; resolve via /project-brain:reset"
+DIFFERENT_WING_SUFFIX = "_other"
+BLOCKED_MINING_MESSAGE = "mining is blocked"
+RESET_COMMAND = "/project-brain:reset"
+UNREADABLE_BRIEF_MESSAGE = "cannot read"
+DO_NOT_MINE_MESSAGE = "do not mine"
+DOCTOR_SCRIPT = "doctor.py"
+STRICT_FLAG = "--strict"
+CLI_SUCCESS = 0
+CLI_FAILURE = 1
+TRACEBACK_MARKER = "Traceback"
+UNKNOWN_BRIEF_DATE_MESSAGE = "session brief date unknown"
+TEXT_ENCODING = "utf-8"
+
+
+class TestMemorySync:
+    def test_documented_diary_log_returns_full_score(self, tmp_path):
+        text = BRAIN_SKILL.read_text(encoding=TEXT_ENCODING)
+        init = text[text.index("## Initialize"):text.index("## Other modes")]
+        heading = re.search(r"^\s*## \[HH:MM\] diary \| <title>$", init, re.M)
+        bullet = re.search(r"^\s*- MemPalace diary written \(agent <diary agent>\)$", init, re.M)
+        assert heading, "Initialize must document a diary log heading"
+        assert bullet, "Initialize must document the MemPalace diary-write bullet"
+        log = tmp_path / ".brain" / "log" / DIARY_LOG_FILENAME
+        log.parent.mkdir(parents=True)
+        log.write_text(
+            heading.group().strip() + "\n" + bullet.group().strip() + "\n",
+            encoding=TEXT_ENCODING,
+        )
+        score, _ = memory_sync(tmp_path)
+        assert score == FULL_MEMORY_SYNC_SCORE
+
+    def test_zero_score_note_explains_log_repair(self, tmp_path):
+        log = tmp_path / ".brain" / "log"
+        for state in ("missing", "empty", "without diary"):
+            if state == "empty":
+                log.mkdir(parents=True)
+            elif state == "without diary":
+                (log / DIARY_LOG_FILENAME).write_text("Initialized brain.\n", encoding=TEXT_ENCODING)
+            score, note = memory_sync(tmp_path)
+            assert score == NO_MEMORY_SYNC_SCORE
+            assert "append" in note.lower()
+            assert ".brain/log/<YYYYMMDD>.md" in note
+            assert "MemPalace diary write" in note
+
+
+class TestBlockedWing:
+    def test_recorded_wing_marker_blocks_mining(self, scaffolded_project):
+        root = scaffolded_project.parent
+        wing, _ = resolve_wing_name(root)
+        brief = root / SESSION_BRIEF_REL
+        brief.write_text(f"{BLOCKED_WING_MARKER} {wing}{BLOCKED_WING_NOTE}\n", encoding=TEXT_ENCODING)
+        severity, note = mempalace_wing_check(root)
+        assert severity == WING_WARNING
+        assert wing in note
+        assert BLOCKED_MINING_MESSAGE in note.lower()
+        assert RESET_COMMAND in note
+
+    def test_unverified_check_marker_blocks_recorded_wing(self, scaffolded_project):
+        root = scaffolded_project.parent
+        wing, _ = resolve_wing_name(root)
+        brief = root / SESSION_BRIEF_REL
+        content = brief.read_text(encoding=TEXT_ENCODING)
+        brief.write_text(
+            f"{BLOCKED_WING_MARKER} {wing}{UNVERIFIED_WING_NOTE}{BRIEF_LINE_SEPARATOR}{content}",
+            encoding=TEXT_ENCODING,
+        )
+        severity, note = mempalace_wing_check(root)
+        assert severity == WING_WARNING
+        assert wing in note
+        assert BLOCKED_MINING_MESSAGE in note.lower()
+        assert RESET_COMMAND in note
+
+    def test_different_wing_marker_leaves_result_unchanged(self, scaffolded_project):
+        root = scaffolded_project.parent
+        original = mempalace_wing_check(root)
+        wing, _ = resolve_wing_name(root)
+        (root / SESSION_BRIEF_REL).write_text(
+            f"{BLOCKED_WING_MARKER} {wing}{DIFFERENT_WING_SUFFIX}{BLOCKED_WING_NOTE}\n",
+            encoding=TEXT_ENCODING,
+        )
+        assert mempalace_wing_check(root) == original
+
+    def test_no_brief_leaves_result_unchanged(self, scaffolded_project):
+        root = scaffolded_project.parent
+        original = mempalace_wing_check(root)
+        (root / SESSION_BRIEF_REL).unlink()
+        assert mempalace_wing_check(root) == original
+
+    def test_unreadable_brief_warns_not_to_mine(self, scaffolded_project):
+        root = scaffolded_project.parent
+        brief = root / SESSION_BRIEF_REL
+        brief.unlink()
+        brief.mkdir()
+        severity, note = mempalace_wing_check(root)
+        assert severity == WING_WARNING
+        assert UNREADABLE_BRIEF_MESSAGE in note.lower()
+        assert str(SESSION_BRIEF_REL) in note
+        assert DO_NOT_MINE_MESSAGE in note.lower()
+
+    def test_directory_brief_warns_through_plain_and_strict_cli(self, run_script, scaffolded_project):
+        root = scaffolded_project.parent
+        brief = root / SESSION_BRIEF_REL
+        brief.unlink()
+        brief.mkdir()
+        for flags, expected_exit in (([], CLI_SUCCESS), ([STRICT_FLAG], CLI_FAILURE)):
+            result = run_script(DOCTOR_SCRIPT, [str(root), *flags])
+            assert TRACEBACK_MARKER not in result.stderr
+            assert result.returncode == expected_exit
+            assert UNREADABLE_BRIEF_MESSAGE in result.stdout.lower()
+            assert str(SESSION_BRIEF_REL) in result.stdout
+            assert DO_NOT_MINE_MESSAGE in result.stdout.lower()
+            assert UNKNOWN_BRIEF_DATE_MESSAGE in result.stdout
 
 
 class TestDoctorBoundary:
-    """CodeRabbit #14: a sub-score of exactly 70 must pass (the doctor flags
+    """A sub-score of exactly 70 must pass (the doctor flags
     strictly-below-70 only, and skill text says 'at or above 70' is done)."""
 
     def test_score_70_is_not_flagged(self, capsys, tmp_path):
@@ -20,7 +147,7 @@ class TestDoctorBoundary:
         root = tmp_path / "boundary-70"
         brain = root / ".brain"
         (brain / "wiki").mkdir(parents=True)
-        (brain / "wiki" / "index.md").write_text("# index\n", encoding="utf-8")
+        (brain / "wiki" / "index.md").write_text("# index\n", encoding=TEXT_ENCODING)
         for i in range(10):
             good = i < 7
             page = brain / "wiki" / f"p{i}.md"
@@ -28,11 +155,11 @@ class TestDoctorBoundary:
                 page.write_text(
                     "---\ntitle: t\ntype: concept\nstatus: active\nsources: [src.md]\n---\n"
                     f"# p{i}\n[[p0]] link\n",
-                    encoding="utf-8",
+                    encoding=TEXT_ENCODING,
                 )
-                (brain / "wiki" / "index.md").open("a", encoding="utf-8").write(f"[[p{i}]]\n")
+                (brain / "wiki" / "index.md").open("a", encoding=TEXT_ENCODING).write(f"[[p{i}]]\n")
             else:
-                page.write_text("", encoding="utf-8")  # 0 points: no heading/frontmatter
+                page.write_text("", encoding=TEXT_ENCODING)  # 0 points: no heading/frontmatter
         # Verify the score really is exactly 70 before asserting the boundary.
         from doctor import completeness
         score, _ = completeness(root)
@@ -46,7 +173,7 @@ class TestDoctorBoundary:
         root = tmp_path / "boundary-69"
         brain = root / ".brain"
         (brain / "wiki").mkdir(parents=True)
-        (brain / "wiki" / "index.md").write_text("# index\n", encoding="utf-8")
+        (brain / "wiki" / "index.md").write_text("# index\n", encoding=TEXT_ENCODING)
         for i in range(10):
             good = i < 6
             page = brain / "wiki" / f"p{i}.md"
@@ -54,11 +181,11 @@ class TestDoctorBoundary:
                 page.write_text(
                     "---\ntitle: t\ntype: concept\nstatus: active\nsources: [src.md]\n---\n"
                     f"# p{i}\n[[p0]] link\n",
-                    encoding="utf-8",
+                    encoding=TEXT_ENCODING,
                 )
-                (brain / "wiki" / "index.md").open("a", encoding="utf-8").write(f"[[p{i}]]\n")
+                (brain / "wiki" / "index.md").open("a", encoding=TEXT_ENCODING).write(f"[[p{i}]]\n")
             else:
-                page.write_text("", encoding="utf-8")
+                page.write_text("", encoding=TEXT_ENCODING)
         from doctor import completeness
         score, _ = completeness(root)
         assert score < 70
@@ -69,7 +196,7 @@ class TestDoctorBoundary:
 
     def test_lifecycle_doc_says_at_or_above(self):
         """Skill text and doctor must agree on the boundary semantics."""
-        text = (PLUGIN_ROOT / "skills" / "brain" / "references" / "brain-lifecycle.md").read_text(encoding="utf-8")
+        text = (PLUGIN_ROOT / "skills" / "brain" / "references" / "brain-lifecycle.md").read_text(encoding=TEXT_ENCODING)
         assert "at or above 70" in text
         assert "scores are above 70 or" not in text
 
@@ -175,7 +302,7 @@ class TestDoctor:
         project_dir = brain.parent
         
         # Remove session-brief.md
-        brief_path = brain / "state" / "session-brief.md"
+        brief_path = project_dir / SESSION_BRIEF_REL
         brief_path.unlink()
         
         result = run_script("doctor.py", [str(project_dir)])

@@ -2,6 +2,8 @@
 
 This is the canonical operating loop. The LLM Wiki is only one phase. A project brain is complete only when the wiki, MemPalace, graphify, logs, and handoff state are aligned.
 
+Every session-brief rewrite preserves any `BLOCKED-WING:` line until reset removes the brain (SKILL.md Work loop step 5).
+
 ## Layer order
 
 Use this order for serious work:
@@ -64,29 +66,30 @@ After creating or updating wiki pages, do not stop. Run this post-wiki checklist
 
 ### Initialize
 
-Goal: create the durable brain skeleton, orient the project to use it, and continue through the lifecycle autonomously. Initialize ends with a final report of what was done and what could not be done and why — never with a to-do list for the user. The agent may pause to ask the user only when a decision or an access is genuinely missing.
+Goal: create the durable brain skeleton and continue autonomously through the strict gate and final report. No user to-do list. Pause only for a genuinely missing decision or access; leftover-wing findings never pause Initialize.
 
-Actions:
+Actions (the executable first-run order is in `../SKILL.md` → Initialize):
 
-1. Run `project-brain-init <project-root> "<Project Name>"`.
-2. Read the created `.brain/CLAUDE.md` and `.brain/state/session-brief.md`.
-3. Read `references/mempalace-tools.md` before the first MemPalace call of this mode.
-4. Run `project-brain-doctor <project-root>`; read all four sub-scores (the doctor flags each one below the repair threshold, 70; a score of exactly 70 passes) and repair flagged ones per Self-correction scan or explain why not.
-5. Tell the user which optional dependencies are missing: MemPalace and graphify.
-6. Leftover-wing check (new brains only): read the recorded `mempalace_wing` from the new `.brain/CLAUDE.md`, then call `mempalace_status` and after it `mempalace_list_wings`; if any wing matches the recorded brain wiki wing (exact name or normalized legacy forms), the brain diary wing, or the directory-derived wing, tell the user — showing each actual wing separately with its exact name and drawer count — and offer cleanup via the reset flow. Do not delete anything unasked. The wing classes and the orphan scan are defined in `wing-ownership.md`.
-7. Ingest the project's own primary sources (README, manifests, entry points) into `.brain/raw/` or pointer files.
-8. Compile wiki pages from those primary sources under Contracts 7 and 8 (read the actual files; no speculative language); update System Overview and source summaries, and regenerate the index with `project-brain-lint <project-root> --reindex`.
-9. Mine `.brain/wiki` into the wiki wing with an explicit `--wing` (dry run first).
-10. Verify the mining landed before calling the memory layer done: confirm the exact recorded wing now exists with drawers (`mempalace_get_taxonomy`, or `mempalace_list_rooms` for that exact wing). Init records the wing name before mining runs, so a silent mining failure leaves a recorded name for a wing that does not exist — which later confuses reset. If the wing has no drawers, the memory layer is not done: say so in the final report with the failing step and the error, continue with the other layers, and state the next action — re-run the mining recipe, dry run first.
-11. Run graphify only if the doctor says stale.
-12. Write the diary entry, update the session brief, append the log, run lint.
-13. Final report: what was done, what could not be done and why; doctor sub-score status. No user to-do list.
+1. Run `project-brain-init <project-root> "<Project Name>"`; verify the new wing's uniqueness in step 6.
+2. Read `.brain/CLAUDE.md`, `.brain/state/session-brief.md`, and `.brain/wiki/index.md`; immediately write an IN-PROGRESS session brief with the current state and next step.
+3. Read `references/mempalace-tools.md` before the first MemPalace call. Load deferred schemas in ONE ToolSearch call (`select:<full name 1>,<full name 2>,…`, `max_results` at least the number of names): `mempalace_status`, `mempalace_list_wings`, `mempalace_list_tunnels`, `mempalace_list_hallways`, `mempalace_get_taxonomy`, `mempalace_diary_write`, `mempalace_list_rooms`, `mempalace_mine`. Verify the returned `<functions>` block, then call `mempalace_status`.
+4. Run `project-brain-doctor <project-root>` and read all four sub-scores. Repair every flagged score in the Work loop per Self-correction scan (the diary and log repair Memory sync). Skip only a repair requiring access you lack; name that access in the report.
+5. Report availability of MemPalace MCP, the graphify skill/CLI, and Obsidian MCP; no install instructions unless asked.
+6. Leftover-wing check (new brains only — skip on re-init): read `mempalace_wing` and `mempalace_diary_agent` from `.brain/CLAUDE.md`; call `mempalace_status`, then `mempalace_list_wings`, `mempalace_list_tunnels`, `mempalace_list_hallways` (`limit: 100`; advance `offset` by 100 until a page returns fewer than 100 records; check every record). Retry any failed call once; if it still fails (name the call and page) or the recorded wiki wing exists or has tunnel/hallway records, do NOT mine: prepend `BLOCKED-WING: <exact wing name> — collision or unverified check; do not mine; resolve via /project-brain:reset` to `.brain/state/session-brief.md`, preserving its content; memory **not done**. Report each match's exact name, drawer count and tunnel/hallway records; memory **not done** — init cannot rename it. Offer `/project-brain:reset` for wiki/brain-diary matches or orphan candidates. Directory-derived wings: informational only (MemPalace re-creates them), no cleanup offer. Never delete unasked; report and continue without waiting for an answer.
+7. Ingest primary sources (README, manifests, entry points) into `.brain/raw/` or pointer files.
+8. Before the first wiki write, read `references/wiki-schema.md`. Compile primary sources under Contracts 7 and 8; update System Overview and source summaries, regenerate the index with `project-brain-lint <project-root> --reindex`, and record contradictions in source pages and `open-questions.md`.
+9. If the brief has `BLOCKED-WING:` naming the recorded wing, skip mining, step 10's drawer check and step 13's re-mine; report memory **not done**. Otherwise mine `.brain/wiki` with explicit `--wing` from `mempalace_wing` (Recipe 3 in mempalace-tools.md; dry run first), never the project root.
+10. Verify mining with `mempalace_get_taxonomy` or `mempalace_list_rooms` for the recorded wing: it must exist with drawers. No drawers → repair now with the mining recipe, dry run first; if blocked, report the failing call, error and missing access, then continue other layers.
+11. Update `.brain/state/session-brief.md` (under 400 words), run `project-brain-lint <project-root>`, and clear error-level issues.
+12. Write `mempalace_diary_write` with the recorded `mempalace_diary_agent`, using the plain format in SKILL.md Initialize (full example: `references/mempalace-workflow.md`). Set `Log:` to `.brain/log/<YYYYMMDD>.md`; after success, append `## [HH:MM] diary | <title>` and `- MemPalace diary written (agent <diary agent>)` to that path, preserving existing content. Never log a failed write as written.
+13. Run the `## Work loop` section from SKILL.md — inventory and git-digest first on a fresh brain. Repair flagged sub-scores and gates; re-mine wiki changes (Recipe 3 in `references/mempalace-tools.md`; dry run first). Append a second diary and log entry only if the Work loop changed findings or contradictions. Run `project-brain-doctor <project-root> --strict` until it exits 0 or the Work loop's repair cap is spent; report all four sub-scores from the last strict run's output.
+14. Final report: "complete" only if the strict gate exited 0, no sub-score remains flagged, every re-mine of step 13's wiki changes succeeded, and the recorded wing is not blocked and the recorded wing has drawers (verified in step 10). Otherwise **INCOMPLETE**: list failing gates, sub-scores, mines/re-mines with their failing commands, blocked or empty wings and missing access under **not done**. No wiki changes in step 13 → no re-mine. A flagged sub-score is never "expected". No next-session to-do list for runnable work.
 
 Done when:
 
-- `.brain/` exists.
-- `wiki/index.md`, `wiki/open-questions.md`, and `state/session-brief.md` exist.
-- Primary sources are ingested and compiled into wiki pages, the wiki is mined into the wiki wing, the diary entry is written, the log and brief are updated, and lint has no error issues — or the final report names exactly what could not be done and why.
+- `.brain/` exists with `wiki/index.md`, `wiki/open-questions.md`, and `state/session-brief.md`.
+- Primary sources are ingested and compiled, the wiki is mined into the recorded wing, the plain diary is written, and the log and brief are updated.
+- The final strict gate exits 0, all sub-scores are at or above the repair threshold, every re-mine of step 13's wiki changes succeeded, the recorded wing is not blocked and it has drawers verified in step 10; otherwise Initialize is INCOMPLETE, never complete with an explanation instead of repair; list failed re-mines and their failing commands under **not done**. No wiki changes in step 13 → no re-mine.
 - The user or future model can see the brain protocol from project files.
 
 ### Wake up / orient
@@ -169,13 +172,13 @@ Done when:
 
 Goal: preserve session-specific context without bloating the wiki.
 
-Before any MemPalace call, read `references/mempalace-tools.md` for the complete 47-tool reference, policy table, and call recipes. Follow those recipes exactly — preflight check before writes, search before claims, diary format for entries.
+Before any MemPalace call, read `references/mempalace-tools.md` for the complete 47-tool reference, policy table, and call recipes. Follow those recipes exactly — preflight check before writes, search before claims.
 
 Actions:
 
 1. Call `mempalace_status` (preflight). If `vector_disabled` is true, skip writes and tell the user to run `mempalace repair rebuild-index`.
 2. If `.brain/CLAUDE.md` is missing or does not define a non-empty `mempalace_wing`, skip the MemPalace search and diary read, tell the user the brain is not initialized or configured and to run project-brain-init (or fix the file), and never infer a wing or search without one. For claims about wiki knowledge (decisions, architecture, project facts), use `mempalace_search` with the wiki wing from `.brain/CLAUDE.md`; for claims about what happened in earlier sessions (continuity, what was done last time, open threads), use `mempalace_diary_read` with the agent from `mempalace_diary_agent` in `.brain/CLAUDE.md` (for an older brain without that field, from the agent named in the diary sentence of that file; if neither exists, skip the diary and tell the user) — see the recipe in mempalace-tools.md, "Read Diary at Wake-up". The wiki search does not read the diary and the diary read does not search wiki pages, so use the one that fits the claim, or both.
-3. Store diary entries after meaningful changes (follow diary format in `references/mempalace-tools.md`).
+3. Store diary entries after meaningful changes (follow the format in `../SKILL.md` → Initialize step 12).
 4. Convert stable facts from memory into wiki pages or decisions.
 5. Do not store secrets or full raw dumps.
 

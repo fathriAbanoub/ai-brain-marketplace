@@ -28,6 +28,14 @@ CONDITIONAL_PATTERN = re.compile(
 )
 
 
+def guidance_text(file_path: Path) -> str:
+    content = file_path.read_text(encoding="utf-8")
+    # ponytail: follow only the refresh checklist; add targets if routing moves again.
+    if file_path == SKILL_DIR / "SKILL.md" and "Read `references/post-wiki-checklist.md`" in content:
+        content += (REFS_DIR / "post-wiki-checklist.md").read_text(encoding="utf-8")
+    return content
+
+
 def test_no_unconditional_or_choice():
     """Verify docs don't say 'run X OR Y' without checking doctor reason."""
     violations = []
@@ -37,7 +45,7 @@ def test_no_unconditional_or_choice():
             violations.append(f"Missing file: {file_path}")
             continue
 
-        content = file_path.read_text()
+        content = guidance_text(file_path)
 
         # Check for forbidden unconditional OR
         if UNCONDITIONAL_OR_PATTERN.search(content):
@@ -58,7 +66,7 @@ def test_conditional_guidance_present():
             missing.append(f"Missing file: {file_path}")
             continue
 
-        content = file_path.read_text()
+        content = guidance_text(file_path)
 
         # Check for required conditional pattern
         if not CONDITIONAL_PATTERN.search(content):
@@ -84,7 +92,7 @@ def test_doctor_reason_strings_documented():
         if not file_path.exists():
             continue
 
-        content = file_path.read_text()
+        content = guidance_text(file_path)
 
         missing_in_file = [s for s in required_strings if s not in content]
         if missing_in_file:
@@ -122,7 +130,7 @@ def test_current_docs_pass():
             violations.append(f"Missing file: {file_path}")
             continue
 
-        content = file_path.read_text()
+        content = guidance_text(file_path)
 
         if UNCONDITIONAL_OR_PATTERN.search(content):
             violations.append(

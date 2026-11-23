@@ -30,6 +30,8 @@ import pytest
 PLUGIN_ROOT = Path(__file__).parent.parent
 HOOK = PLUGIN_ROOT / "hooks" / "brain_hooks.py"
 SKILLS_REFS = PLUGIN_ROOT / "skills" / "brain" / "references"
+HOOK_SCRIPTS_DIR = Path("scripts")
+HOOK_SCRIPT_DEPENDENCIES = ("doctor.py", "lint_brain.py", "scaffold_brain.py")
 
 # Load the hook module directly so tests can read its named constants without
 # duplicating values (state bounds etc.).
@@ -327,11 +329,10 @@ def test_hooks_json_command_survives_space_in_plugin_path(brain_repo: Path, tmp_
     must demonstrably fail, so the quoting is load-bearing."""
     spaced_root = tmp_path / "plug ins"
     (spaced_root / "hooks").mkdir(parents=True)
-    (spaced_root / "scripts").mkdir()
+    (spaced_root / HOOK_SCRIPTS_DIR).mkdir()
     shutil.copytree(PLUGIN_ROOT / "hooks", spaced_root / "hooks", dirs_exist_ok=True)
-    shutil.copy2(PLUGIN_ROOT / "scripts" / "doctor.py", spaced_root / "scripts" / "doctor.py")
-    # doctor imports lint_brain (single source of truth for citation checks)
-    shutil.copy2(PLUGIN_ROOT / "scripts" / "lint_brain.py", spaced_root / "scripts" / "lint_brain.py")
+    for script in HOOK_SCRIPT_DEPENDENCIES:
+        shutil.copy2(PLUGIN_ROOT / HOOK_SCRIPTS_DIR / script, spaced_root / HOOK_SCRIPTS_DIR / script)
 
     hooks_json = json.loads((PLUGIN_ROOT / "hooks" / "hooks.json").read_text(encoding="utf-8"))
     cmd = hooks_json["hooks"]["SessionStart"][0]["hooks"][0]["command"]

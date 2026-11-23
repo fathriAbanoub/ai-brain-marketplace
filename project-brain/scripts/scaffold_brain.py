@@ -36,6 +36,10 @@ FALLBACK_WING_NAME = "project" + WING_SEPARATOR + "brain"
 # older wing. The timestamp makes the identity unique per creation. Legacy
 # names stay supported and are never deleted or renamed automatically.
 WING_TS_FORMAT = "%Y%m%dT%H%M%SZ"
+BLOCKED_WING_MARKER = "BLOCKED-WING:"
+SESSION_BRIEF_PATH = Path("state/session-brief.md")
+BRIEF_LINE_SEPARATOR = "\n"
+FORCE_BRIEF_READ_ERROR = "cannot read existing session brief"
 
 
 def normalize_wing_slug(raw: str) -> str:
@@ -105,10 +109,10 @@ def generate_wiki_wing_name(
     numeric suffix _2, _3, ... so the same inputs always yield the same name
     and an existing identity is never silently reused.
 
-    `taken` must list every wing name the new identity must avoid: existing
-    palace wings, stale graph-record wings, the directory-derived wing, and
-    the diary wing. The caller (agent flow) obtains the first two from
-    mempalace_list_wings / tunnel+hallway listings before init.
+    `taken` lists names to avoid; scaffold supplies the directory-derived,
+    diary and fallback wings. The agent checks live wings/tunnels/hallways after
+    init, before mining. `--wing` is an explicit first-init override, applied
+    only when no wing is recorded; existing brains ignore it.
     """
     base_slug = sanitize_wing_name(slug)
     moment = now.astimezone(timezone.utc) if (now and now.tzinfo) else (
@@ -387,6 +391,18 @@ def scaffold(project_root: Path, title: str, force: bool = False, wing_override:
 
     project_root = project_root.resolve()
     brain = project_root / ".brain"
+    brief_path = brain / SESSION_BRIEF_PATH
+    blocked_lines = []
+    if force:
+        # Bad bytes are replaceable; failed I/O must stop before any forced writes.
+        # ponytail: preserve marker lines only; upgrade to structured brief merging if needed.
+        try:
+            blocked_lines = [line for line in brief_path.read_text(encoding="utf-8", errors="replace").splitlines()
+                             if line.startswith(BLOCKED_WING_MARKER)]
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            sys.exit(f"{FORCE_BRIEF_READ_ERROR}: {exc}")
     today = date.today().isoformat()
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
 
@@ -437,14 +453,12 @@ def scaffold(project_root: Path, title: str, force: bool = False, wing_override:
         # the wing name for an existing brain.
         wing_name = recorded_wing
     elif wing_override:
-        # Agent flow: the name was generated, then verified against the actual
-        # palace (list_wings + tunnels/hallways) before being passed here.
+        # --wing is an explicit first-init override, only when no wing is recorded.
         wing_name = sanitize_wing_name(wing_override)
     else:
-        # New brain: timestamped unique name. The directory-derived wing and
-        # the diary wing are reserved here; the agent flow additionally
-        # verifies the generated name against live palace data (list_wings +
-        # tunnels/hallways) and re-runs with --wing on the rare collision.
+        # New brain: reserve directory-derived and diary wing names here.
+        # The agent checks live wings/tunnels/hallways before mining; a collision
+        # blocks mining because re-init preserves the recorded identity.
         wing_name = generate_wiki_wing_name(
             slug,
             taken={derived_wing, diary_wing_for_agent(diary_agent), FALLBACK_WING_NAME},
@@ -644,7 +658,8 @@ None recorded yet. A decision is only recorded on an evidence-backed decision pa
 3. `.brain/tasks/next-actions.md` (the ONLY task list)
 4. `graphify-out/GRAPH_REPORT.md` if present
 """
-    write_template(brain / "state" / "session-brief.md", session_brief, project_root, brain, force)
+    session_brief = BRIEF_LINE_SEPARATOR.join([*blocked_lines, session_brief])
+    write_template(brief_path, session_brief, project_root, brain, force)
 
     # KD-22: persist the plugin root at init so later shells read it instead
     # of re-deriving it (script-side persistence; the skill reads this file).
@@ -743,7 +758,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--wing",
         dest="wing_override",
         default="",
-        help="Explicit wiki wing name (used by the init flow after the generated name has been verified against the palace)",
+        help="Explicit first-init wiki wing override; used only when no wing is recorded, ignored on existing brains",
     )
     return parser.parse_args(argv[1:])
 

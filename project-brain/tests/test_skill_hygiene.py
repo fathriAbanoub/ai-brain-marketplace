@@ -60,9 +60,33 @@ WORK_LOOP_BRIEF_STEP_RE = re.compile(
 FINAL_REPORT_STEP_RE = re.compile(r"^\d+\. Final report:[^\n]*", re.M)
 FINAL_REPORT_TODO_RULE = "No next-session to-do list for runnable work."
 FINAL_REPORT_BLOCKED_WING_CLAUSE = "and the recorded wing is not blocked"
+FINAL_REPORT_DRAWERS_CLAUSE = "and the recorded wing has drawers (verified in step 10)"
+LIFECYCLE_DONE_DRAWERS_CLAUSE = "the recorded wing is not blocked and it has drawers verified in step 10"
+LIFECYCLE_DONE_GATE_RE = re.compile(r"^- The final strict gate exits [^\n]*", re.M)
+LEFTOVER_RESET_OFFER_RULE = "Offer `/project-brain:reset` for wiki/brain-diary matches or orphan candidates."
+LEFTOVER_DIRECTORY_RULE = "Directory-derived wings: informational only (MemPalace re-creates them), no cleanup offer."
+EDIT_CONTRACT_RE = re.compile(r"^\*\*\d+\. Edit discipline\.\*\*[^\n]*", re.M)
+INLINE_EDIT_RULES = (
+    "Read the page immediately before every Edit",
+    "again after compaction or a failed Edit",
+    "Prefer Write for whole-page rewrites",
+    "Never batch dependent edits to one file in one parallel turn",
+    "Retry an Edit once, then switch to Write",
+    "`references/edit-discipline.md`",
+)
 HALLWAY_TOOL = "mempalace_list_hallways"
 HALLWAY_OFFSET_FIELD = "offset"
+HALLWAY_START_OFFSET = 0
+HALLWAY_PAGING_RULE = (
+    f"advance `offset` by {PAGE_LIMIT} until a page returns fewer than {PAGE_LIMIT} records"
+)
+HALLWAY_START_OFFSET_RE = re.compile(rf"\boffset:\s*{HALLWAY_START_OFFSET}\b")
 HALLWAY_PAGE_LIMIT_RE = re.compile(rf"\blimit:\s*{PAGE_LIMIT}\b")
+LEFTOVER_RETRY_RULE = "Retry any failed call once"
+LEFTOVER_UNVERIFIED_RULE = "if it still fails, the check is unverified"
+LEFTOVER_NO_MINE_RULE = "do not mine in this run"
+LEFTOVER_REMAINS_RULE = 'under "what remains" in the brief'
+LEFTOVER_SKIP_RULE = "or the leftover-wing check was unverified"
 OWNERSHIP_HALLWAY_STEP_RE = re.compile(
     rf"^\d+\. Check `mempalace_list_tunnels`.*?{NUMBERED_STEP_END}", re.M | re.S,
 )
@@ -188,6 +212,12 @@ class TestAvailabilityNotToolListOnly:
 
 
 class TestEditDisciplineReference:
+    def test_essential_edit_rules_remain_inline(self):
+        contract = EDIT_CONTRACT_RE.search(BRAIN_SKILL.read_text(encoding="utf-8"))
+        assert contract, "Edit discipline contract must remain inline"
+        for rule in INLINE_EDIT_RULES:
+            assert rule in contract.group(), f"Missing inline edit rule: {rule}"
+
     def test_read_before_edit_rules_documented(self):
         text = (BRAIN_REFS / "edit-discipline.md").read_text(encoding="utf-8")
         assert "immediately before every Edit" in text
@@ -396,6 +426,8 @@ class TestInitializeGate:
         step = match.group()
         assert "mempalace_list_wings" in step and "tunnel" in step and "hallway" in step
         assert "do NOT mine" in step
+        assert LEFTOVER_RESET_OFFER_RULE in step
+        assert LEFTOVER_DIRECTORY_RULE in step
         for doc in (BRAIN_SKILL, BRAIN_REFS / "brain-lifecycle.md", BRAIN_REFS / "wing-ownership.md"):
             assert "--wing <verified-unique-name>" not in doc.read_text(encoding="utf-8")
 
@@ -410,6 +442,20 @@ class TestInitializeGate:
             assert HALLWAY_TOOL in step.group()
             assert HALLWAY_OFFSET_FIELD in step.group()
             assert HALLWAY_PAGE_LIMIT_RE.search(step.group())
+            assert HALLWAY_PAGING_RULE in step.group()
+            if pattern is OWNERSHIP_HALLWAY_STEP_RE:
+                assert HALLWAY_START_OFFSET_RE.search(step.group())
+
+    def test_unverified_leftover_check_retries_once_and_skips_mining(self):
+        for doc in (BRAIN_SKILL, BRAIN_REFS / "brain-lifecycle.md"):
+            text = doc.read_text(encoding="utf-8")
+            leftover = INITIALIZE_LEFTOVER_STEP_RE.search(text)
+            mining = INITIALIZE_MINING_STEP_RE.search(text)
+            assert leftover and mining, f"{doc}: missing Initialize steps"
+            for rule in (LEFTOVER_RETRY_RULE, LEFTOVER_UNVERIFIED_RULE,
+                         LEFTOVER_NO_MINE_RULE, LEFTOVER_REMAINS_RULE):
+                assert rule in leftover.group(), f"{doc}: missing {rule}"
+            assert LEFTOVER_SKIP_RULE in mining.group()
 
     def test_blocked_wing_guard_is_carried_through_mining_and_brief_updates(self):
         text = BRAIN_SKILL.read_text(encoding="utf-8")
@@ -430,6 +476,9 @@ class TestInitializeGate:
         for section in (init, lifecycle):
             report = FINAL_REPORT_STEP_RE.search(section)
             assert report and FINAL_REPORT_BLOCKED_WING_CLAUSE in report.group()
+            assert FINAL_REPORT_DRAWERS_CLAUSE in report.group()
+        done_gate = LIFECYCLE_DONE_GATE_RE.search(lifecycle)
+        assert done_gate and LIFECYCLE_DONE_DRAWERS_CLAUSE in done_gate.group()
         catalog = (BRAIN_REFS / "mempalace-tools.md").read_text(encoding="utf-8")
         recipe = WIKI_SYNC_RECIPE_RE.search(catalog)
         assert recipe and BLOCKED_WING_MARKER in recipe.group()

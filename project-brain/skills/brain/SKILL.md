@@ -156,10 +156,10 @@ for a genuinely missing decision or access; the leftover-wing check never pauses
 5. Doctor baseline: run `project-brain-doctor <project-root>` and read all four sub-scores. Repair each `BELOW REPAIR THRESHOLD` score in the Work loop per `references/brain-lifecycle.md` → Self-correction scan; the diary and log below repair Memory sync. Skip only a repair requiring access you lack; name that access in the report.
 6. Report the current availability of MemPalace MCP, the graphify skill/CLI,
    and Obsidian MCP. No install instructions unless the user asks.
-7. **Leftover-wing check (new brains only — skip on re-init):** read `mempalace_wing` and `mempalace_diary_agent` from `.brain/CLAUDE.md`. Call `mempalace_status`, then `mempalace_list_wings`, `mempalace_list_tunnels`, `mempalace_list_hallways` (`limit: 100`, `offset` +100 until <100 records; check every record per `references/wing-ownership.md`). If the recorded wiki wing exists in wings or tunnel/hallway records, do NOT mine into it; prepend `BLOCKED-WING: <exact wing name> — do not mine; resolve via /project-brain:reset` (recorded name) to `.brain/state/session-brief.md`, preserving its content. Report each match's exact name, drawer count and tunnel/hallway records; memory **not done** — init cannot rename it. Offer `/project-brain:reset` for wiki/brain diary matches or orphan candidates; directory-derived wings are informational only (MemPalace re-creates them), no cleanup offer. Never delete unasked.
+7. **Leftover-wing check (new brains only — skip on re-init):** read `mempalace_wing` and `mempalace_diary_agent` from `.brain/CLAUDE.md`. Call `mempalace_status`, then `mempalace_list_wings`, `mempalace_list_tunnels`, `mempalace_list_hallways` (`limit: 100`; advance `offset` by 100 until a page returns fewer than 100 records; check every record). Retry any failed call once; if it still fails, the check is unverified: name the failing call and page; do not mine in this run; memory **not done**; record the unverified check under "what remains" in the brief. On collision, do NOT mine; prepend `BLOCKED-WING: <exact wing name> — do not mine; resolve via /project-brain:reset` (recorded name) to `.brain/state/session-brief.md`, preserving its content. Report exact names/counts/records per `references/wing-ownership.md`. Offer `/project-brain:reset` for wiki/brain-diary matches or orphan candidates. Directory-derived wings: informational only (MemPalace re-creates them), no cleanup offer. Never delete unasked.
 8. Ingest the project's primary sources (README, manifests, entry points)
    into `.brain/raw/` or pointer files per `references/evidence-lifecycle.md`.
-9. Compile wiki pages under Contracts 7 and 8 (read `references/wiki-schema.md` before the first write): update System Overview, add `.brain/wiki/sources/` summaries with `reliability:` frontmatter, regenerate the index with `project-brain-lint <project-root> --reindex`, and record contradictions in the source page and `open-questions.md`. If the brief has `BLOCKED-WING:` naming the recorded wing, skip mining, step 10's drawer check and step 13's re-mine; report memory **not done**. Otherwise mine `.brain/wiki` with explicit `--wing` from `mempalace_wing` (Recipe 3 in mempalace-tools.md; dry run first), never the project root.
+9. Compile wiki pages under Contracts 7 and 8 (read `references/wiki-schema.md` before the first write): update System Overview, add `.brain/wiki/sources/` summaries with `reliability:` frontmatter, regenerate the index with `project-brain-lint <project-root> --reindex`, and record contradictions in the source page and `open-questions.md`. If the brief has `BLOCKED-WING:` naming the recorded wing or the leftover-wing check was unverified, skip mining, step 10's drawer check and step 13's re-mine; report memory **not done**. Otherwise mine `.brain/wiki` with explicit `--wing` from `mempalace_wing` (Recipe 3 in mempalace-tools.md; dry run first), never the project root.
 10. Verify with `mempalace_get_taxonomy` or `mempalace_list_rooms`: the recorded wing must have drawers. If empty, repair now (mining recipe, dry run first); if blocked, report the failing call, error and missing access, then continue.
 11. Update `.brain/state/session-brief.md` (under 400 words), run `project-brain-lint <project-root>`, and clear error-level issues.
 12. Write `mempalace_diary_write` with the agent from `mempalace_diary_agent` in `.brain/CLAUDE.md` using this exact format:
@@ -183,7 +183,7 @@ for a genuinely missing decision or access; the leftover-wing check never pauses
 
     Fill the placeholders with the date, time, title and recorded agent. Read `references/mempalace-workflow.md` before retrying a failed write; never log it as written if it failed.
 13. **Run the `## Work loop` section.** Fresh brain: `project-brain-inventory <project-root> inventory` and `project-brain-inventory <project-root> git-digest` first. Repair sub-scores and gates; re-mine wiki changes. Append a second diary and log entry only if the Work loop changed findings or contradictions. Run `project-brain-doctor <project-root> --strict` until it exits 0 or the Work loop's repair cap is spent; report all four sub-scores from the last strict run's output.
-14. Final report: "complete" only if the strict gate exited 0, no sub-score remains flagged and the recorded wing is not blocked. Otherwise say **INCOMPLETE** and list each failing gate or sub-score with its failing command, any blocked wing, and missing access under **not done**. A flagged sub-score is never "expected". No next-session to-do list for runnable work.
+14. Final report: "complete" only if the strict gate exited 0, no sub-score remains flagged, no leftover-wing check is unverified, and the recorded wing is not blocked and the recorded wing has drawers (verified in step 10). Otherwise say **INCOMPLETE** and list each failing gate or sub-score with its failing command, any blocked or empty wing, failed mine or unverified check, and missing access under **not done**. A flagged sub-score is never "expected". No next-session to-do list for runnable work.
 
 MemPalace and graphify are pre-installed; do not reinstall.
 
@@ -226,7 +226,7 @@ and add the question to `open-questions.md`.
 
 **9. Wiki authoring discipline.** Read `references/wiki-schema.md` before the first wiki write of a session; cite line numbers verified against the code (`grep -n` / bounded Read), never copied from docs; never hand-edit `.brain/wiki/index.md` (regenerate with `project-brain-lint <project-root> --reindex`); wikilinks target wiki pages only.
 
-**10. Edit discipline.** Read the page immediately before every Edit and again after compaction or any failed Edit; prefer Write for whole-page rewrites; never batch dependent edits to one file in a single parallel turn; retry an Edit once, then switch to Write. State only actions you actually emitted. Details: `references/edit-discipline.md`.
+**10. Edit discipline.** Read the page immediately before every Edit, and again after compaction or a failed Edit. Prefer Write for whole-page rewrites. Never batch dependent edits to one file in one parallel turn. Retry an Edit once, then switch to Write. State only actions you emitted. Details: `references/edit-discipline.md`.
 
 <!-- ponytail: skill-size ceiling; extend procedures, not repeated contracts. -->
 
@@ -258,28 +258,23 @@ backup, authorization) — never for an unresolved ownership question.
 
 ## References (load only on the trigger)
 
-- `references/brain-lifecycle.md` — full per-mode procedures.
-- `references/agent-playbook.md` — decision tree + retrieval routing table.
+<!-- ponytail: size ceiling; duplicate triggers stay above; add rows only for new triggers. -->
+
 - `references/audit-workflow.md` — processing human feedback files.
 - `references/brain-architecture.md` — the six layers in depth.
 - `references/brain-health-metrics.md` — what the doctor scores mean.
-- `references/cross-brain-workflow.md` — multi-project brains.
 - `references/deferred-tools.md` — any tool unavailable or deferred.
 - `references/edit-discipline.md` — before page edits; after any failed Edit.
 - `references/evidence-lifecycle.md` — raw evidence intake and aging.
 - `references/wiki-ledger.md` — page history: status/snapshot/log/diff/restore.
 - `references/graphify-workflow.md` — graph builds, MCP tools, CLI fallback.
-- `references/handoff-protocol.md` — preparing a handoff brief.
 - `references/harness-detection.md` — harness detection; plugin-root edges.
 - `references/install-and-integration.md` — dependency state; CLAUDE.md
   integration.
 - `references/mempalace-tools.md` — BEFORE any MemPalace call.
 - `references/mempalace-workflow.md` — diary format; palace lock; failures.
-- `references/obsidian-workflow.md` — vault mirror.
 - `references/post-wiki-checklist.md` — checklist form of the loop above.
-- `references/retrieval-strategy.md` — layer strengths and blind spots.
 - `references/wing-ownership.md` — which wings belong to the brain.
-- `references/wiki-schema.md` — BEFORE the first wiki write of a session.
 
 ## Completion standard
 
